@@ -163,7 +163,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - [ ] Truncation detector wired to the red banner
 - [ ] Chat pane renders basic markdown (headings, bold/italic, inline and fenced code, lists), including while the reply is still streaming
 - [ ] Prompt history: Up/Down in the input recall earlier prompts (in memory for now; M7 persists it)
-- [ ] Prompt queue: prompts submitted during a generation wait their turn instead of being dropped, with a count in the TUI
+- [ ] Prompt queue: prompts submitted during a generation wait their turn instead of being dropped, with a count in the TUI. Ctrl-C cancels the current generation and pauses the queue; Enter on an empty input resumes it and Esc clears it
 
 **Validation:**
 
@@ -173,6 +173,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 4. Markdown: a streamed reply with an unclosed code fence mid-stream does not crash, and the final render equals rendering the full text at once; plain text with markdown-looking characters (`*`, `_`, `#`) is not mangled.
 5. History: after N submissions, Up walks back through them newest first, Down walks forward and ends on the unsent draft; empty and duplicate-consecutive prompts are not recorded.
 6. Queue: three prompts submitted during one generation run in order, none lost or reordered, each producing its own reply; the queue holds (does not advance) while a red Alert is active.
+7. Ctrl-C mid-generation cancels it and pauses the queue with the remaining prompts still listed; nothing runs until Enter on an empty input resumes (then the next prompt runs) or Esc clears the queue.
 
 ### M3 — Context management
 
@@ -265,7 +266,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - [ ] TUI only, or also a local browser view (Textual can serve to a browser with `textual serve`)?
 - [x] Decided: Python, for interview practice and because Evals is Python-only.
 - [ ] Which MCP servers matter most for your daily use?
-- [ ] What should Ctrl-C do to the prompt queue: cancel the current generation only (queue continues), cancel it and pause the queue, or clear the queue? M2 needs an answer before the queue lands.
+- [x] Decided: Ctrl-C cancels the current generation and pauses the prompt queue, so a cancelled run never silently starts the next prompt. Resume and clear keys are specified in M2.
 
 ## References
 
