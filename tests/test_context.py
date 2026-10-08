@@ -86,3 +86,14 @@ async def test_oversized_paste_fires_red_truncation_and_logs_gap(caplog: object)
     assert f"gap {rec.gap}" in alert.message
     assert f"gap {rec.gap} tokens" in caplog.text  # type: ignore[attr-defined]
     assert rec.strands_estimate is not None  # compared with Strands' own estimate
+
+
+def test_context_panel_shows_the_tool_schema_cost() -> None:
+    from harness.chat import render_context
+    from harness.context.accounting import Category
+    from harness.context.ledger import CallRecord
+
+    cats = {c: 0 for c in Category}
+    cats[Category.TOOLS] = 412
+    rec = CallRecord(4096, cats, 412, None, 412, 5)
+    assert "tools 412" in render_context(rec)

@@ -36,6 +36,9 @@ SUMMARY_PROMPT = (
 )
 
 Summarizer = Callable[[Sequence[Message]], Awaitable[str]]
+# (tokens used, num_ctx, per-turn growth, turns so far) -> probability that history should be compacted now
+Advisor = Callable[[int, int, int, int], Awaitable[float]]
+ADVICE_THRESHOLD = 0.5
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,8 @@ class Compactor:
         num_ctx: Callable[[], int],
         policy: CompactionPolicy = CompactionPolicy(),
         strategy: str = "summarize",
+        advisor: Advisor | None = None,
+        advise_from: float = 0.8,
     ) -> None:
         self.trimlog = trimlog
         self.ledger = ledger
@@ -83,6 +88,8 @@ class Compactor:
         self.policy = policy
         self.strategy = strategy
         self.pending_reason: str | None = None
+        self.advisor = advisor
+        self.advise_from = advise_from
 
     def estimate(self, messages: Sequence[Message]) -> int:
         est: TokenEstimator = self.ledger.estimator
@@ -116,9 +123,25 @@ class Compactor:
     def force(self, reason: str) -> None:
         self.pending_reason = reason
 
+    async def advice(self) -> str | None:
+        """Ask the decision layer once the window is ``advise_from`` full; it can only bring compaction forward.
+
+        The projection against the ceiling stays the hard rule, so a wrong or failed answer costs nothing.
+        """
+        num_ctx = self._num_ctx()
+        used = self.used()
+        if self.advisor is None or not num_ctx or used < self.advise_from * num_ctx:
+            return None
+        try:
+            p = await self.advisor(used, num_ctx, self.turn_growth(), len(self.ledger.records))
+        except Exception as exc:
+            log.warning("compaction advice failed: %s", exc)
+            return None
+        return f"decision layer advised compaction (p={p:.2f})" if p >= ADVICE_THRESHOLD else None
+
     async def after_turn(self, messages: list[Message]) -> TrimEntry | None:
         """Compact ``messages`` in place if the trigger says so; returns the Trim log entry."""
-        reason = self.should_compact()
+        reason = self.should_compact() or await self.advice()
         if reason is None:
             return None
         self.pending_reason = None

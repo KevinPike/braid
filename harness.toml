@@ -18,3 +18,14 @@ ceiling = 0.9
 target = 0.5
 preserve_recent = 6
 offload_tokens = 4000
+
+[tools]
+enabled = true
+root = "."
+notes_dir = "notes"
+shell = false                 # stays off until M8 adds the approval prompt
+
+[decide]
+enabled = true
+model = "tev1:0.8b"
+max_input_tokens = 1500

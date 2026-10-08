@@ -36,6 +36,24 @@ class ContextConfig(BaseModel):
     offload_tokens: int = 4000  # tool results larger than this are stored on disk; 0 turns offloading off
 
 
+class ToolsConfig(BaseModel):
+    enabled: bool = True
+    root: Path = Path(".")  # the one project folder every tool is bound to
+    notes_dir: Path = Path("notes")  # relative to root unless absolute
+    shell: bool = False  # runs commands with root as cwd; off until M8 adds the approval prompt
+    max_read_chars: int = 20_000
+
+
+class DecideConfig(BaseModel):
+    """The tev1 decision layer (M4). Advisory only."""
+
+    enabled: bool = True
+    model: str = "tev1:0.8b"
+    max_input_tokens: int = 1500
+    keep_alive: str = "5m"
+    compaction_advice_from: float = 0.8  # ask tev1 once the window is this full; the ceiling still decides alone
+
+
 class PathsConfig(BaseModel):
     data_dir: Path = Path("~/.harness")
 
@@ -46,6 +64,10 @@ class PathsConfig(BaseModel):
     @property
     def trim_log_file(self) -> Path:
         return self.resolved_data_dir / "trims.db"
+
+    @property
+    def decisions_file(self) -> Path:
+        return self.resolved_data_dir / "decisions.db"
 
     @property
     def offload_dir(self) -> Path:
@@ -60,6 +82,8 @@ class HarnessConfig(BaseModel):
     ollama: OllamaConfig = OllamaConfig()
     profile: ProfileConfig = ProfileConfig()
     context: ContextConfig = ContextConfig()
+    tools: ToolsConfig = ToolsConfig()
+    decide: DecideConfig = DecideConfig()
     paths: PathsConfig = PathsConfig()
 
 

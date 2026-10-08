@@ -208,17 +208,26 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 ### M4 — Tools and the decision layer
 
-- [ ] Three or four `@tool` functions (read file, list directory, search notes, current time)
-- [ ] Strands Shell as the sandboxed shell, bound to one project folder
-- [ ] Tool-schema token cost shown in the context panel
-- [ ] `decide/tev.py`: `httpx` client for `/v1/systemone` with a 1,500-token input cap
-- [ ] Router question (plain chat vs tool task) and compaction-trigger question using `tev1:0.8b`
+- [x] Three or four `@tool` functions (read file, list directory, search notes, current time)
+- [x] Strands Shell as the sandboxed shell, bound to one project folder
+- [x] Tool-schema token cost shown in the context panel
+- [x] `decide/tev.py`: `httpx` client for `/v1/systemone` with a 1,500-token input cap
+- [x] Router question (plain chat vs tool task) and compaction-trigger question using `tev1:0.8b`
 
 **Validation:**
 
 1. On a 20-prompt test set, `gemma4:e4b` picks the right tool in at least 16.
 2. The tev1 router agrees with hand labels on at least 16 of 20 prompts; every decision and its probabilities are logged.
 3. Inputs over the tev1 cap are summarized first, never sent raw.
+
+**Status notes (2026-10-08):**
+
+- Gates: 3 is unit-tested (`tests/test_tev.py`, respx). Gates 1 and 2 are in `tests/test_live_tools.py` (`HARNESS_LIVE=1`, hand-labelled set in `tests/data/prompts.json`): `gemma4:e4b` picked the right tool, or none, on 20/20 and the tev1:0.8b router agreed with the labels on 20/20, both with the real tools. The set is small and easy, so treat 20/20 as "the plumbing works", not as a benchmark.
+- Tools (`tools/builtin.py`): `read_file`, `list_directory`, `search_notes`, `current_time`, all bound to `[tools] root`; `..`, absolute paths and symlinks out of it are refused. `search_notes` greps `notes/` under the root.
+- Shell: Strands' `make_shell` over a sandbox that fixes the working directory to the project folder. That is a working directory, not isolation (a command can `cd ..`), so `[tools] shell` is off by default until M8's approval prompt (ADR 0003).
+- Tool-schema cost: it is the "tools" segment of the context panel on every call; `/tools` lists each schema's estimated tokens.
+- tev1 (`decide/`): every question and its probabilities go to the Decision log (SQLite at `~/.harness/decisions.db`, `/decisions` in the TUI). Input is capped at 1,500 tokens (3 chars per token, deliberately pessimistic, questions included); over the cap the state is summarized, and if it is still over, the call is refused and logged. tev1 sits outside the guard client because its ~2K window is fixed by the model, so there is no `num_ctx` to pin; it is marked a Watchdog helper like the summarizer.
+- The router runs on every prompt in the background and is logged only; nothing acts on it until model routing (M10). The compaction question is asked once the window is 80% full and can only bring a compaction forward; the 90% projection stays the hard rule, and a failed or negative answer changes nothing.
 
 ### M5 — MCP
 

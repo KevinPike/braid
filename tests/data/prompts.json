@@ -1,0 +1,22 @@
+[
+  {"prompt": "What time is it right now?", "tool": "current_time"},
+  {"prompt": "List the files in the src directory.", "tool": "list_directory"},
+  {"prompt": "Show me what's in README.md", "tool": "read_file"},
+  {"prompt": "Search my notes for anything about the Q3 budget.", "tool": "search_notes"},
+  {"prompt": "What's in the docs folder?", "tool": "list_directory"},
+  {"prompt": "Open pyproject.toml and tell me which python version it needs.", "tool": "read_file"},
+  {"prompt": "Do my notes mention Kubernetes?", "tool": "search_notes"},
+  {"prompt": "What's today's date?", "tool": "current_time"},
+  {"prompt": "Explain the difference between a list and a tuple in Python.", "tool": null},
+  {"prompt": "Write a haiku about autumn.", "tool": null},
+  {"prompt": "What is the capital of Australia?", "tool": null},
+  {"prompt": "Read src/harness/config.py and summarize it.", "tool": "read_file"},
+  {"prompt": "Find the notes where I mentioned the dentist.", "tool": "search_notes"},
+  {"prompt": "How many files are in the tests directory?", "tool": "list_directory"},
+  {"prompt": "What is 17 times 23?", "tool": null},
+  {"prompt": "Thanks, that was helpful!", "tool": null},
+  {"prompt": "What time is it in UTC?", "tool": "current_time"},
+  {"prompt": "Show the contents of harness.toml", "tool": "read_file"},
+  {"prompt": "Give me three tips for writing clear commit messages.", "tool": null},
+  {"prompt": "Which of my notes talk about gardening?", "tool": "search_notes"}
+]

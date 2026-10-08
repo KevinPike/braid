@@ -78,11 +78,12 @@ def build_agent(
     *,
     conversation_manager: ConversationManager | None = None,
     plugins: list[Plugin] | None = None,
+    tools: list[Any] | None = None,
 ) -> Agent:
     # callback_handler=None: the TUI renders the stream, nothing prints to stdout.
     return Agent(
         model=GuardedOllamaModel(client, model_id, ledger), system_prompt=system_prompt, callback_handler=None,
-        conversation_manager=conversation_manager, plugins=plugins,
+        conversation_manager=conversation_manager, plugins=plugins, tools=tools,
     )
 
 

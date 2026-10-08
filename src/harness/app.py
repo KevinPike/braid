@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from strands import Agent
 from strands.types.content import Message
@@ -25,6 +27,10 @@ from harness.context.compaction import CompactionPolicy, Compactor
 from harness.context.ledger import Ledger
 from harness.context.strategies import build_conversation_manager, build_offloader, make_summarizer
 from harness.context.trimlog import TrimEntry, TrimLog
+from harness.decide.log import Decision, DecisionLog
+from harness.decide.questions import route, should_compact
+from harness.decide.tev import TevClient
+from harness.tools.builtin import build_shell, build_tools
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.guard.watchdog import GuardState, Level, Watchdog
@@ -67,6 +73,8 @@ COMMANDS: dict[str, Command] = {
     "model": Command("/model [name]", immediate=False),  # swaps the model, so it must not interrupt queued prompts
     "compact": Command("/compact", immediate=False),  # rewrites history, so it waits for the running turn
     "trims": Command("/trims", immediate=True),  # read-only
+    "tools": Command("/tools", immediate=True),
+    "decisions": Command("/decisions", immediate=True),
 }
 
 
@@ -98,11 +106,15 @@ class HarnessApp(App[None]):
         watchdog: Watchdog | None = None,
         trimlog: TrimLog | None = None,
         compactor: Compactor | None = None,
+        decisions: DecisionLog | None = None,
+        tev: TevClient | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.trimlog = trimlog or TrimLog(config.paths.trim_log_file if replier is None else ":memory:")
         self.compactor = compactor
+        self.decisions = decisions or DecisionLog(config.paths.decisions_file if replier is None else ":memory:")
+        self.tev = tev
         self.fake_messages: list[Message] = []  # history stand-in when a test supplies a replier instead of an agent
         self._client: OllamaClient | None = None
         self._agent: Agent | None = None
@@ -132,6 +144,7 @@ class HarnessApp(App[None]):
     def on_mount(self) -> None:
         self.query_one(Input).focus()
         self.trimlog.subscribe(self._on_trim)
+        self.decisions.subscribe(self._on_decision)
         self.ledger.subscribe(self.query_one(ContextPanel).set_record)
         self.query_one(ContextPanel).set_record(None)
         if self._watchdog is not None:
@@ -144,6 +157,9 @@ class HarnessApp(App[None]):
 
     def _on_trim(self, entry: TrimEntry) -> None:
         self.call_later(self._note, f"trim {entry.line()}")
+
+    def _on_decision(self, d: Decision) -> None:
+        self.call_later(self._note, f"decide {d.line()}")
 
     async def _note(self, text: str) -> None:
         chat = self.query_one("#chat", VerticalScroll)
@@ -175,7 +191,7 @@ class HarnessApp(App[None]):
             self._watchdog.set_expected_size(result.model, result.weights)
         self._agent = self._make_agent(result.model)
         self._model = result.model
-        await self._build_compactor(result.model)
+        await self._build_helpers(result.model)
         self._pump()
 
     def _make_agent(self, model: str) -> Agent:
@@ -188,29 +204,68 @@ class HarnessApp(App[None]):
             self._client, model, self.config.profile.system_prompt, self.ledger,
             conversation_manager=build_conversation_manager(cfg, self.trimlog, est),
             plugins=[offloader] if offloader is not None else None,
+            tools=self._tools(),
         )
 
-    async def _build_compactor(self, driver: str) -> None:
-        """The custom strategy: summarize with the summarizer model, or the daily driver when it is not pulled."""
+    def _tools(self) -> list[Any]:
+        cfg = self.config.tools
+        if not cfg.enabled:
+            return []
+        tools: list[Any] = build_tools(cfg.root, cfg.notes_dir, max_read_chars=cfg.max_read_chars)
+        if cfg.shell:
+            tools.append(build_shell(cfg.root))
+        return tools
+
+    async def _build_helpers(self, driver: str) -> None:
+        """Summarizer (compaction and oversized tev1 input) and the tev1 client, each only when its model is pulled."""
         assert self._client is not None
+        client = self._client
         cfg = self.config.context
-        if cfg.strategy != "summarize":
-            self.compactor = None
-            return
-        pulled = {t.name for t in await self._client.tags()}
+        pulled = {t.name for t in await client.tags()}
         helper = cfg.summarizer_model != driver and cfg.summarizer_model in pulled
         model = cfg.summarizer_model if helper else driver
-        num_ctx = cfg.summarizer_num_ctx if helper else (self._client.pinned(driver) or self.config.profile.num_ctx)
+        num_ctx = cfg.summarizer_num_ctx if helper else (client.pinned(driver) or self.config.profile.num_ctx)
         if helper and self._watchdog is not None:
             self._watchdog.mark_helper(model)
+        summarizer = make_summarizer(client, model, num_ctx, self.ledger.estimator, unload_after=helper)
+
+        self.tev = None
+        dec = self.config.decide
+        if dec.enabled and dec.model in pulled:
+            async def shorten(text: str, budget: int) -> str:
+                return await summarizer([{"role": "user", "content": [{"text": text}]}])
+
+            if self._watchdog is not None:
+                self._watchdog.mark_helper(dec.model)
+            self.tev = TevClient(
+                self.config.ollama.host, dec.model, log=self.decisions, summarize=shorten,
+                max_input_tokens=dec.max_input_tokens, keep_alive=dec.keep_alive,
+            )
+        elif dec.enabled:
+            await self._note(f"decision layer off: {dec.model} is not pulled")
+
+        self.compactor = None
+        if cfg.strategy != "summarize":
+            return
         await self._note(f"compaction: summarize with {model} at {int(cfg.ceiling * 100)}% of num_ctx"
                          + ("" if helper else f" ({cfg.summarizer_model} not pulled, using the daily driver)"))
-        client = self._client
         self.compactor = Compactor(
             trimlog=self.trimlog, ledger=self.ledger, num_ctx=lambda: client.pinned(driver) or 0,
-            summarize=make_summarizer(self._client, model, num_ctx, self.ledger.estimator, unload_after=helper),
-            policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first),
+            summarize=summarizer, policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first),
+            advisor=self._advise_compaction if self.tev is not None else None, advise_from=dec.compaction_advice_from,
         )
+
+    async def _advise_compaction(self, used: int, num_ctx: int, growth: int, turns: int) -> float:
+        assert self.tev is not None
+        return await should_compact(self.tev, used=used, num_ctx=num_ctx, growth=growth, turns=turns)
+
+    async def _route(self, prompt: str) -> None:
+        """Advisory: the router's answer is logged (and shown); nothing acts on it until model routing in M10."""
+        assert self.tev is not None
+        try:
+            await route(self.tev, prompt)
+        except Exception:
+            pass  # TevClient.ask already put the failure in the Decision log
 
     @property
     def _messages(self) -> list[Message]:
@@ -223,7 +278,7 @@ class HarnessApp(App[None]):
         state = self.guard_state
         if state is not None and any(a.kind == "truncation" for a in state.alerts):
             self.compactor.force("Truncation detected: Ollama dropped prompt tokens")
-        reason = self.compactor.should_compact()
+        reason = self.compactor.should_compact() or await self.compactor.advice()
         if reason is None:
             return
         await self._note("compacting history…")
@@ -297,6 +352,10 @@ class HarnessApp(App[None]):
             await self._compact_command()
         elif name == "trims":
             await self._trims_command()
+        elif name == "tools":
+            await self._tools_command()
+        elif name == "decisions":
+            await self._decisions_command()
 
     async def _compact_command(self) -> None:
         if self.compactor is None:
@@ -306,6 +365,26 @@ class HarnessApp(App[None]):
         entry = await self.compactor.compact(self._messages, "manual /compact")
         if entry is None:
             await self._note("nothing to compact yet")
+
+    async def _tools_command(self) -> None:
+        if self._agent is None:
+            await self._note("/tools: no agent yet")
+            return
+        specs = self._agent.tool_registry.get_all_tools_config()
+        if not specs:
+            await self._note("no tools registered")
+            return
+        est = self.ledger.estimator
+        costs = {name: est.tokens(len(json.dumps(spec, sort_keys=True))) for name, spec in specs.items()}
+        lines = [f"{name}: ~{n} tokens" for name, n in sorted(costs.items(), key=lambda kv: -kv[1])]
+        await self._note(f"tool schemas cost ~{sum(costs.values())} tokens on every call:\n" + "\n".join(lines))
+
+    async def _decisions_command(self) -> None:
+        entries = self.decisions.entries(limit=20)
+        if not entries:
+            await self._note("decision log is empty")
+            return
+        await self._note("decision log (most recent last):\n" + "\n".join(e.line() for e in entries))
 
     async def _trims_command(self) -> None:
         entries = self.trimlog.entries(limit=20)
@@ -357,7 +436,7 @@ class HarnessApp(App[None]):
         if previous is not None:
             self._agent.messages.extend(previous.messages)  # the conversation carries over
         self._model = result.model
-        await self._build_compactor(result.model)
+        await self._build_helpers(result.model)
         await self._note(f"now on {result.model} at num_ctx {result.num_ctx} (budget {result.budget}); conversation kept")
 
     def _pump(self) -> None:
@@ -386,6 +465,8 @@ class HarnessApp(App[None]):
                     self._busy = False
                     self._pump()
             return
+        if self.tev is not None:
+            self.run_worker(self._route(prompt), name="route", group="decide")
         reply = Reply()
         try:
             await chat.mount(Static(f"you: {prompt}", classes="user", markup=False), reply)
