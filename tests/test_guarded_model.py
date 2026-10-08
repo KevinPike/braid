@@ -24,7 +24,7 @@ def make(system_prompt: str = "sys", tools: list[object] | None = None) -> tuple
     client = OllamaClient(HOST, keep_alive="30m")
     client.pin("m", 4096)
     seen: list[tuple[str, CallMetrics]] = []
-    client.on_call(lambda model, metrics: seen.append((model, metrics)))
+    client.on_call(lambda model, metrics, est: seen.append((model, metrics)))
     agent = Agent(model=GuardedOllamaModel(client, "m"), system_prompt=system_prompt, callback_handler=None,
                   tools=tools or [])
     return agent, client, seen

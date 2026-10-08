@@ -10,6 +10,7 @@ from strands import Agent
 from strands.models.ollama import OllamaModel
 from strands.types.streaming import StreamEvent
 
+from harness.context.ledger import Ledger
 from harness.guard.ollama_client import OllamaClient
 
 
@@ -20,9 +21,10 @@ class GuardedOllamaModel(OllamaModel):
     own ollama client is never used.
     """
 
-    def __init__(self, client: OllamaClient, model_id: str, **model_config: Any) -> None:
+    def __init__(self, client: OllamaClient, model_id: str, ledger: Ledger | None = None, **model_config: Any) -> None:
         super().__init__(client.host, model_id=model_id, **model_config)
         self._guard = client
+        self._ledger = ledger
 
     async def stream(
         self,
@@ -32,13 +34,17 @@ class GuardedOllamaModel(OllamaModel):
         **kwargs: Any,
     ) -> AsyncGenerator[StreamEvent, None]:
         request = self.format_request(messages, tool_specs, system_prompt)
+        estimate: int | None = None
+        if self._ledger is not None:
+            theirs = await self.count_tokens(messages, tool_specs, system_prompt)
+            estimate = self._ledger.before_call(request["model"], request["messages"], request["tools"], theirs)
         yield self.format_chunk({"chunk_type": "message_start"})
         yield self.format_chunk({"chunk_type": "content_start", "data_type": "text"})
 
         tool_requested = False
         last = None
         async for chunk in self._guard.chat(
-            request["model"], request["messages"], tools=request["tools"], options=request["options"]
+            request["model"], request["messages"], tools=request["tools"], options=request["options"], estimate=estimate
         ):
             last = chunk
             for call in chunk.tool_calls:
@@ -58,11 +64,13 @@ class GuardedOllamaModel(OllamaModel):
                 prompt_eval_count=m.prompt_eval_count, eval_count=m.eval_count, total_duration=m.total_duration_s * 1e9
             )
             yield self.format_chunk({"chunk_type": "metadata", "data": meta})
+            if self._ledger is not None:
+                self._ledger.after_call(m)
 
 
-def build_agent(client: OllamaClient, model_id: str, system_prompt: str) -> Agent:
+def build_agent(client: OllamaClient, model_id: str, system_prompt: str, ledger: Ledger | None = None) -> Agent:
     # callback_handler=None: the TUI renders the stream, nothing prints to stdout.
-    return Agent(model=GuardedOllamaModel(client, model_id), system_prompt=system_prompt, callback_handler=None)
+    return Agent(model=GuardedOllamaModel(client, model_id, ledger), system_prompt=system_prompt, callback_handler=None)
 
 
 async def stream_reply(agent: Agent, prompt: str) -> AsyncIterator[str]:

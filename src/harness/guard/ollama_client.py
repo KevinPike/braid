@@ -93,7 +93,8 @@ class ModelTag:
     size: int
 
 
-CallListener = Callable[[str, CallMetrics], None]
+# model, metrics, the caller's prompt-token estimate (None when it has none)
+CallListener = Callable[[str, CallMetrics, int | None], None]
 Message = Mapping[str, Any]
 
 
@@ -124,6 +125,7 @@ class OllamaClient:
         *,
         tools: Sequence[Mapping[str, Any]] | None = None,
         options: Mapping[str, Any] | None = None,
+        estimate: int | None = None,
     ) -> AsyncIterator[ChatChunk]:
         num_ctx = self._pins.get(model)
         if num_ctx is None:
@@ -155,7 +157,7 @@ class OllamaClient:
                 )
                 if metrics is not None:
                     for listener in self._listeners:
-                        listener(model, metrics)
+                        listener(model, metrics, estimate)
 
     async def unload(self, model: str) -> None:
         resp = await self._http.post(f"{self.host}/api/generate", json={"model": model, "keep_alive": 0})

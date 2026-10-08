@@ -32,7 +32,7 @@ async def test_chat_pins_num_ctx_and_keep_alive_and_reports_metrics(client: Olla
         return_value=ndjson({"message": {"role": "assistant", "content": "hi"}, "done": False}, FINAL)
     )
     seen: list[tuple[str, CallMetrics]] = []
-    client.on_call(lambda model, m: seen.append((model, m)))
+    client.on_call(lambda model, m, est: seen.append((model, m)))
 
     chunks = [c async for c in client.chat("m", [{"role": "user", "content": "yo"}])]
 

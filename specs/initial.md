@@ -152,18 +152,18 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - Consequence: `size_vram == size` cannot confirm full-GPU for these models. Preflight warns and the watchdog raises a yellow `ps_unreliable` alert until the upstream fix lands. Spill detection for them falls back to the speed-drop check.
 - Gate 2 (live spill, red within 4 s) is tested with a fake clock only; for draft-model setups it is not achievable through `/api/ps` today.
 - Gate 1 is tested with fakes; the 26B model is not pulled.
-- Truncation check takes an `estimate`; the adapter passes none until M2's accounting lands.
+- Truncation check takes an `estimate`; M2's ledger supplies it on every call.
 - Metal's `recommendedMaxWorkingSetSize` in the Ollama server log is about 18.6 GiB; the budget still uses the conservative two-thirds fallback (16 GiB).
 
-### M2 — Context visibility
+### M2 — Context visibility — IMPLEMENTED (unit-tested with fakes; not yet run against live Ollama)
 
-- [ ] Per-call accounting: system prompt, tool schemas, history, tool results, current turn
-- [ ] Compare the harness's own estimate with Strands' context estimation and with Ollama's `prompt_eval_count`
-- [ ] Context panel in the TUI: stacked gauge by category plus the last call's numbers
-- [ ] Truncation detector wired to the red banner
-- [ ] Chat pane renders basic markdown (headings, bold/italic, inline and fenced code, lists), including while the reply is still streaming
-- [ ] Prompt history: Up/Down in the input recall earlier prompts (in memory for now; M7 persists it)
-- [ ] Prompt queue: prompts submitted during a generation wait their turn instead of being dropped, with a count in the TUI. Ctrl-C cancels the current generation and pauses the queue; Enter on an empty input resumes it and Esc clears it
+- [x] Per-call accounting: system prompt, tool schemas, history, tool results, current turn
+- [x] Compare the harness's own estimate with Strands' context estimation and with Ollama's `prompt_eval_count`
+- [x] Context panel in the TUI: stacked gauge by category plus the last call's numbers
+- [x] Truncation detector wired to the red banner
+- [x] Chat pane renders basic markdown (headings, bold/italic, inline and fenced code, lists), including while the reply is still streaming
+- [x] Prompt history: Up/Down in the input recall earlier prompts (in memory for now; M7 persists it)
+- [x] Prompt queue: prompts submitted during a generation wait their turn instead of being dropped, with a count in the TUI. Ctrl-C cancels the current generation and pauses the queue; Enter on an empty input resumes it and Esc clears it
 
 **Validation:**
 
@@ -174,6 +174,13 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 5. History: after N submissions, Up walks back through them newest first, Down walks forward and ends on the unsent draft; empty and duplicate-consecutive prompts are not recorded.
 6. Queue: three prompts submitted during one generation run in order, none lost or reordered, each producing its own reply; the queue holds (does not advance) while a red Alert is active.
 7. Ctrl-C mid-generation cancels it and pauses the queue with the remaining prompts still listed; nothing runs until Enter on an empty input resumes (then the next prompt runs) or Esc clears the queue.
+
+**Status notes (2026-10-08):**
+
+- Gates 1–7 each have a pytest test (`tests/test_context.py`, `tests/test_prompts.py`, `tests/test_app.py`). The 5% gates use a fake tokenizer; the estimator learns chars per token from `prompt_eval_count`, only from calls small enough (under 80% of `num_ctx`) that they cannot have been truncated.
+- Not verified live: Ollama may report a low `prompt_eval_count` when it reuses a cached prefix, which would look like Truncation. Check on the first real session before trusting the banner.
+- The Strands estimate (`Model.count_tokens`, chars/4) is shown in the panel beside ours and Ollama's.
+- A red Alert holds the queue until it clears; truncation alerts last 60 s.
 
 ### M3 — Context management
 

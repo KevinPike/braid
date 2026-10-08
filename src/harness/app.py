@@ -12,15 +12,38 @@ from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.events import Key
 from textual.widgets import Input, Static
 from textual.worker import Worker
 
 from harness.agent import build_agent, stream_reply
+from harness.chat import AlertBanner, ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
+from harness.context.ledger import Ledger
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
-from harness.guard.watchdog import GuardState, Watchdog
+from harness.guard.watchdog import GuardState, Level, Watchdog
+from harness.prompts import PromptHistory, PromptQueue
 from harness.status import StatusBar
+
+class PromptInput(Input):
+    """Input whose Up/Down recall earlier prompts."""
+
+    def __init__(self, history: PromptHistory, placeholder: str = "", id: str | None = None) -> None:
+        super().__init__(placeholder=placeholder, id=id)
+        self._history = history
+
+    async def _on_key(self, event: Key) -> None:
+        if event.key in ("up", "down"):
+            text = self._history.previous(self.value) if event.key == "up" else self._history.next()
+            event.stop()
+            event.prevent_default()
+            if text is not None:
+                self.value = text
+                self.cursor_position = len(text)
+            return
+        await super()._on_key(event)
+
 
 # prompt -> stream of text deltas
 Replier = Callable[[str], AsyncIterator[str]]
@@ -35,6 +58,7 @@ class HarnessApp(App[None]):
     """
     BINDINGS = [
         Binding("ctrl+c", "cancel", "Cancel generation", priority=True),
+        Binding("escape", "clear_queue", "Clear queue"),
         Binding("ctrl+q", "quit", "Quit"),
     ]
 
@@ -53,20 +77,31 @@ class HarnessApp(App[None]):
             # Real mode: preflight (run on mount) pins num_ctx and builds the agent.
             self._client = OllamaClient(config.ollama.host, keep_alive=config.profile.keep_alive)
             self._watchdog = Watchdog(self._client, pinned=self._client.pinned, refresh_keep_alive=self._client.refresh_keep_alive)
-            self._client.on_call(self._watchdog.record_call)
+            self._client.on_call(lambda model, metrics, est: self._watchdog.record_call(model, metrics, est) if self._watchdog else None)
             replier = self._guarded_reply
         self._replier = replier
         self._worker: Worker[None] | None = None
+        self._busy = False
+        self._run_id = 0
+        self.history = PromptHistory()
+        self.queue = PromptQueue()
+        self.ledger = Ledger(self._client.pinned if self._client is not None else lambda _m: None)
 
     def compose(self) -> ComposeResult:
-        yield VerticalScroll(id="chat")
-        yield Input(placeholder="Message (Enter to send, Ctrl-C cancels, Ctrl-Q quits)", id="prompt")
         yield StatusBar("")
+        yield VerticalScroll(id="chat")
+        yield PromptInput(self.history, placeholder="Message (Enter sends, Ctrl-C cancels, Esc clears queue)", id="prompt")
+        yield ContextPanel("", markup=True)
+        yield AlertBanner("", markup=False)
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+        self.ledger.subscribe(self.query_one(ContextPanel).set_record)
+        self.query_one(ContextPanel).set_record(None)
         if self._watchdog is not None:
             self._watchdog.subscribe(self.query_one(StatusBar).set_state)
+            self._watchdog.subscribe(self.query_one(AlertBanner).set_state)
+            self._watchdog.subscribe(lambda _state: self._pump())
             self.run_worker(self._watchdog.run(), name="watchdog", group="guard")
         if self._client is not None:
             self.run_worker(self._boot(), name="preflight", group="guard")
@@ -94,7 +129,8 @@ class HarnessApp(App[None]):
         await self._note(f"preflight ok: {result.model} at num_ctx {result.num_ctx} (budget {result.budget})")
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
-        self._agent = build_agent(self._client, result.model, profile.system_prompt)
+        self._agent = build_agent(self._client, result.model, profile.system_prompt, self.ledger)
+        self._pump()
 
     def _guarded_reply(self, prompt: str) -> AsyncIterator[str]:
         if self._agent is None:
@@ -107,37 +143,85 @@ class HarnessApp(App[None]):
 
     @property
     def generating(self) -> bool:
-        return self._worker is not None and self._worker.is_running
+        return self._busy
+
+    @property
+    def held_by_alert(self) -> bool:
+        state = self.guard_state
+        return state is not None and state.level == Level.RED
+
+    def _refresh_queue_label(self) -> None:
+        n = len(self.queue)
+        if self.queue.paused:
+            label = f"paused · {n} queued · Enter resumes, Esc clears"
+        elif n and self.held_by_alert:
+            label = f"{n} queued · held by alert"
+        elif n:
+            label = f"{n} queued"
+        else:
+            label = ""
+        self.query_one(PromptInput).border_title = label
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
-        if not text or self.generating:
-            return
         event.input.value = ""
-        chat = self.query_one("#chat", VerticalScroll)
-        await chat.mount(Static(f"you: {text}", classes="user", markup=False))
-        reply = Static("", classes="assistant", markup=False)
-        await chat.mount(reply)
-        chat.scroll_end(animate=False)
-        self._worker = self._generate(text, reply)
+        if not text:
+            if self.queue.paused:
+                self.queue.resume()
+                self._pump()
+            self._refresh_queue_label()
+            return
+        self.history.push(text)
+        self.queue.put(text)
+        self._pump()
+        self._refresh_queue_label()
 
-    @work(exclusive=True)
-    async def _generate(self, prompt: str, reply: Static) -> None:
+    def _pump(self) -> None:
+        """Start the next queued prompt if idle, not paused and no red Alert is active."""
+        if self._busy or self.held_by_alert or (self._client is not None and self._agent is None):
+            self._refresh_queue_label()
+            return
+        prompt = self.queue.pop()
+        if prompt is None:
+            self._refresh_queue_label()
+            return
+        self._busy = True
+        self._run_id += 1
+        self._worker = self.run_worker(self._generate(prompt, self._run_id), name="generate")
+        self._refresh_queue_label()
+
+    async def _generate(self, prompt: str, run_id: int) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        buf = ""
+        reply = Reply()
         try:
-            async for delta in self._replier(prompt):
-                buf += delta
-                reply.update(buf)
-                chat.scroll_end(animate=False)
-        except Exception as exc:  # surface backend errors in the pane, don't crash the UI
-            reply.update(f"{buf}\n[error: {exc}]")
-            reply.add_class("note")
+            await chat.mount(Static(f"you: {prompt}", classes="user", markup=False), reply)
+            chat.scroll_end(animate=False)
+            try:
+                async for delta in self._replier(prompt):
+                    reply.feed(delta)
+                    chat.scroll_end(animate=False)
+            except Exception as exc:  # surface backend errors in the pane, don't crash the UI
+                reply.add_class("note")
+                reply.text += f"\n[error: {exc}]"
+            finally:
+                await reply.finish()
+        finally:
+            if run_id == self._run_id:  # a cancelled run may be unwound after the app has moved on
+                self._busy = False
+                self._pump()
 
     def action_cancel(self) -> None:
+        """Cancel the generation and pause the queue so the next prompt never starts by itself."""
         if self.generating and self._worker is not None:
+            self.queue.pause()
             self._worker.cancel()
+            self._busy = False  # a worker cancelled before it starts never runs its finally
             self.query_one("#chat", VerticalScroll).mount(Static("[cancelled]", classes="note", markup=False))
+            self._refresh_queue_label()
+
+    def action_clear_queue(self) -> None:
+        self.queue.clear()
+        self._refresh_queue_label()
 
 
 def main(argv: list[str] | None = None) -> None:
