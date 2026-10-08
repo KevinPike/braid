@@ -4,6 +4,13 @@ Tabled issues that are not on a milestone's critical path. Newest first. Close a
 
 ## Open
 
+### Status bar shows only one model when several are loaded
+
+- **Seen:** 2026-10-08, with `gemma4` and tev1 loaded together.
+- **Symptom:** the status bar reports a single model, so the other loaded model's size, GPU share and keep-alive are invisible.
+- **Likely cause (not confirmed):** `Watchdog.poll_once` builds `GuardState` from one `/api/ps` entry, the first that is not marked a helper (`head = next(m for m in models if m.name not in self._helpers)`). `GuardState` has no list of models, and helpers (the summarizer, tev1) are deliberately excluded from `model`, so they never reach the bar. Memory use is therefore under-reported while a helper is loaded.
+- **Possible fix:** carry every loaded model in `GuardState` and render the daily driver first with the helpers after it, for example `gemma4:e4b 6.6 GiB … + tev1:0.8b 0.8 GiB`. Spill and drift alerts already cover all loaded models; only the display is affected.
+
 ### Status bar still flickers when the model reloads
 
 - **Seen:** 2026-10-08, after the M3 work, on a real session.
