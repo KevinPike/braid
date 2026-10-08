@@ -114,7 +114,7 @@ max_ctx = floor((gpu_limit - margin - helpers - W - O) / k)
 
 The status bar is the guard's output and the context panel is M2's output; both update after every call, and the alert banner appears only when the watchdog fires.
 
-Layout: status bar, chat, context panel, alert banner.
+Layout: status bar, chat, context panel, alert banner. The input line sits under the chat; it shows how many prompts are queued, and Up/Down recall earlier prompts (M2).
 
 Status bar colours: green when the model is fully on GPU, yellow on context or memory pressure, red on CPU spill or truncation. Keys open the trim log (M3), model switcher (M1), transcript inspector (M7) and tev1 decision log (M4).
 
@@ -161,12 +161,18 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - [ ] Compare the harness's own estimate with Strands' context estimation and with Ollama's `prompt_eval_count`
 - [ ] Context panel in the TUI: stacked gauge by category plus the last call's numbers
 - [ ] Truncation detector wired to the red banner
+- [ ] Chat pane renders basic markdown (headings, bold/italic, inline and fenced code, lists), including while the reply is still streaming
+- [ ] Prompt history: Up/Down in the input recall earlier prompts (in memory for now; M7 persists it)
+- [ ] Prompt queue: prompts submitted during a generation wait their turn instead of being dropped, with a count in the TUI
 
 **Validation:**
 
 1. Paste a document larger than `num_ctx`: the truncation banner fires, and the log shows the token gap.
 2. Over a 30-turn session, the estimate stays within 5% of `prompt_eval_count`.
 3. Category totals add up to the measured total within 5%.
+4. Markdown: a streamed reply with an unclosed code fence mid-stream does not crash, and the final render equals rendering the full text at once; plain text with markdown-looking characters (`*`, `_`, `#`) is not mangled.
+5. History: after N submissions, Up walks back through them newest first, Down walks forward and ends on the unsent draft; empty and duplicate-consecutive prompts are not recorded.
+6. Queue: three prompts submitted during one generation run in order, none lost or reordered, each producing its own reply; the queue holds (does not advance) while a red Alert is active.
 
 ### M3 — Context management
 
@@ -180,6 +186,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 1. A 100-turn scripted session never truncates and never exceeds 90% of `num_ctx`.
 2. After compaction, the model still answers 4 of 5 recall questions about facts from turn 5.
 3. Every trim has a log entry viewable in the TUI.
+4. Compaction runs between turns, never mid-generation, and a queued prompt waits for it to finish.
 
 ### M4 — Tools and the decision layer
 
@@ -212,6 +219,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 ### M7 — Sessions
 
 - [ ] Persist, resume and fork sessions; store the model, `num_ctx` and calibration with each
+- [ ] Persist prompt history per session (and globally for the input recall) so Up/Down survives restarts; restore any still-queued prompts on resume
 - [ ] Transcript inspector showing each call's exact payload and token count
 
 **Validation:** kill the app mid-session, restart, resume, and the next call's `prompt_eval_count` matches the pre-crash estimate within 5%.
@@ -222,7 +230,9 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - [ ] tev1 policy check as a first pass before the approval prompt (advisory only)
 - [ ] All guard and context events published through hooks, not ad-hoc calls
 
-**Validation:** a write or shell command never runs without approval, including when tev1 says it is safe.
+- [ ] The prompt queue does not advance while an approval prompt is open
+
+**Validation:** a write or shell command never runs without approval, including when tev1 says it is safe; a queued prompt never starts while an approval is pending.
 
 ### M9 — Observability and evals
 
@@ -255,6 +265,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - [ ] TUI only, or also a local browser view (Textual can serve to a browser with `textual serve`)?
 - [x] Decided: Python, for interview practice and because Evals is Python-only.
 - [ ] Which MCP servers matter most for your daily use?
+- [ ] What should Ctrl-C do to the prompt queue: cancel the current generation only (queue continues), cancel it and pause the queue, or clear the queue? M2 needs an answer before the queue lands.
 
 ## References
 

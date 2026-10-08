@@ -62,6 +62,10 @@ _Avoid_: Truncation (reserved for the failure mode), pruning
 The SQLite record of what was dropped or summarized, when and why.
 _Avoid_: Compaction history
 
+**Prompt queue**:
+Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active or an approval is pending.
+_Avoid_: Backlog, pending messages
+
 ### Models
 
 **Daily driver**:
