@@ -1,9 +1,11 @@
 [project]
-name = "harness"
+name = "braid"
 version = "0.1.0"
-description = "Add your description here"
+description = "A local agent harness: a Textual TUI over a Strands agent on Ollama, with a runtime guard for context and memory health"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.14.0",
@@ -17,6 +19,9 @@ harness = "harness:main"
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "harness"
 
 [dependency-groups]
 dev = [

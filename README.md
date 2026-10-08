@@ -1,15 +1,27 @@
-# harness
+# braid
 
-A learning-grade local agent harness: a Textual terminal UI over a Strands agent running a local Ollama model. See [`specs/initial.md`](specs/initial.md) for the full plan and milestone status (currently M0 — Skeleton).
+A learning-grade local agent harness: a Textual terminal UI over a Strands agent running a local Ollama model, with a runtime guard that keeps context and GPU memory healthy.
+
+The plan, milestones and current status live in [`specs/initial.md`](specs/initial.md). Terms such as Guard, Spill, Truncation and Pinned num_ctx are defined in [`CONTEXT.md`](CONTEXT.md), and design decisions are recorded in [`docs/adr/`](docs/adr/). Known issues are tracked in [`specs/bugs.md`](specs/bugs.md).
+
+## Features
+
+- **Streaming chat TUI.** Markdown rendering while a reply streams, Up/Down prompt history, and a prompt queue: prompts sent during a generation wait their turn.
+- **Runtime guard.** Every Ollama request goes through one client that pins `num_ctx` and `keep_alive`. Preflight picks a `num_ctx` that fits the GPU budget, calibrating KV-cache cost per model and stepping down to fallback models when needed. A watchdog polls `/api/ps` and per-call metrics to catch Spill and drift. The status bar shows model, GPU share, memory, tokens per second and keep-alive.
+- **Context visibility.** Per-call accounting by category (system prompt, tool schemas, history, tool results, current turn), a context panel with a stacked gauge, and a Truncation detector that raises a banner.
+- **Context management.** Sliding-window or summarizing compaction (summaries by a smaller model at a ceiling of `num_ctx`), offloading of large tool results to disk, and a SQLite trim log of what was dropped and why.
+- **Tools.** Read-only tools bound to one project folder (read file, list directory, search notes, current time) and an optional shell, off by default.
+- **Decision layer.** A small local model (`tev1`) answers advisory questions, such as whether a prompt needs tools or whether to compact early. It never overrides the guard.
 
 ## Prerequisites
 
 - macOS with [Ollama](https://ollama.com) 0.35+ running (`ollama serve`, or the menu-bar app)
 - [`uv`](https://docs.astral.sh/uv/) (`brew install uv`); it fetches Python 3.12 itself
-- The daily-driver model pulled:
+- The models named in `harness.toml`, for example:
 
   ```sh
-  ollama pull gemma4:e4b
+  ollama pull gemma4:e4b   # daily driver
+  ollama pull gemma4:e2b   # summarizer (optional; falls back to the daily driver)
   ```
 
 ## Run it
@@ -22,53 +34,27 @@ uv run harness other.toml # or point at another config
 
 | Key | Action |
 |---|---|
-| Enter | send the message |
-| Ctrl-C | cancel the current generation (the app keeps running) |
+| Enter | send the message (on an empty input, resume a paused queue) |
+| Up / Down | recall earlier prompts |
+| Ctrl-C | cancel the current generation and pause the queue (the app keeps running) |
+| Esc | clear the prompt queue |
 | Ctrl-Q | quit |
 
-The bottom status bar is intentionally empty until M1 (runtime guard).
+Slash commands: `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions`, `/exit`.
 
 ## Configure
 
-Edit `harness.toml`:
+Everything is in `harness.toml`: the Ollama host, the model profile (`model`, `num_ctx`, `keep_alive`, system prompt, fallbacks), the compaction strategy, tool settings, the decision layer and the data directory (`~/.harness` by default, for the trim log, calibration cache and offloaded results). Missing keys fall back to the defaults in `src/harness/config.py`.
 
-```toml
-[ollama]
-host = "http://localhost:11434"
-
-[profile]
-model = "gemma4:e4b"
-num_ctx = 32768
-keep_alive = "30m"
-system_prompt = "You are a concise, helpful assistant running locally."
-
-[paths]
-data_dir = "~/.harness"
-```
-
-## Try the M0 validation gate yourself
-
-1. **10-turn chat streams without blocking the UI.** Start the app and send ten messages in a row. Tokens should appear incrementally, and you should be able to scroll the chat while a reply is streaming. Ask a follow-up like "what did I first ask you?" to confirm history is kept.
-2. **Ctrl-C cancels cleanly.** Send "write a 500 word story", press Ctrl-C mid-stream. Generation stops, `[cancelled]` appears, and you can send another message right away. The app must not exit.
-3. **Backend errors don't crash the UI.** Stop Ollama (`pkill ollama`), send a message: an `[error: ...]` line appears in the chat pane. Restart Ollama and send again.
-
-To watch what Ollama is doing while you chat: `watch -n1 ollama ps` in another terminal.
-
-## Automated tests
+## Tests
 
 ```sh
-uv run pytest -q          # config loading, 10-turn streaming, Ctrl-C cancel (fake backend, no Ollama needed)
+uv run pytest -q          # unit tests use fakes; no Ollama needed
 uv run mypy src tests     # strict type check
+
+HARNESS_LIVE=1 uv run pytest tests/test_live_recall.py tests/test_live_tools.py   # live gates against Ollama
 ```
 
-## Layout
+## License
 
-```
-harness.toml          model profile and paths
-specs/initial.md      plan and milestone tracking
-src/harness/
-  app.py              Textual app (chat pane, input, status bar placeholder)
-  agent.py            Strands Agent on the Ollama provider, text-delta stream
-  config.py           harness.toml loading
-tests/test_app.py
-```
+[Apache 2.0](LICENSE)

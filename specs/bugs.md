@@ -4,6 +4,14 @@ Tabled issues that are not on a milestone's critical path. Newest first. Close a
 
 ## Open
 
+### `search_notes` follows symlinks out of the notes folder
+
+- **Seen:** 2026-10-08, in a pre-push audit (code reading, not reproduced).
+- **Symptom:** a symlink inside the notes folder that points elsewhere (for example `notes/x.md -> ~/.ssh/config`) is read and its matching lines are returned to the model. `read_file` and `list_directory` refuse the same path.
+- **Cause:** `search_notes` in `tools/builtin.py` walks `folder.rglob("*")` and reads each file directly; unlike the other tools it never passes paths through `resolve_inside`. A relative `notes_dir` is also not checked to stay inside `root`.
+- **Risk:** low. The notes folder comes from `harness.toml`, not the model, and the tools only read. It is still a gap in the "bound to one project folder" promise.
+- **Possible fix:** resolve the notes folder once, then skip any file whose resolved path falls outside it (`resolve_inside(folder, ...)`); add a test with a symlink pointing out of the folder, alongside the existing traversal tests in `tests/test_tools.py`.
+
 ### Status bar shows only one model when several are loaded
 
 - **Seen:** 2026-10-08, with `gemma4` and tev1 loaded together.
