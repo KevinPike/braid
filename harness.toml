@@ -1,0 +1,11 @@
+[ollama]
+host = "http://localhost:11434"
+
+[profile]
+model = "gemma4:e4b"
+num_ctx = 32768
+keep_alive = "30m"
+system_prompt = "You are a concise, helpful assistant running locally."
+
+[paths]
+data_dir = "~/.harness"
