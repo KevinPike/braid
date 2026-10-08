@@ -40,6 +40,9 @@ def test_eviction_risk_under_60s_is_yellow() -> None:
 def test_truncation_when_actual_more_than_5pct_below_estimate() -> None:
     assert check_call(metrics(prompt=94), estimate=100, first_call=False, speeds=[])[0].kind == "truncation"
     assert check_call(metrics(prompt=96), estimate=100, first_call=False, speeds=[]) == []
+    # a prompt far below num_ctx cannot have been truncated, whatever the estimate says
+    assert check_call(metrics(prompt=54), estimate=57, first_call=False, speeds=[], num_ctx=8192) == []
+    assert check_call(metrics(prompt=8192), estimate=9000, first_call=False, speeds=[], num_ctx=8192)[0].kind == "truncation"
     (a, *_) = check_call(metrics(prompt=50), estimate=100, first_call=False, speeds=[])
     assert a.level is Level.RED and "50" in a.message and "100" in a.message
 
@@ -129,7 +132,7 @@ async def test_call_alerts_show_in_state_then_expire() -> None:
     backend.pins["m"] = 8192
     await backend.warm("m")
     wd = Watchdog(backend, pinned=backend.pins.get, now=clock.now, sleep=clock.sleep, memory_level=lambda: 1)
-    wd.record_call("m", metrics(prompt=10), estimate=100)
+    wd.record_call("m", metrics(prompt=8192), estimate=9000)
     assert any(a.kind == "truncation" for a in wd.state.alerts) and wd.state.level is Level.RED
     clock.t += timedelta(seconds=120)
     assert (await wd.poll_once()).level is Level.GREEN

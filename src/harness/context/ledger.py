@@ -86,7 +86,7 @@ class Ledger:
         )
         if rec.num_ctx and rec.estimate < LEARN_BELOW_CTX_SHARE * rec.num_ctx:
             self.estimator.observe(acct, metrics.prompt_eval_count)
-        if done.gap is not None and rec.num_ctx and metrics.prompt_eval_count < rec.estimate * (1 - TRUNCATION_TOLERANCE):
+        if rec.num_ctx and metrics.prompt_eval_count >= rec.num_ctx * (1 - TRUNCATION_TOLERANCE) > 0 and metrics.prompt_eval_count < rec.estimate * (1 - TRUNCATION_TOLERANCE):
             log.warning(
                 "truncation: estimate %d, evaluated %d, gap %d tokens (num_ctx %d)",
                 rec.estimate, metrics.prompt_eval_count, done.gap, rec.num_ctx,

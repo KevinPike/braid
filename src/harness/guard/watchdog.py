@@ -102,10 +102,13 @@ def read_memory_level() -> int:
 
 
 def check_call(
-    metrics: CallMetrics, *, estimate: int | None, first_call: bool, speeds: Sequence[float]
+    metrics: CallMetrics, *, estimate: int | None, first_call: bool, speeds: Sequence[float], num_ctx: int | None = None
 ) -> list[Alert]:
     alerts: list[Alert] = []
-    if estimate is not None and metrics.prompt_eval_count < estimate * (1 - TRUNCATION_TOLERANCE):
+    # Ollama only drops tokens when the prompt fills the window, so a count well under num_ctx is
+    # never Truncation, however far the estimate is off (small prompts miss by more than 5%).
+    filled = num_ctx is None or metrics.prompt_eval_count >= num_ctx * (1 - TRUNCATION_TOLERANCE)
+    if estimate is not None and filled and metrics.prompt_eval_count < estimate * (1 - TRUNCATION_TOLERANCE):
         gap = estimate - metrics.prompt_eval_count
         alerts.append(Alert(
             "truncation", Level.RED,
@@ -173,7 +176,9 @@ class Watchdog:
         first = self._calls.get(model, 0) == 0
         self._calls[model] = self._calls.get(model, 0) + 1
         now = self._now()
-        for alert in check_call(metrics, estimate=estimate, first_call=first, speeds=self._speeds):
+        for alert in check_call(
+            metrics, estimate=estimate, first_call=first, speeds=self._speeds, num_ctx=self._pinned(model)
+        ):
             self._call_alerts.append((now, alert))
         tps = metrics.tokens_per_second
         if tps is not None:
