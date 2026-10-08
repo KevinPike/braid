@@ -8,6 +8,7 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
     "httpx>=0.28.1",
+    "opentelemetry-exporter-otlp-proto-http==1.45.1",
     "pydantic>=2.14.0",
     "strands-agents[ollama]>=1.59.0",
     "textual>=8.2.8",
@@ -15,6 +16,7 @@ dependencies = [
 
 [project.scripts]
 harness = "harness:main"
+harness-eval = "harness.evals:main"
 
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
@@ -30,9 +32,21 @@ dev = [
     "pytest-asyncio>=1.4.0",
     "respx>=0.23.1",
 ]
+evals = [
+    "strands-agents-evals>=1.5.0",
+]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 
 [tool.mypy]
 strict = true
+
+[[tool.mypy.overrides]]
+module = ["strands_evals", "strands_evals.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "harness.evals.scoring"
+disallow_subclassing_any = false
+disallow_any_unimported = false

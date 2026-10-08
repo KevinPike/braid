@@ -3,19 +3,27 @@
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Callable, Iterable
 
 
 class PromptHistory:
-    def __init__(self) -> None:
+    """Up/Down recall. ``entries`` (oldest first) seeds it from a persisted history."""
+
+    def __init__(self, entries: Iterable[str] = ()) -> None:
         self._entries: list[str] = []
+        for text in entries:
+            self.push(text)
         self._cursor: int | None = None  # None = not browsing; the input holds the draft
         self._draft = ""
 
-    def push(self, text: str) -> None:
+    def push(self, text: str) -> bool:
+        """Record ``text``; False for empty or duplicate-consecutive prompts (the caller persists only on True)."""
         text = text.strip()
         self._cursor = None
         if text and (not self._entries or self._entries[-1] != text):
             self._entries.append(text)
+            return True
+        return False
 
     def previous(self, current: str) -> str | None:
         """Step back (newest first); the unsent draft is kept for ``next``. None at the oldest entry."""
@@ -46,6 +54,21 @@ class PromptQueue:
     def __init__(self) -> None:
         self._items: deque[str] = deque()
         self.paused = False
+        self._listeners: list[Callable[[tuple[str, ...]], None]] = []
+
+    def subscribe(self, listener: Callable[[tuple[str, ...]], None]) -> None:
+        """Called with the pending prompts after every put, pop, clear and restore (the session store persists them)."""
+        self._listeners.append(listener)
+
+    def _changed(self) -> None:
+        for listener in self._listeners:
+            listener(self.pending)
+
+    def restore(self, prompts: Iterable[str], *, paused: bool = True) -> None:
+        """Put back prompts queued before a restart, ahead of anything queued since, paused so none auto-runs."""
+        self._items.extendleft(reversed(list(prompts)))
+        self.paused = paused or self.paused
+        self._changed()
 
     def __len__(self) -> int:
         return len(self._items)
@@ -59,12 +82,15 @@ class PromptQueue:
 
     def put(self, prompt: str) -> None:
         self._items.append(prompt)
+        self._changed()
 
     def pop(self) -> str | None:
         """Next prompt, or None if empty or paused."""
         if self.paused or not self._items:
             return None
-        return self._items.popleft()
+        prompt = self._items.popleft()
+        self._changed()
+        return prompt
 
     def pause(self) -> None:
         self.paused = True
@@ -76,4 +102,5 @@ class PromptQueue:
         n = len(self._items)
         self._items.clear()
         self.paused = False
+        self._changed()
         return n

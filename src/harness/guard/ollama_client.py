@@ -100,6 +100,8 @@ class ModelTag:
 # model, metrics, the caller's prompt-token estimate (None when it has none)
 CallListener = Callable[[str, CallMetrics, int | None], None]
 Message = Mapping[str, Any]
+# model, the exact JSON body about to be POSTed to /api/chat (the transcript inspector stores it)
+RequestListener = Callable[[str, dict[str, Any]], None]
 
 
 class OllamaClient:
@@ -109,6 +111,7 @@ class OllamaClient:
         self._http = http or httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=5.0))
         self._pins: dict[str, int] = {}
         self._listeners: list[CallListener] = []
+        self._request_listeners: list[RequestListener] = []
 
     def pin(self, model: str, num_ctx: int) -> None:
         self._pins[model] = num_ctx
@@ -118,6 +121,10 @@ class OllamaClient:
 
     def on_call(self, listener: CallListener) -> None:
         self._listeners.append(listener)
+
+    def on_request(self, listener: RequestListener) -> None:
+        """Called with (model, body) right before each ``/api/chat`` POST, so the exact payload can be recorded."""
+        self._request_listeners.append(listener)
 
     async def aclose(self) -> None:
         await self._http.aclose()
@@ -143,6 +150,8 @@ class OllamaClient:
         }
         if tools:
             body["tools"] = list(tools)
+        for request_listener in self._request_listeners:
+            request_listener(model, body)
         async with self._http.stream("POST", f"{self.host}/api/chat", json=body) as resp:
             resp.raise_for_status()
             async for line in resp.aiter_lines():

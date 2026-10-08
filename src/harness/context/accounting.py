@@ -96,3 +96,13 @@ class TokenEstimator:
         self._chars += acct.total_chars
         self._tokens += body
         self.chars_per_token = self._chars / self._tokens
+
+    def state(self) -> dict[str, float | int]:
+        """What the estimator has learned, for persisting with a session (restored by ``restore``)."""
+        return {"chars_per_token": self.chars_per_token, "chars": self._chars, "tokens": self._tokens}
+
+    def restore(self, state: Mapping[str, Any]) -> None:
+        """Adopt a ``state()`` snapshot, so the first estimate after a resume uses the learned ratio."""
+        self._chars = int(state.get("chars", 0))
+        self._tokens = int(state.get("tokens", 0))
+        self.chars_per_token = float(state.get("chars_per_token", self.chars_per_token))

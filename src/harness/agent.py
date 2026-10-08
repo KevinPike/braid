@@ -8,6 +8,7 @@ from typing import Any
 
 from strands import Agent
 from strands.agent.conversation_manager import ConversationManager
+from strands.hooks import HookCallback, HookProvider
 from strands.plugins import Plugin
 from strands.models.ollama import OllamaModel
 from strands.types.streaming import StreamEvent
@@ -79,11 +80,12 @@ def build_agent(
     conversation_manager: ConversationManager | None = None,
     plugins: list[Plugin] | None = None,
     tools: list[Any] | None = None,
+    hooks: list[HookProvider | HookCallback[Any]] | None = None,
 ) -> Agent:
     # callback_handler=None: the TUI renders the stream, nothing prints to stdout.
     return Agent(
         model=GuardedOllamaModel(client, model_id, ledger), system_prompt=system_prompt, callback_handler=None,
-        conversation_manager=conversation_manager, plugins=plugins, tools=tools,
+        conversation_manager=conversation_manager, plugins=plugins, tools=tools, hooks=hooks,
     )
 
 

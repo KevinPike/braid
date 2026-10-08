@@ -66,6 +66,18 @@ _Avoid_: Compaction history
 Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active or an approval is pending.
 _Avoid_: Backlog, pending messages
 
+**Approval**:
+The user's y/n in the TUI before a gated tool call (`shell`, `write_file`) runs; the only thing that lets one run. Held open, it holds the **Prompt queue**.
+_Avoid_: Confirmation, permission
+
+**Policy check**:
+The tev1 question "is this action safe to run in the project folder?", shown on the **Approval** prompt as advice and logged in the Decision log. Never skips the **Approval**.
+_Avoid_: Safety check, guardrail
+
+**Hook events**:
+Guard, context, decision, session and approval events published on the app's Strands hook registry (`app.hooks`); consumers register there instead of subscribing to components.
+_Avoid_: Listeners, callbacks
+
 ### Models
 
 **Daily driver**:

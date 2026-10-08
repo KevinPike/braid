@@ -1,4 +1,4 @@
-"""Read-only tools plus the optional shell, all bound to one project folder."""
+"""Read-only tools plus the optional file write and shell, all bound to one project folder."""
 
 from __future__ import annotations
 
@@ -75,17 +75,30 @@ def build_tools(
         Args:
             query: Text to look for.
         """
-        folder = notes_dir if notes_dir.is_absolute() else root / notes_dir
+        if notes_dir.is_absolute():
+            folder = notes_dir.resolve()  # the one place the user may point outside the project
+        else:
+            try:
+                folder = resolve_inside(root, str(notes_dir))
+            except ValueError:
+                return f"notes folder {notes_dir} is outside the project folder"
         if not folder.is_dir():
             return f"no notes folder at {folder}"
         needle = query.lower()
         hits: list[str] = []
         for file in sorted(folder.rglob("*")):
-            if file.suffix.lower() not in NOTE_SUFFIXES or not file.is_file():
+            if file.suffix.lower() not in NOTE_SUFFIXES:
                 continue
-            for number, line in enumerate(file.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+            relative = file.relative_to(folder)
+            try:
+                real = resolve_inside(folder, str(relative))  # a symlink leading out of the notes folder is skipped
+            except ValueError:
+                continue
+            if not real.is_file():
+                continue
+            for number, line in enumerate(real.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
                 if needle in line.lower():
-                    hits.append(f"{file.relative_to(folder)}:{number}: {line.strip()}")
+                    hits.append(f"{relative}:{number}: {line.strip()}")
                     if len(hits) >= MAX_SEARCH_HITS:
                         return "\n".join(hits) + f"\n[stopped at {MAX_SEARCH_HITS} matches]"
         return "\n".join(hits) or f"no notes mention {query!r}"
@@ -106,12 +119,34 @@ def build_tools(
     return [read_file, list_directory, search_notes, current_time]
 
 
+def build_write_file(root: Path) -> DecoratedFunctionTool[Any, Any]:
+    """The file write tool. It changes the user's files, so the app only registers it behind the approval gate."""
+    root = root.resolve()
+
+    @tool
+    def write_file(path: str, content: str) -> str:
+        """Write a text file in the project folder, replacing it if it exists. Needs the user's approval.
+
+        Args:
+            path: File path relative to the project folder; missing parent folders are created.
+            content: The full text to write.
+        """
+        target = resolve_inside(root, path)
+        if target.is_dir():
+            raise IsADirectoryError(f"{path} is a directory")
+        target.parent.mkdir(parents=True, exist_ok=True)  # resolve_inside already put target, so its parents, inside root
+        target.write_text(content, encoding="utf-8")
+        return f"wrote {len(content)} characters to {target.relative_to(root)}"
+
+    return write_file
+
+
 class ProjectSandbox(NotASandboxLocalEnvironment):
     """Runs every command with the project folder as its working directory.
 
     This is a working directory, not isolation: a command can still ``cd ..`` or use absolute
-    paths. The boundary that matters is the TUI approval prompt (M8, ADR 0003), which is why the
-    shell is off unless ``[tools] shell = true``.
+    paths. The boundary that matters is the TUI approval prompt (M8, ADR 0003): the app registers the
+    shell only behind the approval gate, and only when ``[tools] shell = true``.
     """
 
     def __init__(self, root: Path) -> None:

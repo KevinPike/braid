@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+
+from textual.binding import Binding
 from textual.widgets import Markdown, Static
+
+from harness.approval import ApprovalRequest
 
 from harness.context.accounting import Category
 from harness.context.ledger import CallRecord
@@ -106,3 +111,56 @@ class AlertBanner(Static):
         reds = [a.message for a in state.alerts if a.level == Level.RED]
         self.set_class(bool(reds), "active")
         self.update("\n".join(reds))
+
+
+class ApprovalPrompt(Static, can_focus=True):
+    """Asks the user to approve one tool call. Hidden until ``ask``; takes focus so y and n reach it.
+
+    Calls are answered one at a time (a lock), so several tool calls from one model turn queue up here.
+    """
+
+    DEFAULT_CSS = """
+    ApprovalPrompt { display: none; height: auto; padding: 0 1; border: round $warning; }
+    ApprovalPrompt.pending { display: block; }
+    """
+    BINDINGS = [
+        Binding("y", "approve", "Approve"),
+        Binding("n", "deny", "Deny"),
+        Binding("escape", "deny", "Deny"),
+    ]
+
+    def __init__(self) -> None:
+        super().__init__("", markup=False)
+        self._lock = asyncio.Lock()
+        self._future: asyncio.Future[bool] | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self._future is not None
+
+    async def ask(self, request: ApprovalRequest) -> bool:
+        async with self._lock:
+            self._future = asyncio.get_running_loop().create_future()
+            previous = self.app.focused
+            self.update(
+                f"Approve {request.tool}?   y approve · n or Esc deny\n{request.describe()}\n{request.advice.line()}"
+            )
+            self.add_class("pending")
+            self.focus()
+            try:
+                return await self._future
+            finally:
+                self._future = None
+                self.remove_class("pending")
+                if previous is not None and previous.is_attached:
+                    previous.focus()
+
+    def decide(self, approved: bool) -> None:
+        if self._future is not None and not self._future.done():
+            self._future.set_result(approved)
+
+    def action_approve(self) -> None:
+        self.decide(True)
+
+    def action_deny(self) -> None:
+        self.decide(False)

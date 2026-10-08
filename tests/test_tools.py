@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from harness.tools.builtin import ProjectSandbox, build_shell, build_tools, resolve_inside
+from harness.tools.builtin import ProjectSandbox, build_shell, build_tools, build_write_file, resolve_inside
 
 
 @pytest.fixture
@@ -72,3 +72,66 @@ async def test_shell_runs_in_the_project_folder(project: Path) -> None:
     result = await ProjectSandbox(project).execute("pwd")
     assert result.stdout.strip() == str(project.resolve())
     assert build_shell(project).tool_name == "shell"
+
+
+def test_search_notes_skips_symlinks_that_leave_the_notes_folder(project: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "secret.md").write_text("hunter2 is the password\n")
+    (project / "notes" / "leak.md").symlink_to(outside / "secret.md")
+    (project / "notes" / "inside.md").symlink_to(project / "notes" / "work.txt")  # a link that stays inside is fine
+    ts = tools_for(project)
+    assert "no notes mention" in ts["search_notes"]("hunter2")
+    assert "inside.md:1:" in ts["search_notes"]("budget")
+
+
+def test_search_notes_refuses_a_relative_notes_folder_that_escapes_the_project(project: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (outside / "a.md").write_text("secret\n")
+    (project / "linked").symlink_to(outside)
+    ts = {t.tool_name: t for t in build_tools(project, Path("linked"))}
+    assert "outside the project folder" in ts["search_notes"]("secret")
+    ts = {t.tool_name: t for t in build_tools(project, Path("../elsewhere"))}
+    assert "outside the project folder" in ts["search_notes"]("secret")
+
+
+def test_an_absolute_notes_folder_is_allowed_to_live_elsewhere(project: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+    elsewhere = tmp_path_factory.mktemp("elsewhere")
+    (elsewhere / "a.md").write_text("findme\n")
+    ts = {t.tool_name: t for t in build_tools(project, elsewhere)}
+    assert "a.md:1:" in ts["search_notes"]("findme")
+
+
+def test_write_file_writes_inside_the_project_and_creates_parents(project: Path) -> None:
+    write = build_write_file(project)
+    assert write.tool_name == "write_file" and write.tool_spec["description"]
+    assert "wrote 5 characters to docs/new/a.txt" in write("docs/new/a.txt", "hello")
+    assert (project / "docs" / "new" / "a.txt").read_text() == "hello"
+    write("docs/new/a.txt", "again")  # replaces
+    assert (project / "docs" / "new" / "a.txt").read_text() == "again"
+
+
+@pytest.mark.parametrize("bad", ["../escape.txt", "/tmp/escape.txt", "src/../../escape.txt", "../newdir/x.txt"])
+def test_write_file_refuses_paths_outside_the_project(project: Path, bad: str) -> None:
+    with pytest.raises(ValueError, match="outside the project folder"):
+        build_write_file(project)(bad, "x")
+    assert not (project.parent / "escape.txt").exists() and not (project.parent / "newdir").exists()
+
+
+def test_write_file_refuses_symlinks_that_leave_the_project_and_makes_no_folders_there(
+    project: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    (project / "link").symlink_to(outside)
+    (project / "filelink").symlink_to(outside / "target.txt")
+    write = build_write_file(project)
+    for bad in ("link/x.txt", "link/newdir/x.txt", "filelink"):
+        with pytest.raises(ValueError, match="outside the project folder"):
+            write(bad, "x")
+    assert list(outside.iterdir()) == []
+
+
+def test_write_file_refuses_a_directory(project: Path) -> None:
+    with pytest.raises(IsADirectoryError):
+        build_write_file(project)("src", "x")
+    with pytest.raises(IsADirectoryError):
+        build_write_file(project)(".", "x")

@@ -10,7 +10,7 @@ The plan, milestones and current status live in [`specs/initial.md`](specs/initi
 - **Runtime guard.** Every Ollama request goes through one client that pins `num_ctx` and `keep_alive`. Preflight picks a `num_ctx` that fits the GPU budget, calibrating KV-cache cost per model and stepping down to fallback models when needed. A watchdog polls `/api/ps` and per-call metrics to catch Spill and drift. The status bar shows model, GPU share, memory, tokens per second and keep-alive.
 - **Context visibility.** Per-call accounting by category (system prompt, tool schemas, history, tool results, current turn), a context panel with a stacked gauge, and a Truncation detector that raises a banner.
 - **Context management.** Sliding-window or summarizing compaction (summaries by a smaller model at a ceiling of `num_ctx`), offloading of large tool results to disk, and a SQLite trim log of what was dropped and why.
-- **Tools.** Read-only tools bound to one project folder (read file, list directory, search notes, current time) and an optional shell, off by default.
+- **Tools.** Read-only tools bound to one project folder (read file, list directory, search notes, current time) plus a file write tool and an optional shell (off by default). Every write and shell command waits for your y/n in the TUI.
 - **Decision layer.** A small local model (`tev1`) answers advisory questions, such as whether a prompt needs tools or whether to compact early. It never overrides the guard.
 
 ## Prerequisites
@@ -45,6 +45,26 @@ Slash commands: `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions`, `
 ## Configure
 
 Everything is in `harness.toml`: the Ollama host, the model profile (`model`, `num_ctx`, `keep_alive`, system prompt, fallbacks), the compaction strategy, tool settings, the decision layer and the data directory (`~/.harness` by default, for the trim log, calibration cache and offloaded results). Missing keys fall back to the defaults in `src/harness/config.py`.
+
+## Telemetry and evals
+
+**OpenTelemetry** is off by default. Start a local OTLP/HTTP collector and set `[telemetry] enabled = true` in `harness.toml`:
+
+```sh
+docker run --rm -p 4318:4318 otel/opentelemetry-collector                         # prints what it receives
+docker run --rm -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one              # traces at http://localhost:16686
+```
+
+Strands supplies the agent, model and tool spans; the harness adds metrics (prompt and eval tokens, tokens per second, context use, estimate error, trims, decisions, approvals, Guard alerts). Export runs on background threads and drops data quietly when no collector is listening. Exiting the TUI can wait up to about 3 seconds for a dead collector.
+
+**Evals** compare models on the hand-labelled tool-selection prompts (`tests/data/prompts.json`) using [Strands Evals](https://pypi.org/project/strands-agents-evals/), which lives in the optional `evals` dependency group:
+
+```sh
+uv run --group evals harness-eval                       # every model in [evals] models that is pulled
+uv run --group evals harness-eval --models gemma4:e4b,gemma4:e2b --num-ctx 8192 --limit 5
+```
+
+Models that are not pulled are listed as skipped. The comparison (accuracy, tokens per second, peak context use) prints as a markdown table and is saved to `~/.harness/evals/<UTC timestamp>.md` and `.json`.
 
 ## Tests
 

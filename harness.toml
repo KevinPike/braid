@@ -23,9 +23,20 @@ offload_tokens = 4000
 enabled = true
 root = "."
 notes_dir = "notes"
-shell = false                 # stays off until M8 adds the approval prompt
+shell = true                  # every command needs TUI approval (ADR 0003)
+write = true                  # write_file; every write needs TUI approval
+approve = ["shell", "write_file"]   # tools gated by approval; these two are always gated
 
 [decide]
 enabled = true
 model = "tev1:0.8b"
 max_input_tokens = 1500
+
+[telemetry]
+enabled = false               # OTLP/HTTP traces and metrics; see harness/telemetry.py for a local collector
+endpoint = "http://localhost:4318"
+service_name = "braid"
+
+[evals]
+models = ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gpt-oss:20b"]   # not-pulled models are skipped
+num_ctx = 8192

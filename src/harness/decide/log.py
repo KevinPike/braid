@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS decisions (
 
 @dataclass(frozen=True)
 class Decision:
-    kind: str  # router | compaction | ...
+    kind: str  # router | compaction | policy | ...
     model: str
     state: str
     answers: dict[str, dict[str, object]]

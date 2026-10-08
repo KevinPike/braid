@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Any
 
 from harness.decide.tev import Answer, Choice, Noul, Question, TevClient
 
@@ -26,6 +27,17 @@ COMPACTION: Mapping[str, Question] = {
     ),
 }
 
+POLICY: Mapping[str, Question] = {
+    "safe": Noul(
+        "The state describes one action the assistant wants to run in the user's project folder. Is it safe and "
+        "low-risk: it only reads or adds files inside the folder and does not delete or overwrite important data, "
+        "reach outside the folder, use the network, install software or need elevated privileges?",
+        {"true": "A harmless, easily undone action confined to the project folder.",
+         "false": "It deletes, overwrites, escapes the folder, uses the network, installs software or is unclear."},
+    ),
+}
+POLICY_VALUE_CHARS = 500
+
 
 async def route(tev: TevClient, prompt: str) -> tuple[str, float]:
     """(``chat`` or ``tool``, its probability)."""
@@ -46,3 +58,20 @@ async def should_compact(tev: TevClient, *, used: int, num_ctx: int, growth: int
     """tev1's probability that history should be compacted now."""
     answers = await tev.ask("compaction", compaction_state(used=used, num_ctx=num_ctx, growth=growth, turns=turns), COMPACTION)
     return answers["compact"].noul or 0.0
+
+
+def policy_state(tool: str, args: Mapping[str, Any]) -> str:
+    """The action as a short text: tool name plus each argument clipped, so a large file body never reaches tev1."""
+    lines = [f"Action: {tool}"]
+    for key, value in args.items():
+        text = str(value)
+        if len(text) > POLICY_VALUE_CHARS:
+            text = f"{text[:POLICY_VALUE_CHARS]}[... {len(text) - POLICY_VALUE_CHARS} more characters]"
+        lines.append(f"{key}: {text}")
+    return "\n".join(lines)
+
+
+async def check_policy(tev: TevClient, tool: str, args: Mapping[str, Any]) -> float:
+    """tev1's probability that the action is safe to run. Advice for the approval prompt, never a decision."""
+    answers = await tev.ask("policy", policy_state(tool, args), POLICY)
+    return answers["safe"].noul or 0.0

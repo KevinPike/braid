@@ -25,6 +25,7 @@ class CallRecord:
     strands_estimate: int | None
     prompt_eval_count: int | None = None  # filled when the call completes
     eval_count: int | None = None
+    model: str = ""  # the model the call went to; empty for records built without one
 
     @property
     def measured(self) -> bool:
@@ -60,6 +61,11 @@ class Ledger:
     def subscribe(self, listener: Callable[[CallRecord], None]) -> None:
         self._listeners.append(listener)
 
+    @property
+    def pending(self) -> CallRecord | None:
+        """The record of the call being sent (estimate only), or None between calls."""
+        return self._pending[1] if self._pending is not None else None
+
     def before_call(
         self,
         model: str,
@@ -70,7 +76,7 @@ class Ledger:
         """Account the request about to be sent; returns the total token estimate."""
         acct = account(messages, tools)
         cats = self.estimator.estimate(acct)
-        record = CallRecord(self._num_ctx(model) or 0, cats, sum(cats.values()), strands_estimate)
+        record = CallRecord(self._num_ctx(model) or 0, cats, sum(cats.values()), strands_estimate, model=model)
         self._pending = (acct, record)
         self._emit(record)
         return record.estimate
@@ -82,7 +88,7 @@ class Ledger:
         self._pending = None
         done = CallRecord(
             rec.num_ctx, rec.categories, rec.estimate, rec.strands_estimate,
-            metrics.prompt_eval_count, metrics.eval_count,
+            metrics.prompt_eval_count, metrics.eval_count, rec.model,
         )
         if rec.num_ctx and rec.estimate < LEARN_BELOW_CTX_SHARE * rec.num_ctx:
             self.estimator.observe(acct, metrics.prompt_eval_count)

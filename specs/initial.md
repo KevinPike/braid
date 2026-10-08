@@ -4,24 +4,27 @@ Source: Claude Docs "Local Agent Harness Plan" (2026-10-08). Milestones are zero
 
 ## Where we left off (2026-10-08)
 
-**Done:** M0–M4, all with their validation gates as pytest tests (118 pass, 3 live tests skipped by default; `mypy --strict` clean). **Next:** M5 (MCP). Commits `9788338` to `2417067` are M3, M4 and the fixes between them.
+**Done:** M0–M4 and M7–M9, all with their validation gates as pytest tests (185 pass, 4 live tests skipped by default; `mypy --strict` clean). **Skipped for now:** M5 (MCP) and M6 (Skills); there are no MCP servers or skills to use yet. **Next:** M10 (stretch), or M5/M6 when there is something to connect. Commits `9788338` to `2417067` are M3, M4 and the fixes between them.
 
-**Run it:** `uv run harness`; commands are `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions` and `/exit`. Live gates: `HARNESS_LIVE=1 uv run pytest tests/test_live_recall.py tests/test_live_tools.py`.
+**Run it:** `uv run harness [config.toml] [--resume ID | --continue]`; commands are `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions`, `/sessions`, `/resume <id>`, `/fork [id]`, `/new`, `/inspect [n]` and `/exit`; `ctrl+t` opens the transcript inspector. Model comparison: `uv run --group evals harness-eval`. Live gates: `HARNESS_LIVE=1 uv run pytest tests/test_live_recall.py tests/test_live_tools.py tests/test_live_evals.py`.
 
 **Never run end to end by a person against the full stack.** Everything above is tested with fakes, plus the live gate tests. The first real session should check, in this order:
 
 1. The status bar through startup, a `/model` switch and a compaction (known flicker: `specs/bugs.md`).
 2. A long chat until compaction fires: the summarizer (`gemma4:e2b`) loading and unloading, and the "tools" segment of the context panel.
 3. The M2 note that Ollama may report a low `prompt_eval_count` on a cached prefix, which would look like Truncation and, now, force a compaction.
+4. An approval prompt for a real shell command and a file write (y, n, and Ctrl-C while it is open), and the tev1 policy line it shows.
+5. Kill the app mid-session, then `--continue`: history, prompt recall and a paused restored queue.
 
 **Open items carried forward**
 
 - Status bar flicker when a model reloads: `specs/bugs.md`.
 - Preflight's `helpers` budget does not yet reserve memory for the summarizer or tev1.
-- The shell tool is a working directory, not isolation; it stays off until M8's approval prompt.
+- The shell tool is a working directory, not isolation; since M8 every command waits for approval, and `harness.toml` turns it on (the config default is still off).
 - The router runs on every prompt but nothing acts on it until M10; the 20-prompt test set is easy and self-labelled.
 - Offloading is only tested at the storage level; M4's tools are the first thing that can produce a large tool result in practice.
-- Not yet done from the stack list: Strands Evals (M9), OpenTelemetry (M9), persistence and resume (M7).
+- The session `calls` table stores each request's full body, so it grows roughly quadratically over a long session; no pruning yet.
+- The tev1 policy question and its 0.5 safe/risky threshold are untested against a live tev1.
 
 ## Goal and scope
 
@@ -245,49 +248,72 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 - Gates: 3 is unit-tested (`tests/test_tev.py`, respx). Gates 1 and 2 are in `tests/test_live_tools.py` (`HARNESS_LIVE=1`, hand-labelled set in `tests/data/prompts.json`): `gemma4:e4b` picked the right tool, or none, on 20/20 and the tev1:0.8b router agreed with the labels on 20/20, both with the real tools. The set is small and easy, so treat 20/20 as "the plumbing works", not as a benchmark.
 - Tools (`tools/builtin.py`): `read_file`, `list_directory`, `search_notes`, `current_time`, all bound to `[tools] root`; `..`, absolute paths and symlinks out of it are refused. `search_notes` greps `notes/` under the root.
-- Shell: Strands' `make_shell` over a sandbox that fixes the working directory to the project folder. That is a working directory, not isolation (a command can `cd ..`), so `[tools] shell` is off by default until M8's approval prompt (ADR 0003).
+- Shell: Strands' `make_shell` over a sandbox that fixes the working directory to the project folder. That is a working directory, not isolation (a command can `cd ..`), so `[tools] shell` was off by default until M8's approval prompt (ADR 0003).
 - Tool-schema cost: it is the "tools" segment of the context panel on every call; `/tools` lists each schema's estimated tokens.
 - tev1 (`decide/`): every question and its probabilities go to the Decision log (SQLite at `~/.harness/decisions.db`, `/decisions` in the TUI). Input is capped at 1,500 tokens (3 chars per token, deliberately pessimistic, questions included); over the cap the state is summarized, and if it is still over, the call is refused and logged. tev1 sits outside the guard client because its ~2K window is fixed by the model, so there is no `num_ctx` to pin; it is marked a Watchdog helper like the summarizer.
 - The router runs on every prompt in the background and is logged only; nothing acts on it until model routing (M10). The compaction question is asked once the window is 80% full and can only bring a compaction forward; the 90% projection stays the hard rule, and a failed or negative answer changes nothing.
 
-### M5 — MCP
+### M5 — MCP — SKIPPED (2026-10-08: no MCP servers to use yet)
 
 - [ ] Connect one or two local MCP servers (for example filesystem and a notes server)
 - [ ] Per-server schema cost in the context panel; toggle servers on and off live
 
 **Validation:** turning a server off drops its schema tokens from the next call's count.
 
-### M6 — Skills
+### M6 — Skills — SKIPPED (2026-10-08: no skills to use yet)
 
 - [ ] Strands Skills plugin with three local skills
 - [ ] Skill selection with `nomic-embed-text` so only matching skills load
 
 **Validation:** context with skills loaded on demand is measurably smaller than with all skills always loaded, with no drop on the M4 test set.
 
-### M7 — Sessions
+### M7 — Sessions — IMPLEMENTED (gates unit-tested with fakes; see notes)
 
-- [ ] Persist, resume and fork sessions; store the model, `num_ctx` and calibration with each
-- [ ] Persist prompt history per session (and globally for the input recall) so Up/Down survives restarts; restore any still-queued prompts on resume
-- [ ] Transcript inspector showing each call's exact payload and token count
+- [x] Persist, resume and fork sessions; store the model, `num_ctx` and calibration with each
+- [x] Persist prompt history per session (and globally for the input recall) so Up/Down survives restarts; restore any still-queued prompts on resume
+- [x] Transcript inspector showing each call's exact payload and token count
 
 **Validation:** kill the app mid-session, restart, resume, and the next call's `prompt_eval_count` matches the pre-crash estimate within 5%.
 
-### M8 — Hooks and interventions
+**Status notes (2026-10-08):**
 
-- [ ] Approval prompt in the TUI before any shell command or file write
-- [ ] tev1 policy check as a first pass before the approval prompt (advisory only)
-- [ ] All guard and context events published through hooks, not ad-hoc calls
+- Gate: `tests/test_sessions.py` runs turns through a real Ledger against a fake Ollama (chars/4), "kills" without any close path, reopens the store and resumes; the next estimate is within 5%, and a cold estimator on the same request is not, so persisting the estimator's learned ratio is what makes it pass.
+- Store: `session/store.py`, SQLite at `~/.harness/sessions.db` (sessions, messages, prompts, queue, calls). Strands' `FileSessionManager` is not used: it appends, and compaction rewrites history in place. The message snapshot is rewritten on every `MessageAddedEvent`, after each turn, compaction and model switch.
+- Resume drops an unfinished tail (a turn killed mid-reply) and says so; the dropped prompt stays in history. Restored queued prompts come back paused. Resume preflights the stored model and `num_ctx` first, then the profile's.
+- Calibration stored per session is the estimator state plus the preflight budget and weights; there is no KV bytes per token to store while calibration is blocked (ADR 0002).
+- Transcript inspector: `ctrl+t` or `/inspect [n]`; each call's exact `/api/chat` body (captured by `OllamaClient.on_request`), estimate, Ollama count and error. Summarizer calls are recorded too.
 
-- [ ] The prompt queue does not advance while an approval prompt is open
+### M8 — Hooks and interventions — IMPLEMENTED (gates unit-tested with fakes; see notes)
+
+- [x] Approval prompt in the TUI before any shell command or file write
+- [x] tev1 policy check as a first pass before the approval prompt (advisory only)
+- [x] All guard and context events published through hooks, not ad-hoc calls
+
+- [x] The prompt queue does not advance while an approval prompt is open
 
 **Validation:** a write or shell command never runs without approval, including when tev1 says it is safe; a queued prompt never starts while an approval is pending.
 
-### M9 — Observability and evals
+**Status notes (2026-10-08):**
 
-- [ ] OpenTelemetry traces and metrics to a local collector
-- [ ] Strands Evals suite over the M4 test set, run against each model in the lineup
+- Gates: `tests/test_approval.py` drives a real Strands Agent with a scripted fake model. A denied (or failing) approver leaves no file and no shell side effect even with tev1 at p=0.99 safe; an advisor that fails still asks the approver; a queued prompt never starts while an approval is open; Ctrl-C during an approval denies it and pauses the queue.
+- `approval.py`: `ApprovalGate` is an async `BeforeToolCallEvent` hook that sets `cancel_tool` first and clears it only on an explicit approval (fail closed). `shell` and `write_file` are always gated; `[tools] approve` can add tools, never remove those two.
+- New `write_file` tool, bound to the root like the read tools. The `search_notes` symlink bug is fixed (`specs/bugs.md`).
+- tev1 policy check (`check_policy`, kind `policy` in the Decision log) runs first with a 10 s timeout; its line ("safe p=0.91 (advisory)" or "unavailable") is shown in the prompt and never decides.
+- Approval prompt is an inline widget, not a modal, so the input stays visible; it takes focus while open (y approves, n or Esc denies).
+- `hooks.py`: watchdog, ledger, Trim log, Decision log, guard client and queue each publish once into a Strands `HookRegistry` (`app.hooks`); every TUI consumer and the session store register there.
+
+### M9 — Observability and evals — IMPLEMENTED (gates unit-tested with fakes; see notes)
+
+- [x] OpenTelemetry traces and metrics to a local collector
+- [x] Strands Evals suite over the M4 test set, run against each model in the lineup
 
 **Validation:** one command produces a per-model comparison of accuracy, tokens per second and peak context use.
+
+**Status notes (2026-10-08):**
+
+- Gate: `tests/test_evals.py` runs the command's entrypoint over two fake models and a not-pulled one and checks the table, `.md` and `.json`. Live: `uv run --group evals harness-eval --models gemma4:e4b --limit 3` gave 3/3, about 100 tok/s, peak 1,216 tokens (15% of 8,192) in about 25 s (`tests/test_live_evals.py`).
+- Evals (`evals/`): Strands Evals (`strands-agents-evals`, `evals` dependency group) `Case`s over `tests/data/prompts.json` with a deterministic first-tool evaluator; no LLM judge, no cloud credentials. Each model is preflighted at `[evals] num_ctx` through the guard client and unloaded after; models not pulled are listed as skipped. Reports go to `~/.harness/evals/`.
+- Telemetry (`telemetry.py`, `[telemetry] enabled = false`): Strands spans plus harness metrics from `app.hooks` (tokens, tokens per second, context share, estimate error, trims, decisions, approvals, alert transitions) over OTLP/HTTP to `localhost:4318`. A missing collector is silent; it costs about 3 s at exit.
 
 ### M10 — Stretch
 

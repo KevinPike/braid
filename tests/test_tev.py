@@ -11,7 +11,7 @@ from harness.context.compaction import Compactor
 from harness.context.ledger import CallRecord, Ledger
 from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
-from harness.decide.questions import ROUTER, compaction_state, route, should_compact
+from harness.decide.questions import ROUTER, check_policy, compaction_state, policy_state, route, should_compact
 from harness.decide.tev import Choice, Noul, Score, TevClient, TevInputTooLarge, estimate_tokens
 from textual.widgets import Input, Static
 
@@ -190,3 +190,20 @@ async def test_each_prompt_is_routed_and_logged_without_blocking_the_reply() -> 
         await pilot.press("enter")
         await pilot.pause(0.3)
     assert [d.kind for d in log.entries()] == ["router"]
+
+
+@respx.mock
+async def test_policy_check_is_a_noul_logged_as_kind_policy() -> None:
+    r = respx.post(URL).mock(return_value=httpx.Response(200, json={"answers": {"safe": {"type": "noul", "noul": 0.93}}}))
+    log = DecisionLog()
+    p = await check_policy(TevClient(HOST, log=log), "shell", {"command": "ls -la"})
+    assert p == 0.93
+    body = json.loads(r.calls.last.request.content)
+    assert body["questions"]["safe"]["type"] == "noul" and body["state"] == "Action: shell\ncommand: ls -la"
+    [d] = log.entries()
+    assert d.kind == "policy" and "safe=true@0.93" in d.line()
+
+
+def test_policy_state_clips_large_arguments() -> None:
+    state = policy_state("write_file", {"path": "a.txt", "content": "x" * 5000})
+    assert "path: a.txt" in state and "4500 more characters" in state and len(state) < 700

@@ -1,14 +1,17 @@
 import asyncio
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Any
 
 import pytest
+from strands.hooks import HookRegistry
 from textual.pilot import Pilot
 from textual.widgets import Input, Static
 
 from harness.app import HarnessApp, Replier
-from harness.chat import Reply
+from harness.chat import ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
+from harness.hooks import CallRecorded, DecisionRecorded, GuardStateChanged, QueueChanged, TrimRecorded
 
 
 async def fast_reply(prompt: str) -> AsyncIterator[str]:
@@ -265,3 +268,58 @@ async def test_model_without_backend_says_so() -> None:
         await submit(app, pilot, "/model x")
         await pilot.pause(0.3)
         assert any("no model backend" in str(n.render()) for n in app.query(".note"))
+
+
+class Recorder:
+    """A HookProvider (what an OpenTelemetry provider will be) that remembers every harness event."""
+
+    def __init__(self) -> None:
+        self.events: list[object] = []
+
+    def register_hooks(self, registry: HookRegistry, **kwargs: object) -> None:
+        for event_type in (GuardStateChanged, CallRecorded, TrimRecorded, DecisionRecorded, QueueChanged):
+            registry.add_callback(event_type, lambda e: self.events.append(e))
+
+    def of(self, kind: type) -> list[Any]:
+        return [e for e in self.events if isinstance(e, kind)]
+
+
+@pytest.mark.asyncio
+async def test_components_publish_through_app_hooks_and_the_panel_and_bar_follow() -> None:
+    from tests.guard.fakes import GIB, FakeBackend
+    from harness.context.trimlog import TrimEntry
+    from harness.decide.log import Decision
+    from harness.guard.watchdog import Watchdog
+    from harness.status import StatusBar
+
+    backend = FakeBackend(models={"m": (10 * GIB, 1.0)})
+    backend.pins["m"] = 8192
+    await backend.warm("m")
+    wd = Watchdog(backend, pinned=backend.pins.get, interval=0.05, memory_level=lambda: 1)
+    app = HarnessApp(HarnessConfig(), replier=fast_reply, watchdog=wd)
+    recorder = Recorder()
+    app.hooks.add_hook(recorder)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        app.ledger.before_call("m", [{"role": "user", "content": "hello there"}], None)
+        app.trimlog.record(TrimEntry("summarize", "test", 2, 100, 40))
+        app.decisions.record(Decision("policy", "tev1", "Action: shell", {"safe": {"type": "noul", "noul": 0.9}}))
+        app.queue.put("queued")
+        await pilot.pause(0.2)
+        assert recorder.of(GuardStateChanged) and recorder.of(GuardStateChanged)[-1].state is wd.state
+        assert recorder.of(CallRecorded)[0].record is app.ledger.pending
+        assert recorder.of(TrimRecorded)[0].entry.reason == "test"
+        assert recorder.of(DecisionRecorded)[0].decision.kind == "policy"
+        assert recorder.of(QueueChanged)[0].pending == ("queued",)
+        assert "estimate" in str(app.query_one(ContextPanel).render())  # the panel is a consumer of CallRecorded
+        assert "m" in str(app.query_one(StatusBar).render())
+        notes = [str(n.render()) for n in app.query(Static) if n.has_class("note")]
+        assert any(n.startswith("trim ") for n in notes) and any(n.startswith("decide ") for n in notes)
+
+
+def test_components_are_subscribed_once_by_the_hooks_adapter() -> None:
+    app = HarnessApp(HarnessConfig(), replier=fast_reply)
+    app.hooks.attach_trimlog(app.trimlog)  # attaching again must not double-publish
+    app.hooks.attach_ledger(app.ledger)
+    assert len(app.trimlog._listeners) == 1 and len(app.ledger._listeners) == 1 and len(app.decisions._listeners) == 1
+    assert len(app.queue._listeners) == 1
