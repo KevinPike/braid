@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 from strands import Agent
@@ -49,6 +50,28 @@ class PromptInput(Input):
 Replier = Callable[[str], AsyncIterator[str]]
 
 
+@dataclass(frozen=True)
+class Command:
+    """A slash command. Immediate ones run on submit; the rest wait their turn in the prompt queue."""
+
+    usage: str
+    immediate: bool
+
+
+COMMANDS: dict[str, Command] = {
+    "exit": Command("/exit", immediate=True),
+    "model": Command("/model [name]", immediate=False),  # swaps the model, so it must not interrupt queued prompts
+}
+
+
+def parse_command(text: str) -> tuple[str, str] | None:
+    """``/name args`` -> (name, args); None for ordinary prompts."""
+    if not text.startswith("/"):
+        return None
+    name, _, args = text[1:].partition(" ")
+    return name, args.strip()
+
+
 class HarnessApp(App[None]):
     CSS = """
     #chat { height: 1fr; padding: 0 1; }
@@ -72,6 +95,7 @@ class HarnessApp(App[None]):
         self.config = config
         self._client: OllamaClient | None = None
         self._agent: Agent | None = None
+        self._model: str | None = None
         self._watchdog = watchdog
         if replier is None:
             # Real mode: preflight (run on mount) pins num_ctx and builds the agent.
@@ -116,6 +140,7 @@ class HarnessApp(App[None]):
         assert self._client is not None
         profile = self.config.profile
         cands = [Candidate(m, profile.num_ctx) for m in (profile.model, *profile.fallbacks)]
+        await self._note(f"preflight: loading {cands[0].model} at num_ctx {cands[0].num_ctx} (this can take a while)")
         try:
             result = await run_preflight(self._client, cands, env=os.environ, gpu_limit=system_gpu_limit())
         except PreflightError as exc:
@@ -130,6 +155,7 @@ class HarnessApp(App[None]):
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
         self._agent = build_agent(self._client, result.model, profile.system_prompt, self.ledger)
+        self._model = result.model
         self._pump()
 
     def _guarded_reply(self, prompt: str) -> AsyncIterator[str]:
@@ -160,7 +186,8 @@ class HarnessApp(App[None]):
             label = f"{n} queued"
         else:
             label = ""
-        self.query_one(PromptInput).border_title = label
+        for prompt in self.query(PromptInput):  # empty while the app is shutting down
+            prompt.border_title = label
 
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         text = event.value.strip()
@@ -172,9 +199,69 @@ class HarnessApp(App[None]):
             self._refresh_queue_label()
             return
         self.history.push(text)
+        parsed = parse_command(text)
+        if parsed is not None:
+            name, _ = parsed
+            command = COMMANDS.get(name)
+            if command is None:
+                await self._note(f"unknown command: /{name} (commands: {', '.join(c.usage for c in COMMANDS.values())})")
+                return
+            if command.immediate:
+                await self._run_command(text)
+                return
         self.queue.put(text)
         self._pump()
         self._refresh_queue_label()
+
+    async def _run_command(self, text: str) -> None:
+        parsed = parse_command(text)
+        assert parsed is not None
+        name, args = parsed
+        if name == "exit":
+            self.exit()
+        elif name == "model":
+            await self._model_command(args)
+
+    async def _model_command(self, name: str) -> None:
+        if self._client is None:
+            await self._note("/model: no model backend in this session")
+            return
+        if not name:
+            current = self._model or "none"
+            tags = ", ".join(t.name for t in await self._client.tags())
+            await self._note(f"current model: {current}; available: {tags}")
+            return
+        await self._switch_model(name)
+
+    async def _switch_model(self, name: str) -> None:
+        """Unload the old model, then preflight and load the new one at the profile's num_ctx."""
+        assert self._client is not None
+        if name == self._model:
+            await self._note(f"already on {name}")
+            return
+        profile = self.config.profile
+        old = self._model
+        await self._note(f"switching to {name} at num_ctx {profile.num_ctx} (unloading {old or 'nothing'} first; this can take a while)")
+        if old is not None:
+            await self._client.unload(old)
+        try:
+            result = await run_preflight(self._client, [Candidate(name, profile.num_ctx)], env=os.environ, gpu_limit=system_gpu_limit())
+        except PreflightError as exc:
+            await self._note(f"switch failed: {exc}")
+            if old is not None:
+                await self._note(f"staying on {old}; it reloads on the next prompt")
+            return
+        for check in result.checks:
+            if check.severity.value in ("warn", "fail"):
+                await self._note(f"preflight {check.severity.value}: {check.detail}")
+        if self._watchdog is not None:
+            self._watchdog.set_expected_size(result.model, result.weights)
+        previous = self._agent
+        self._agent = build_agent(self._client, result.model, profile.system_prompt, self.ledger)
+        if previous is not None:
+            self._agent.messages.extend(previous.messages)  # the conversation carries over
+        self._model = result.model
+        await self._note(f"now on {result.model} at num_ctx {result.num_ctx} (budget {result.budget}); conversation kept")
 
     def _pump(self) -> None:
         """Start the next queued prompt if idle, not paused and no red Alert is active."""
@@ -192,6 +279,16 @@ class HarnessApp(App[None]):
 
     async def _generate(self, prompt: str, run_id: int) -> None:
         chat = self.query_one("#chat", VerticalScroll)
+        if parse_command(prompt) is not None:  # a queued slash command
+            try:
+                await self._run_command(prompt)
+            except Exception as exc:
+                await self._note(f"error: {exc}")
+            finally:
+                if run_id == self._run_id:
+                    self._busy = False
+                    self._pump()
+            return
         reply = Reply()
         try:
             await chat.mount(Static(f"you: {prompt}", classes="user", markup=False), reply)

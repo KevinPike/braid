@@ -9,6 +9,7 @@ from enum import Enum
 
 from harness.guard.backend import Backend
 from harness.guard.budget import GIB, kv_bytes_per_token, kv_fixed_bytes, max_ctx
+from harness.guard.ollama_client import UnsupportedModelError
 
 MIN_VERSION = (0, 35)
 MARGIN = int(1.5 * GIB)
@@ -79,10 +80,14 @@ async def run_preflight(
     checks: list[Check] = []
 
     version = await backend.version()
-    if _version_tuple(version) < MIN_VERSION:
+    if _version_tuple(version) == (0, 0):
+        # A local build reports 0.0.0, so there is nothing to compare against MIN_VERSION.
+        checks.append(Check("version", Severity.WARN, f"Ollama {version} looks like a local build; version check skipped"))
+    elif _version_tuple(version) < MIN_VERSION:
         checks.append(Check("version", Severity.FAIL, f"Ollama {version} is older than 0.35"))
         raise PreflightError(f"Ollama {version} is older than 0.35", checks)
-    checks.append(Check("version", Severity.OK, f"Ollama {version}"))
+    else:
+        checks.append(Check("version", Severity.OK, f"Ollama {version}"))
 
     parallel = env.get("OLLAMA_NUM_PARALLEL", "")
     if parallel == "1":
@@ -104,7 +109,11 @@ async def run_preflight(
             continue
         # Budget from architecture, not /api/ps: ps undercounts when a draft model is loaded
         # (ollama#17251). Weights are the on-disk size; calibration is only a cross-check.
-        info = await backend.show(cand.model)
+        try:
+            info = await backend.show(cand.model)
+        except UnsupportedModelError as exc:
+            checks.append(Check("architecture", Severity.WARN, str(exc)))
+            continue
         budget = max_ctx(
             gpu_limit=gpu_limit, margin=MARGIN, helpers=helpers, weights=tag.size,
             overhead=OVERHEAD + kv_fixed_bytes(info), kv_per_token=kv_bytes_per_token(info),

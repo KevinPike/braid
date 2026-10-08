@@ -210,3 +210,58 @@ async def test_streamed_markdown_with_unclosed_fence_equals_one_shot_render() ->
         rendered = " ".join(s for _, s in shape(streamed))
         for literal in ("snake_case_name", "2 * 3 * 4", "#notaheading"):
             assert literal in rendered
+
+
+@pytest.mark.asyncio
+async def test_slash_exit_runs_immediately_while_generating_and_skips_the_queue() -> None:
+    app = HarnessApp(HarnessConfig(), replier=slow_reply)
+    async with app.run_test() as pilot:
+        app.query_one(Input).value = "hi"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.generating
+        app.query_one(Input).value = "/exit"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.queue.pending == ()
+    assert not app._running
+
+
+@pytest.mark.asyncio
+async def test_unknown_slash_command_is_noted_not_queued() -> None:
+    app = HarnessApp(HarnessConfig(), replier=fast_reply)
+    async with app.run_test() as pilot:
+        app.query_one(Input).value = "/nope"
+        await pilot.press("enter")
+        await pilot.pause(0.1)
+        assert app.queue.pending == () and not app.generating
+        assert any("unknown command: /nope" in str(n.render()) for n in app.query(".note"))
+
+
+@pytest.mark.asyncio
+async def test_model_command_waits_for_queued_prompts_but_exit_does_not() -> None:
+    ran, replier = make_recorder()
+    app = HarnessApp(HarnessConfig(), replier=replier)
+    switched: list[str] = []
+
+    async def fake_model_command(args: str) -> None:
+        switched.append(args)
+        ran.append(f"/model {args}")
+
+    app._model_command = fake_model_command  # type: ignore[method-assign,assignment]
+    async with app.run_test() as pilot:
+        for text in ["one", "two", "/model other", "three"]:
+            await submit(app, pilot, text)
+        await pilot.pause(1.5)
+        assert ran == ["one", "two", "/model other", "three"]
+        assert switched == ["other"]
+        assert [r.text for r in app.query(Reply)] == ["reply to one", "reply to two", "reply to three"]
+
+
+@pytest.mark.asyncio
+async def test_model_without_backend_says_so() -> None:
+    app = HarnessApp(HarnessConfig(), replier=fast_reply)
+    async with app.run_test() as pilot:
+        await submit(app, pilot, "/model x")
+        await pilot.pause(0.3)
+        assert any("no model backend" in str(n.render()) for n in app.query(".note"))

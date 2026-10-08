@@ -4,7 +4,7 @@ import httpx
 import pytest
 import respx
 
-from harness.guard.ollama_client import CallMetrics, OllamaClient, RunningModel, UnpinnedModelError
+from harness.guard.ollama_client import CallMetrics, OllamaClient, RunningModel, UnpinnedModelError, UnsupportedModelError
 
 HOST = "http://ollama.test"
 
@@ -119,3 +119,34 @@ async def test_show_accepts_per_layer_kv_head_list(client: OllamaClient) -> None
         "g.attention.head_count_kv": [8, 8, 1], "g.context_length": 1024, "g.embedding_length": 64,
     }}))
     assert (await client.show("m")).kv_heads == (8, 8, 1)
+
+
+@respx.mock
+async def test_show_treats_null_optional_fields_as_absent(client: OllamaClient) -> None:
+    respx.post(f"{HOST}/api/show").mock(return_value=httpx.Response(200, json={"model_info": {
+        "general.architecture": "g", "g.block_count": 3, "g.attention.head_count": 16,
+        "g.context_length": 1024, "g.embedding_length": 64,
+        "g.attention.sliding_window_pattern": None, "g.attention.shared_kv_layers": None,
+        "g.attention.sliding_window": None,
+    }}))
+    info = await client.show("m")
+    assert (info.sliding_pattern, info.shared_kv_layers, info.sliding_window) == ((), 0, 0)
+
+
+@respx.mock
+async def test_show_without_attention_fields_is_unsupported(client: OllamaClient) -> None:
+    respx.post(f"{HOST}/api/show").mock(return_value=httpx.Response(200, json={"model_info": {
+        "general.architecture": "g", "g.block_count": 3, "g.context_length": 1024, "g.embedding_length": 64,
+    }}))
+    with pytest.raises(UnsupportedModelError, match="KV cost"):
+        await client.show("m")
+
+
+@respx.mock
+async def test_show_requests_verbose_so_per_layer_arrays_are_not_elided(client: OllamaClient) -> None:
+    route = respx.post(f"{HOST}/api/show").mock(return_value=httpx.Response(200, json={"model_info": {
+        "general.architecture": "g", "g.block_count": 3, "g.attention.head_count": 16,
+        "g.context_length": 1024, "g.embedding_length": 64,
+    }}))
+    await client.show("m")
+    assert json.loads(route.calls.last.request.content)["verbose"] is True

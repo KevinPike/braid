@@ -9,6 +9,7 @@ from harness.guard.preflight import (
     gpu_limit_bytes,
     run_preflight,
 )
+from harness.guard.ollama_client import ModelInfo, UnsupportedModelError
 from tests.guard.fakes import GIB, FakeBackend
 
 ENV_OK = {"OLLAMA_NUM_PARALLEL": "1"}
@@ -55,6 +56,13 @@ async def test_old_ollama_fails_loudly(tmp_path: Path) -> None:
         await run(backend, tmp_path, [Candidate("m", 4096)])
 
 
+async def test_local_build_version_passes_with_a_warning(tmp_path: Path) -> None:
+    backend = FakeBackend(models={"m": (GIB, 1000.0)}, version="0.0.0")
+    res = await run(backend, tmp_path, [Candidate("m", 4096)])
+    version = next(c for c in res.checks if c.name == "version")
+    assert version.severity is Severity.WARN and "local build" in version.detail
+
+
 async def test_missing_model_is_skipped_with_failure_detail(tmp_path: Path) -> None:
     backend = FakeBackend(models={"have": (GIB, 1000.0)})
     res = await run(backend, tmp_path, [Candidate("missing", 4096), Candidate("have", 4096)])
@@ -84,3 +92,17 @@ async def test_ps_undercount_means_full_gpu_cannot_be_confirmed(tmp_path: Path) 
     assert res.model == "m"  # still usable
     full = next(c for c in res.checks if c.name == "full_gpu")
     assert full.severity is Severity.WARN and "17251" in full.detail
+
+
+async def test_model_without_architecture_fields_is_skipped_with_a_warning(tmp_path: Path) -> None:
+    class MlxBackend(FakeBackend):
+        async def show(self, model: str) -> ModelInfo:
+            if model == "mlx":
+                raise UnsupportedModelError("mlx: no attention fields, so its KV cost cannot be computed")
+            return await super().show(model)
+
+    backend = MlxBackend(models={"mlx": (GIB, 1000.0), "m": (GIB, 1000.0)})
+    res = await run(backend, tmp_path, [Candidate("mlx", 4096), Candidate("m", 4096)])
+    assert res.model == "m"
+    assert any(c.name == "architecture" and c.severity is Severity.WARN for c in res.checks)
+

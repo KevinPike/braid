@@ -18,6 +18,10 @@ NS = 1_000_000_000
 PS_TRUST_RATIO = 0.5
 
 
+class UnsupportedModelError(RuntimeError):
+    """``/api/show`` lacks the architecture fields the KV budget needs (e.g. MLX safetensors models)."""
+
+
 class UnpinnedModelError(RuntimeError):
     """A request was made for a model with no pinned num_ctx."""
 
@@ -203,11 +207,14 @@ class OllamaClient:
         return [ModelTag(m["name"], m.get("digest", ""), m.get("size", 0)) for m in resp.json().get("models", [])]
 
     async def show(self, model: str) -> ModelInfo:
-        resp = await self._http.post(f"{self.host}/api/show", json={"model": model})
+        # verbose: without it Ollama nulls per-layer arrays (head_count_kv, sliding_window_pattern)
+        resp = await self._http.post(f"{self.host}/api/show", json={"model": model, "verbose": True})
         resp.raise_for_status()
         data = resp.json()
         info: Mapping[str, Any] = data["model_info"]
         arch = info["general.architecture"]
+        if f"{arch}.attention.head_count" not in info:
+            raise UnsupportedModelError(f"{model}: /api/show has no {arch}.attention.* fields, so its KV cost cannot be computed")
         heads = info[f"{arch}.attention.head_count"]
         attn = f"{arch}.attention"
         key = info.get(f"{attn}.key_length", info[f"{arch}.embedding_length"] // heads)
@@ -217,11 +224,11 @@ class OllamaClient:
             key_length=key,
             value_length=info.get(f"{attn}.value_length", key),
             trained_ctx=info[f"{arch}.context_length"],
-            sliding_pattern=tuple(info.get(f"{attn}.sliding_window_pattern", ())),
-            shared_kv_layers=info.get(f"{attn}.shared_kv_layers", 0),
-            sliding_window=info.get(f"{attn}.sliding_window", 0),
-            key_length_swa=info.get(f"{attn}.key_length_swa", 0),
-            value_length_swa=info.get(f"{attn}.value_length_swa", 0),
+            sliding_pattern=tuple(info.get(f"{attn}.sliding_window_pattern") or ()),
+            shared_kv_layers=info.get(f"{attn}.shared_kv_layers") or 0,
+            sliding_window=info.get(f"{attn}.sliding_window") or 0,
+            key_length_swa=info.get(f"{attn}.key_length_swa") or 0,
+            value_length_swa=info.get(f"{attn}.value_length_swa") or 0,
             capabilities=tuple(data.get("capabilities", ())),
         )
 
