@@ -17,6 +17,8 @@ class ProfileConfig(BaseModel):
     num_ctx: int = 32768
     keep_alive: str = "30m"
     system_prompt: str = "You are a concise, helpful assistant running locally."
+    # Tried in order when `model` does not fit the GPU budget (preflight step-down).
+    fallbacks: list[str] = []
 
 
 class PathsConfig(BaseModel):
@@ -25,6 +27,10 @@ class PathsConfig(BaseModel):
     @property
     def resolved_data_dir(self) -> Path:
         return self.data_dir.expanduser()
+
+    @property
+    def calibration_file(self) -> Path:
+        return self.resolved_data_dir / "calibration.json"
 
 
 class HarnessConfig(BaseModel):

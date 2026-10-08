@@ -26,3 +26,4 @@ Python 3.12 TUI (Textual) over a Strands agent on local Ollama, with a runtime g
 - Installed models: `gemma4:e4b`, `gemma4:12b`, `gemma4:12b-mlx`, `tev1:0.8b`. The 26B MoE, `gemma4:e2b`, `gpt-oss:20b` and `nomic-embed-text` from the plan are not pulled yet.
 - `gemma4:e4b` has sliding-window and shared-KV layers (`/api/show`), so the KV formula overestimates it; calibrate (ADR 0002).
 - Ollama 0.35.1; `/api/ps` entries include `context_length`.
+- `/api/ps` `size`/`size_vram` are wrong for models with a speculative draft (all `gemma4` here; ollama#17251), so never trust them alone for budgets or spill detection (ADR 0002).

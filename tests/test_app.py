@@ -57,3 +57,22 @@ async def test_ctrl_c_cancels_cleanly() -> None:
         await pilot.press("enter")
         await pilot.pause(0.1)
         assert app.generating
+
+
+@pytest.mark.asyncio
+async def test_status_bar_follows_the_watchdog_and_goes_red_on_spill() -> None:
+    from tests.guard.fakes import GIB, FakeBackend
+    from harness.guard.watchdog import Watchdog
+    from harness.status import StatusBar
+
+    backend = FakeBackend(models={"m": (10 * GIB, 0.0)})
+    backend.pins["m"] = 8192
+    await backend.warm("m")
+    wd = Watchdog(backend, pinned=backend.pins.get, interval=0.05, memory_level=lambda: 1)
+    app = HarnessApp(HarnessConfig(), replier=fast_reply, watchdog=wd)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        assert app.query_one(StatusBar).has_class("green")
+        backend.gpu_bytes = 4 * GIB  # a second model grabs the GPU
+        await pilot.pause(0.3)
+        assert app.query_one(StatusBar).has_class("red")

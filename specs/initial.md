@@ -130,13 +130,13 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 **Validation:** a 10-turn chat streams without blocking the UI; Ctrl-C cancels a generation cleanly.
 
-### M1 — Runtime guard
+### M1 — Runtime guard — IMPLEMENTED (gate 2 limited by ollama#17251, see notes)
 
-- [ ] `guard/ollama_client.py`: the single client every request goes through; pins `num_ctx` and `keep_alive`
-- [ ] `guard/preflight.py`: the checklist, `/api/show` parsing, Metal-limit read, budget math
-- [ ] `guard/calibrate.py`: two-load calibration of KV bytes per token, cached per model digest
-- [ ] `guard/watchdog.py`: `/api/ps` poller plus per-call metric checks from the watchdog table
-- [ ] Status bar shows model, GPU %, memory, tokens per second and keep-alive
+- [x] `guard/ollama_client.py`: the single client every request goes through; pins `num_ctx` and `keep_alive`
+- [x] `guard/preflight.py`: the checklist, `/api/show` parsing, Metal-limit read, budget math
+- [x] `guard/calibrate.py`: two-load calibration of KV bytes per token, cached per model digest
+- [x] `guard/watchdog.py`: `/api/ps` poller plus per-call metric checks from the watchdog table
+- [x] Status bar shows model, GPU %, memory, tokens per second and keep-alive
 
 **Validation:**
 
@@ -144,6 +144,16 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 2. Force a spill (load a second large model in another terminal): status bar turns red within 4 seconds.
 3. Send one request with a different `num_ctx` from outside the client: the reload is flagged.
 4. Calibrated k for each model is within 25% of the formula's upper bound, or the gap is explained (sliding-window layers).
+
+**Status notes (2026-10-08):**
+
+- Gate 3 also verified live: a foreign `num_ctx: 2048` request flips `/api/ps` `context_length` and the watchdog raises `num_ctx_drift` (red).
+- Gate 4 (explained): the `gemma4` models here load a speculative draft ("gemma4-assistant"), and `/api/ps` reports the draft's footprint instead of the target's ([ollama#17251](https://github.com/ollama/ollama/issues/17251), fix pending in PR #17857). Calibrating from `ps` therefore measures the wrong model, so `Calibrator` refuses (`CalibrationUnreliable`). Budgets use an architecture-aware KV cost instead, which matches the server log exactly for `gemma4:e4b` and `gemma4:12b` (16,384 B/token each, plus a fixed sliding-window cache of 40 MiB and 480 MiB). See ADR 0002.
+- Consequence: `size_vram == size` cannot confirm full-GPU for these models. Preflight warns and the watchdog raises a yellow `ps_unreliable` alert until the upstream fix lands. Spill detection for them falls back to the speed-drop check.
+- Gate 2 (live spill, red within 4 s) is tested with a fake clock only; for draft-model setups it is not achievable through `/api/ps` today.
+- Gate 1 is tested with fakes; the 26B model is not pulled.
+- Truncation check takes an `estimate`; the adapter passes none until M2's accounting lands.
+- Metal's `recommendedMaxWorkingSetSize` in the Ollama server log is about 18.6 GiB; the budget still uses the conservative two-thirds fallback (16 GiB).
 
 ### M2 — Context visibility
 
