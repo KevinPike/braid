@@ -106,3 +106,26 @@ async def test_model_without_architecture_fields_is_skipped_with_a_warning(tmp_p
     assert res.model == "m"
     assert any(c.name == "architecture" and c.severity is Severity.WARN for c in res.checks)
 
+
+async def test_model_already_loaded_at_pinned_num_ctx_is_not_unloaded(tmp_path: Path) -> None:
+    backend = FakeBackend(models={"m": (GIB, 1000.0)})
+    backend.pin("m", 4096)
+    await backend.warm("m")
+    unloads: list[str] = []
+    original = backend.unload
+
+    async def spy(model: str) -> None:
+        unloads.append(model)
+        await original(model)
+
+    backend.unload = spy  # type: ignore[method-assign]
+    await run(backend, tmp_path, [Candidate("m", 4096)])
+    assert unloads == []
+
+
+async def test_model_loaded_at_another_num_ctx_is_reloaded(tmp_path: Path) -> None:
+    backend = FakeBackend(models={"m": (GIB, 1000.0)})
+    backend.pin("m", 2048)
+    await backend.warm("m")
+    await run(backend, tmp_path, [Candidate("m", 4096)])
+    assert backend.loaded == {"m": 4096}

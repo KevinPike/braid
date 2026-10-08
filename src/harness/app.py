@@ -141,9 +141,12 @@ class HarnessApp(App[None]):
         profile = self.config.profile
         cands = [Candidate(m, profile.num_ctx) for m in (profile.model, *profile.fallbacks)]
         await self._note(f"preflight: loading {cands[0].model} at num_ctx {cands[0].num_ctx} (this can take a while)")
+        status = self.query_one(StatusBar)
+        status.show_loading(cands[0].model)
         try:
             result = await run_preflight(self._client, cands, env=os.environ, gpu_limit=system_gpu_limit())
         except PreflightError as exc:
+            status.show_loading(None)
             for check in exc.checks:
                 await self._note(f"preflight {check.severity.value}: {check.detail}")
             await self._note(f"preflight failed: {exc}")
@@ -151,6 +154,7 @@ class HarnessApp(App[None]):
         for check in result.checks:
             if check.severity.value in ("warn", "fail"):
                 await self._note(f"preflight {check.severity.value}: {check.detail}")
+        status.show_loading(None)
         await self._note(f"preflight ok: {result.model} at num_ctx {result.num_ctx} (budget {result.budget})")
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
@@ -242,15 +246,19 @@ class HarnessApp(App[None]):
         profile = self.config.profile
         old = self._model
         await self._note(f"switching to {name} at num_ctx {profile.num_ctx} (unloading {old or 'nothing'} first; this can take a while)")
+        status = self.query_one(StatusBar)
+        status.show_loading(name)
         if old is not None:
             await self._client.unload(old)
         try:
             result = await run_preflight(self._client, [Candidate(name, profile.num_ctx)], env=os.environ, gpu_limit=system_gpu_limit())
         except PreflightError as exc:
+            status.show_loading(None)
             await self._note(f"switch failed: {exc}")
             if old is not None:
                 await self._note(f"staying on {old}; it reloads on the next prompt")
             return
+        status.show_loading(None)
         for check in result.checks:
             if check.severity.value in ("warn", "fail"):
                 await self._note(f"preflight {check.severity.value}: {check.detail}")

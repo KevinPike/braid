@@ -37,6 +37,22 @@ class StatusBar(Static):
     StatusBar.red { background: $error 60%; }
     """
 
+    loading_model: str | None = None
+    _state: GuardState = GuardState()
+
     def set_state(self, state: GuardState) -> None:
-        self.set_classes(_CLASSES[state.level])
-        self.update(render_status(state))
+        self._state = state
+        self._refresh_text()
+
+    def show_loading(self, model: str | None) -> None:
+        """While set, the bar says the model is loading instead of reporting a stale or empty ps."""
+        self.loading_model = model
+        self._refresh_text()
+
+    def _refresh_text(self) -> None:
+        if self.loading_model is not None:
+            self.set_classes("yellow")
+            self.update(f"loading {self.loading_model}…")
+            return
+        self.set_classes(_CLASSES[self._state.level])
+        self.update(render_status(self._state))

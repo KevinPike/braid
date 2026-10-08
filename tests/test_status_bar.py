@@ -38,3 +38,12 @@ async def test_status_bar_colour_follows_level() -> None:
         assert "GPU 90%" in str(bar.render())
         bar.set_state(GuardState(model="m", gpu_fraction=1.0, size=GIB, alerts=(Alert("memory_pressure", Level.YELLOW, "x"),)))
         assert bar.has_class("yellow")
+
+
+def test_loading_overrides_the_ps_state_until_cleared() -> None:
+    bar = StatusBar()
+    bar.set_state(healthy())
+    bar.show_loading("gemma4:12b")
+    assert bar.loading_model == "gemma4:12b"
+    bar.show_loading(None)
+    assert bar.loading_model is None

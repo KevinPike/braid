@@ -125,7 +125,11 @@ async def run_preflight(
         checks.append(Check("budget", Severity.OK, f"{cand.model}: num_ctx {cand.num_ctx} within budget {budget}"))
 
         backend.pin(cand.model, cand.num_ctx)
-        await backend.unload(cand.model)
+        # Unloading is only needed to change num_ctx; a model already loaded at the pinned value
+        # stays put, so the status bar never flashes "no model loaded".
+        already = next((m for m in await backend.ps() if m.name == cand.model), None)
+        if already is None or already.context_length != cand.num_ctx:
+            await backend.unload(cand.model)
         await backend.warm(cand.model)
         loaded = next((m for m in await backend.ps() if m.name == cand.model), None)
         if loaded is None or loaded.spilled:
