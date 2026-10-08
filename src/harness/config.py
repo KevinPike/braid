@@ -79,7 +79,7 @@ class EvalsConfig(BaseModel):
 
 
 class PathsConfig(BaseModel):
-    data_dir: Path = Path("~/.harness")
+    data_dir: Path = Path("~/.braid")
 
     @property
     def resolved_data_dir(self) -> Path:

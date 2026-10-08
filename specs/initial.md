@@ -95,7 +95,7 @@ k = 2 * layers * kv_heads * head_dim * bytes_per_element
 
 Bytes per element is 2 for f16, about 1 for q8_0. Models with sliding-window layers (Gemma) use less than this formula, so it is an upper bound.
 
-**Calibrate, don't trust the formula.** For each model, load it twice at two context lengths (for example 4K and 16K), read `size` from `/api/ps` each time, and fit k from the difference. Cache the result per model digest in `~/.harness/calibration.json`.
+**Calibrate, don't trust the formula.** For each model, load it twice at two context lengths (for example 4K and 16K), read `size` from `/api/ps` each time, and fit k from the difference. Cache the result per model digest in `~/.braid/calibration.json`.
 
 The budget is the Metal limit minus a safety margin and any helper models:
 
@@ -227,8 +227,8 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - Strands' `SummarizingConversationManager` is not used: it is sync and runs its own event loop, which cannot share the guard client's httpx connection. The custom strategy reuses Strands' async `generate_summary` and split/pin helpers instead.
 - The ceiling holds by projection: compaction fires when last prompt + reply + the largest turn growth seen so far would pass 90% of `num_ctx`. A single pasted prompt bigger than the remaining space still hits the M2 Truncation banner, which also forces a compaction.
 - The summarizer runs at its own pinned `num_ctx` (16K), folds long input chunk by chunk, is marked a helper in the Watchdog (no reload or speed alerts, never the status bar's model) and is unloaded after each use. The preflight `helpers` budget does not yet reserve memory for it; revisit if e2b plus the driver gets tight.
-- `/trims` lists the Trim log (SQLite at `~/.harness/trims.db`); each new entry also appears in the chat. `/compact` forces a compaction and waits its turn in the queue.
-- Offloading uses Strands' `ContextOffloader` over file storage (`~/.harness/offload`) behind a wrapper that logs each offload. No tools exist until M4, so it is covered by a storage-level test only.
+- `/trims` lists the Trim log (SQLite at `~/.braid/trims.db`); each new entry also appears in the chat. `/compact` forces a compaction and waits its turn in the queue.
+- Offloading uses Strands' `ContextOffloader` over file storage (`~/.braid/offload`) behind a wrapper that logs each offload. No tools exist until M4, so it is covered by a storage-level test only.
 
 ### M4 — Tools and the decision layer — IMPLEMENTED (gates 1–2 verified live on a small hand-labelled set)
 
@@ -250,7 +250,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - Tools (`tools/builtin.py`): `read_file`, `list_directory`, `search_notes`, `current_time`, all bound to `[tools] root`; `..`, absolute paths and symlinks out of it are refused. `search_notes` greps `notes/` under the root.
 - Shell: Strands' `make_shell` over a sandbox that fixes the working directory to the project folder. That is a working directory, not isolation (a command can `cd ..`), so `[tools] shell` was off by default until M8's approval prompt (ADR 0003).
 - Tool-schema cost: it is the "tools" segment of the context panel on every call; `/tools` lists each schema's estimated tokens.
-- tev1 (`decide/`): every question and its probabilities go to the Decision log (SQLite at `~/.harness/decisions.db`, `/decisions` in the TUI). Input is capped at 1,500 tokens (3 chars per token, deliberately pessimistic, questions included); over the cap the state is summarized, and if it is still over, the call is refused and logged. tev1 sits outside the guard client because its ~2K window is fixed by the model, so there is no `num_ctx` to pin; it is marked a Watchdog helper like the summarizer.
+- tev1 (`decide/`): every question and its probabilities go to the Decision log (SQLite at `~/.braid/decisions.db`, `/decisions` in the TUI). Input is capped at 1,500 tokens (3 chars per token, deliberately pessimistic, questions included); over the cap the state is summarized, and if it is still over, the call is refused and logged. tev1 sits outside the guard client because its ~2K window is fixed by the model, so there is no `num_ctx` to pin; it is marked a Watchdog helper like the summarizer.
 - The router runs on every prompt in the background and is logged only; nothing acts on it until model routing (M10). The compaction question is asked once the window is 80% full and can only bring a compaction forward; the 90% projection stays the hard rule, and a failed or negative answer changes nothing.
 
 ### M5 — MCP — SKIPPED (2026-10-08: no MCP servers to use yet)
@@ -278,7 +278,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 **Status notes (2026-10-08):**
 
 - Gate: `tests/test_sessions.py` runs turns through a real Ledger against a fake Ollama (chars/4), "kills" without any close path, reopens the store and resumes; the next estimate is within 5%, and a cold estimator on the same request is not, so persisting the estimator's learned ratio is what makes it pass.
-- Store: `session/store.py`, SQLite at `~/.harness/sessions.db` (sessions, messages, prompts, queue, calls). Strands' `FileSessionManager` is not used: it appends, and compaction rewrites history in place. The message snapshot is rewritten on every `MessageAddedEvent`, after each turn, compaction and model switch.
+- Store: `session/store.py`, SQLite at `~/.braid/sessions.db` (sessions, messages, prompts, queue, calls). Strands' `FileSessionManager` is not used: it appends, and compaction rewrites history in place. The message snapshot is rewritten on every `MessageAddedEvent`, after each turn, compaction and model switch.
 - Resume drops an unfinished tail (a turn killed mid-reply) and says so; the dropped prompt stays in history. Restored queued prompts come back paused. Resume preflights the stored model and `num_ctx` first, then the profile's.
 - Calibration stored per session is the estimator state plus the preflight budget and weights; there is no KV bytes per token to store while calibration is blocked (ADR 0002).
 - Transcript inspector: `ctrl+t` or `/inspect [n]`; each call's exact `/api/chat` body (captured by `OllamaClient.on_request`), estimate, Ollama count and error. Summarizer calls are recorded too.
@@ -312,7 +312,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 **Status notes (2026-10-08):**
 
 - Gate: `tests/test_evals.py` runs the command's entrypoint over two fake models and a not-pulled one and checks the table, `.md` and `.json`. Live: `uv run --group evals harness-eval --models gemma4:e4b --limit 3` gave 3/3, about 100 tok/s, peak 1,216 tokens (15% of 8,192) in about 25 s (`tests/test_live_evals.py`).
-- Evals (`evals/`): Strands Evals (`strands-agents-evals`, `evals` dependency group) `Case`s over `tests/data/prompts.json` with a deterministic first-tool evaluator; no LLM judge, no cloud credentials. Each model is preflighted at `[evals] num_ctx` through the guard client and unloaded after; models not pulled are listed as skipped. Reports go to `~/.harness/evals/`.
+- Evals (`evals/`): Strands Evals (`strands-agents-evals`, `evals` dependency group) `Case`s over `tests/data/prompts.json` with a deterministic first-tool evaluator; no LLM judge, no cloud credentials. Each model is preflighted at `[evals] num_ctx` through the guard client and unloaded after; models not pulled are listed as skipped. Reports go to `~/.braid/evals/`.
 - Telemetry (`telemetry.py`, `[telemetry] enabled = false`): Strands spans plus harness metrics from `app.hooks` (tokens, tokens per second, context share, estimate error, trims, decisions, approvals, alert transitions) over OTLP/HTTP to `localhost:4318`. A missing collector is silent; it costs about 3 s at exit.
 
 ### M10 — Stretch

@@ -44,7 +44,7 @@ Slash commands: `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions`, `
 
 ## Configure
 
-Everything is in `harness.toml`: the Ollama host, the model profile (`model`, `num_ctx`, `keep_alive`, system prompt, fallbacks), the compaction strategy, tool settings, the decision layer and the data directory (`~/.harness` by default, for the trim log, calibration cache and offloaded results). Missing keys fall back to the defaults in `src/harness/config.py`.
+Everything is in `harness.toml`: the Ollama host, the model profile (`model`, `num_ctx`, `keep_alive`, system prompt, fallbacks), the compaction strategy, tool settings, the decision layer and the data directory (`~/.braid` by default, for the trim log, calibration cache and offloaded results). Missing keys fall back to the defaults in `src/harness/config.py`.
 
 ## Telemetry and evals
 
@@ -64,7 +64,7 @@ uv run --group evals harness-eval                       # every model in [evals]
 uv run --group evals harness-eval --models gemma4:e4b,gemma4:e2b --num-ctx 8192 --limit 5
 ```
 
-Models that are not pulled are listed as skipped. The comparison (accuracy, tokens per second, peak context use) prints as a markdown table and is saved to `~/.harness/evals/<UTC timestamp>.md` and `.json`.
+Models that are not pulled are listed as skipped. The comparison (accuracy, tokens per second, peak context use) prints as a markdown table and is saved to `~/.braid/evals/<UTC timestamp>.md` and `.json`.
 
 ## Tests
 

@@ -8,7 +8,7 @@ keep_alive = "30m"
 system_prompt = "You are a concise, helpful assistant running locally."
 
 [paths]
-data_dir = "~/.harness"
+data_dir = "~/.braid"
 
 [context]
 strategy = "summarize"        # none | sliding_window | summarize
