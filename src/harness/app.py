@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from strands import Agent
+from strands.types.content import Message
 
 from textual import work
 from textual.app import App, ComposeResult
@@ -20,7 +21,10 @@ from textual.worker import Worker
 from harness.agent import build_agent, stream_reply
 from harness.chat import AlertBanner, ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
+from harness.context.compaction import CompactionPolicy, Compactor
 from harness.context.ledger import Ledger
+from harness.context.strategies import build_conversation_manager, build_offloader, make_summarizer
+from harness.context.trimlog import TrimEntry, TrimLog
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.guard.watchdog import GuardState, Level, Watchdog
@@ -61,6 +65,8 @@ class Command:
 COMMANDS: dict[str, Command] = {
     "exit": Command("/exit", immediate=True),
     "model": Command("/model [name]", immediate=False),  # swaps the model, so it must not interrupt queued prompts
+    "compact": Command("/compact", immediate=False),  # rewrites history, so it waits for the running turn
+    "trims": Command("/trims", immediate=True),  # read-only
 }
 
 
@@ -90,9 +96,14 @@ class HarnessApp(App[None]):
         config: HarnessConfig,
         replier: Replier | None = None,
         watchdog: Watchdog | None = None,
+        trimlog: TrimLog | None = None,
+        compactor: Compactor | None = None,
     ) -> None:
         super().__init__()
         self.config = config
+        self.trimlog = trimlog or TrimLog(config.paths.trim_log_file if replier is None else ":memory:")
+        self.compactor = compactor
+        self.fake_messages: list[Message] = []  # history stand-in when a test supplies a replier instead of an agent
         self._client: OllamaClient | None = None
         self._agent: Agent | None = None
         self._model: str | None = None
@@ -120,6 +131,7 @@ class HarnessApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one(Input).focus()
+        self.trimlog.subscribe(self._on_trim)
         self.ledger.subscribe(self.query_one(ContextPanel).set_record)
         self.query_one(ContextPanel).set_record(None)
         if self._watchdog is not None:
@@ -129,6 +141,9 @@ class HarnessApp(App[None]):
             self.run_worker(self._watchdog.run(), name="watchdog", group="guard")
         if self._client is not None:
             self.run_worker(self._boot(), name="preflight", group="guard")
+
+    def _on_trim(self, entry: TrimEntry) -> None:
+        self.call_later(self._note, f"trim {entry.line()}")
 
     async def _note(self, text: str) -> None:
         chat = self.query_one("#chat", VerticalScroll)
@@ -158,9 +173,62 @@ class HarnessApp(App[None]):
         await self._note(f"preflight ok: {result.model} at num_ctx {result.num_ctx} (budget {result.budget})")
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
-        self._agent = build_agent(self._client, result.model, profile.system_prompt, self.ledger)
+        self._agent = self._make_agent(result.model)
         self._model = result.model
+        await self._build_compactor(result.model)
         self._pump()
+
+    def _make_agent(self, model: str) -> Agent:
+        """An agent whose history is managed by the configured strategy (never Strands' silent default)."""
+        assert self._client is not None
+        cfg = self.config.context
+        est = self.ledger.estimator
+        offloader = build_offloader(cfg, self.config.paths, self.trimlog, est)
+        return build_agent(
+            self._client, model, self.config.profile.system_prompt, self.ledger,
+            conversation_manager=build_conversation_manager(cfg, self.trimlog, est),
+            plugins=[offloader] if offloader is not None else None,
+        )
+
+    async def _build_compactor(self, driver: str) -> None:
+        """The custom strategy: summarize with the summarizer model, or the daily driver when it is not pulled."""
+        assert self._client is not None
+        cfg = self.config.context
+        if cfg.strategy != "summarize":
+            self.compactor = None
+            return
+        pulled = {t.name for t in await self._client.tags()}
+        helper = cfg.summarizer_model != driver and cfg.summarizer_model in pulled
+        model = cfg.summarizer_model if helper else driver
+        num_ctx = cfg.summarizer_num_ctx if helper else (self._client.pinned(driver) or self.config.profile.num_ctx)
+        if helper and self._watchdog is not None:
+            self._watchdog.mark_helper(model)
+        await self._note(f"compaction: summarize with {model} at {int(cfg.ceiling * 100)}% of num_ctx"
+                         + ("" if helper else f" ({cfg.summarizer_model} not pulled, using the daily driver)"))
+        client = self._client
+        self.compactor = Compactor(
+            trimlog=self.trimlog, ledger=self.ledger, num_ctx=lambda: client.pinned(driver) or 0,
+            summarize=make_summarizer(self._client, model, num_ctx, self.ledger.estimator, unload_after=helper),
+            policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first),
+        )
+
+    @property
+    def _messages(self) -> list[Message]:
+        return self._agent.messages if self._agent is not None else self.fake_messages
+
+    async def _compact_after_turn(self) -> None:
+        """Runs inside the generation's worker, so the queue waits for it (compaction never overlaps a turn)."""
+        if self.compactor is None:
+            return
+        state = self.guard_state
+        if state is not None and any(a.kind == "truncation" for a in state.alerts):
+            self.compactor.force("Truncation detected: Ollama dropped prompt tokens")
+        reason = self.compactor.should_compact()
+        if reason is None:
+            return
+        await self._note("compacting history…")
+        self.compactor.pending_reason = reason
+        await self.compactor.after_turn(self._messages)
 
     def _guarded_reply(self, prompt: str) -> AsyncIterator[str]:
         if self._agent is None:
@@ -225,6 +293,26 @@ class HarnessApp(App[None]):
             self.exit()
         elif name == "model":
             await self._model_command(args)
+        elif name == "compact":
+            await self._compact_command()
+        elif name == "trims":
+            await self._trims_command()
+
+    async def _compact_command(self) -> None:
+        if self.compactor is None:
+            await self._note("/compact: no compaction strategy active (set [context] strategy = \"summarize\")")
+            return
+        await self._note("compacting history…")
+        entry = await self.compactor.compact(self._messages, "manual /compact")
+        if entry is None:
+            await self._note("nothing to compact yet")
+
+    async def _trims_command(self) -> None:
+        entries = self.trimlog.entries(limit=20)
+        if not entries:
+            await self._note("trim log is empty")
+            return
+        await self._note("trim log (most recent last):\n" + "\n".join(e.line() for e in entries))
 
     async def _model_command(self, name: str) -> None:
         if self._client is None:
@@ -265,10 +353,11 @@ class HarnessApp(App[None]):
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
         previous = self._agent
-        self._agent = build_agent(self._client, result.model, profile.system_prompt, self.ledger)
+        self._agent = self._make_agent(result.model)
         if previous is not None:
             self._agent.messages.extend(previous.messages)  # the conversation carries over
         self._model = result.model
+        await self._build_compactor(result.model)
         await self._note(f"now on {result.model} at num_ctx {result.num_ctx} (budget {result.budget}); conversation kept")
 
     def _pump(self) -> None:
@@ -310,6 +399,10 @@ class HarnessApp(App[None]):
                 reply.text += f"\n[error: {exc}]"
             finally:
                 await reply.finish()
+            try:
+                await self._compact_after_turn()
+            except Exception as exc:
+                await self._note(f"compaction error: {exc}")
         finally:
             if run_id == self._run_id:  # a cancelled run may be unwound after the app has moved on
                 self._busy = False

@@ -158,6 +158,7 @@ class Watchdog:
         self._refresh = refresh_keep_alive
         self._listeners: list[Callable[[GuardState], None]] = []
         self._calls: dict[str, int] = {}
+        self._helpers: set[str] = set()
         self._speeds: list[float] = []
         self._last_tps: float | None = None
         self._call_alerts: list[tuple[datetime, Alert]] = []
@@ -171,8 +172,14 @@ class Watchdog:
     def subscribe(self, listener: Callable[[GuardState], None]) -> None:
         self._listeners.append(listener)
 
+    def mark_helper(self, model: str) -> None:
+        """A model loaded on demand (the summarizer): never the status bar's model, exempt from per-call checks."""
+        self._helpers.add(model)
+
     def record_call(self, model: str, metrics: CallMetrics, estimate: int | None = None) -> None:
         """Per-call checks; wire to ``OllamaClient.on_call``. ``estimate`` arrives with M2's accounting."""
+        if model in self._helpers:  # helper loads come and go by design, so reload and speed checks do not apply
+            return
         first = self._calls.get(model, 0) == 0
         self._calls[model] = self._calls.get(model, 0) + 1
         now = self._now()
@@ -194,9 +201,9 @@ class Watchdog:
         alerts = check_ps(models, pinned=pinned, now=now) + check_ps_trust(models, expected=self._expected) + check_memory(mem)
         if self._refresh is not None:
             for m in models:
-                if (m.expires_at - now).total_seconds() < EVICTION_WINDOW_S:
+                if m.name not in self._helpers and (m.expires_at - now).total_seconds() < EVICTION_WINDOW_S:
                     await self._refresh(m.name)
-        head = models[0] if models else None
+        head = next((m for m in models if m.name not in self._helpers), None)
         self._ps_state = GuardState(
             model=head.name if head else None,
             gpu_fraction=head.gpu_fraction if head else None,

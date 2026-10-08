@@ -9,3 +9,12 @@ system_prompt = "You are a concise, helpful assistant running locally."
 
 [paths]
 data_dir = "~/.harness"
+
+[context]
+strategy = "summarize"        # none | sliding_window | summarize
+summarizer_model = "gemma4:e2b"   # falls back to the daily driver when not pulled
+summarizer_num_ctx = 16384
+ceiling = 0.9
+target = 0.5
+preserve_recent = 6
+offload_tokens = 4000

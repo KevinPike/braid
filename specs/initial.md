@@ -184,10 +184,10 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 ### M3 — Context management
 
-- [ ] Turn on Strands built-in strategies (sliding window, then summarizing) behind a profile setting
-- [ ] Custom strategy: summarize with `gemma4:e2b` at 90% of `num_ctx`, keep pinned messages
-- [ ] Context Offloader for large tool results (store full output, keep a reference in context)
-- [ ] Trim log in SQLite: what was dropped or summarized, when, and why
+- [x] Turn on Strands built-in strategies (sliding window, then summarizing) behind a profile setting
+- [x] Custom strategy: summarize with `gemma4:e2b` at 90% of `num_ctx`, keep pinned messages
+- [x] Context Offloader for large tool results (store full output, keep a reference in context)
+- [x] Trim log in SQLite: what was dropped or summarized, when, and why
 
 **Validation:**
 
@@ -195,6 +195,16 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 2. After compaction, the model still answers 4 of 5 recall questions about facts from turn 5.
 3. Every trim has a log entry viewable in the TUI.
 4. Compaction runs between turns, never mid-generation, and a queued prompt waits for it to finish.
+
+**Status notes (2026-10-08):**
+
+- Gates 1, 3 and 4 have pytest tests in `tests/test_compaction.py` with a fake model (prompt tokens measured as chars / 4). Gate 2 is `tests/test_live_recall.py`, skipped unless `HARNESS_LIVE=1`: it passed 5-of-5-or-better (needs 4) with `gemma4:e4b` as its own summarizer. `gemma4:e2b` is not pulled, so the configured summarizer falls back to the daily driver and says so in the chat; rerun with `HARNESS_SUMMARIZER=gemma4:e2b` after pulling it.
+- Strategies (`[context] strategy`): `none`, `sliding_window` (Strands' built-in, logged) and `summarize` (default; the custom strategy). Strands' default manager silently drops history after 40 messages, so every agent now names its manager explicitly.
+- Strands' `SummarizingConversationManager` is not used: it is sync and runs its own event loop, which cannot share the guard client's httpx connection. The custom strategy reuses Strands' async `generate_summary` and split/pin helpers instead.
+- The ceiling holds by projection: compaction fires when last prompt + reply + the largest turn growth seen so far would pass 90% of `num_ctx`. A single pasted prompt bigger than the remaining space still hits the M2 Truncation banner, which also forces a compaction.
+- The summarizer runs at its own pinned `num_ctx` (16K), folds long input chunk by chunk, is marked a helper in the Watchdog (no reload or speed alerts, never the status bar's model) and is unloaded after each use. The preflight `helpers` budget does not yet reserve memory for it; revisit if e2b plus the driver gets tight.
+- `/trims` lists the Trim log (SQLite at `~/.harness/trims.db`); each new entry also appears in the chat. `/compact` forces a compaction and waits its turn in the queue.
+- Offloading uses Strands' `ContextOffloader` over file storage (`~/.harness/offload`) behind a wrapper that logs each offload. No tools exist until M4, so it is covered by a storage-level test only.
 
 ### M4 — Tools and the decision layer
 

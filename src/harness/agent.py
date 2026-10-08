@@ -7,6 +7,8 @@ from types import SimpleNamespace
 from typing import Any
 
 from strands import Agent
+from strands.agent.conversation_manager import ConversationManager
+from strands.plugins import Plugin
 from strands.models.ollama import OllamaModel
 from strands.types.streaming import StreamEvent
 
@@ -68,9 +70,20 @@ class GuardedOllamaModel(OllamaModel):
                 self._ledger.after_call(m)
 
 
-def build_agent(client: OllamaClient, model_id: str, system_prompt: str, ledger: Ledger | None = None) -> Agent:
+def build_agent(
+    client: OllamaClient,
+    model_id: str,
+    system_prompt: str,
+    ledger: Ledger | None = None,
+    *,
+    conversation_manager: ConversationManager | None = None,
+    plugins: list[Plugin] | None = None,
+) -> Agent:
     # callback_handler=None: the TUI renders the stream, nothing prints to stdout.
-    return Agent(model=GuardedOllamaModel(client, model_id, ledger), system_prompt=system_prompt, callback_handler=None)
+    return Agent(
+        model=GuardedOllamaModel(client, model_id, ledger), system_prompt=system_prompt, callback_handler=None,
+        conversation_manager=conversation_manager, plugins=plugins,
+    )
 
 
 async def stream_reply(agent: Agent, prompt: str) -> AsyncIterator[str]:
