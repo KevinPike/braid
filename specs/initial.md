@@ -2,6 +2,27 @@
 
 Source: Claude Docs "Local Agent Harness Plan" (2026-10-08). Milestones are zero-indexed; tick boxes as they land.
 
+## Where we left off (2026-10-08)
+
+**Done:** M0–M4, all with their validation gates as pytest tests (118 pass, 3 live tests skipped by default; `mypy --strict` clean). **Next:** M5 (MCP). Commits `9788338` to `2417067` are M3, M4 and the fixes between them.
+
+**Run it:** `uv run harness`; commands are `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions` and `/exit`. Live gates: `HARNESS_LIVE=1 uv run pytest tests/test_live_recall.py tests/test_live_tools.py`.
+
+**Never run end to end by a person against the full stack.** Everything above is tested with fakes, plus the live gate tests. The first real session should check, in this order:
+
+1. The status bar through startup, a `/model` switch and a compaction (known flicker: `specs/bugs.md`).
+2. A long chat until compaction fires: the summarizer (`gemma4:e2b`) loading and unloading, and the "tools" segment of the context panel.
+3. The M2 note that Ollama may report a low `prompt_eval_count` on a cached prefix, which would look like Truncation and, now, force a compaction.
+
+**Open items carried forward**
+
+- Status bar flicker when a model reloads: `specs/bugs.md`.
+- Preflight's `helpers` budget does not yet reserve memory for the summarizer or tev1.
+- The shell tool is a working directory, not isolation; it stays off until M8's approval prompt.
+- The router runs on every prompt but nothing acts on it until M10; the 20-prompt test set is easy and self-labelled.
+- Offloading is only tested at the storage level; M4's tools are the first thing that can produce a large tool result in practice.
+- Not yet done from the stack list: Strands Evals (M9), OpenTelemetry (M9), persistence and resume (M7).
+
 ## Goal and scope
 
 Build a learning-grade agent harness with a terminal UI that runs local Ollama models on a 24 GB Mac, built on the Strands Harness SDK, with context use and Ollama runtime health visible and guarded at all times.
@@ -182,7 +203,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - The Strands estimate (`Model.count_tokens`, chars/4) is shown in the panel beside ours and Ollama's.
 - A red Alert holds the queue until it clears; truncation alerts last 60 s.
 
-### M3 — Context management
+### M3 — Context management — IMPLEMENTED (e4b/e2b recall verified live; see notes)
 
 - [x] Turn on Strands built-in strategies (sliding window, then summarizing) behind a profile setting
 - [x] Custom strategy: summarize with `gemma4:e2b` at 90% of `num_ctx`, keep pinned messages
@@ -206,7 +227,7 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 - `/trims` lists the Trim log (SQLite at `~/.harness/trims.db`); each new entry also appears in the chat. `/compact` forces a compaction and waits its turn in the queue.
 - Offloading uses Strands' `ContextOffloader` over file storage (`~/.harness/offload`) behind a wrapper that logs each offload. No tools exist until M4, so it is covered by a storage-level test only.
 
-### M4 — Tools and the decision layer
+### M4 — Tools and the decision layer — IMPLEMENTED (gates 1–2 verified live on a small hand-labelled set)
 
 - [x] Three or four `@tool` functions (read file, list directory, search notes, current time)
 - [x] Strands Shell as the sandboxed shell, bound to one project folder
