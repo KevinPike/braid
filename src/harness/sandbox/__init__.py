@@ -2,5 +2,6 @@
 
 from harness.sandbox.policy import RunResult, Sandbox, SandboxPolicy, toolchain_paths
 from harness.sandbox.seatbelt import LocalSandbox, SeatbeltSandbox
+from harness.sandbox.workspace import Change, Workspace
 
-__all__ = ["LocalSandbox", "RunResult", "Sandbox", "SandboxPolicy", "SeatbeltSandbox", "toolchain_paths"]
+__all__ = ["Change", "LocalSandbox", "RunResult", "Sandbox", "SandboxPolicy", "SeatbeltSandbox", "Workspace", "toolchain_paths"]
