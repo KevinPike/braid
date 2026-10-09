@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncGenerator, Callable
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,10 +10,14 @@ from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from strands import tool
+from strands.sandbox.errors import SandboxTimeoutError
 from strands.sandbox.not_a_sandbox_local_environment import NotASandboxLocalEnvironment
 from strands.sandbox.types import ExecutionResult, StreamChunk
 from strands.tools.decorator import DecoratedFunctionTool
 from strands.vended_tools.shell import make_shell
+
+from harness.sandbox import Sandbox, SandboxPolicy, SeatbeltSandbox, toolchain_paths
+from harness.sandbox.seatbelt import DEFAULT_TIMEOUT_S
 
 NOTE_SUFFIXES = {".md", ".txt", ".org"}
 MAX_SEARCH_HITS = 20
@@ -142,24 +147,43 @@ def build_write_file(root: Path) -> DecoratedFunctionTool[Any, Any]:
 
 
 class ProjectSandbox(NotASandboxLocalEnvironment):
-    """Runs every command with the project folder as its working directory.
+    """Runs every command under the Seatbelt ``Sandbox`` (ADR 0005), with the project folder as its working directory.
 
-    This is a working directory, not isolation: a command can still ``cd ..`` or use absolute
-    paths. The boundary that matters is the TUI approval prompt (M8, ADR 0003): the app registers the
-    shell only behind the approval gate, and only when ``[tools] shell = true``.
+    The boundary is enforced by the OS, not by checking arguments: a command can write only in the project
+    folder and its ``.tmp``, cannot read the home folder beyond the project's ``.venv`` toolchain, has no network
+    unless ``[tools] shell_network`` is set, and starts with a scrubbed environment. Approval per command (M8,
+    ADR 0003) stays: the app registers the shell only behind the approval gate, and only when ``[tools] shell`` is on.
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, network: bool = False, sandbox: Sandbox | None = None) -> None:
         self.root = root.resolve()
+        self.network = network
+        self._sandbox: Sandbox = sandbox or SeatbeltSandbox()
+
+    def _policy(self) -> SandboxPolicy:
+        venv = self.root / ".venv"
+        return SandboxPolicy(
+            writable=(self.root, self.root / ".tmp"), readable=toolchain_paths(venv) if venv.exists() else (),
+            network=self.network,
+        )
 
     async def execute_streaming(
         self, command: str, *, timeout: float | None = None, cwd: str | None = None,
         env: dict[str, str] | None = None, **kwargs: Any,
     ) -> AsyncGenerator[StreamChunk | ExecutionResult, None]:
-        async for chunk in super().execute_streaming(command, timeout=timeout, cwd=str(self.root), env=env, **kwargs):
-            yield chunk
+        # PATH keeps the host's tools findable (it is not a secret); the project's venv comes first when there is one.
+        path = os.pathsep.join(p for p in (str(self.root / ".venv" / "bin") if (self.root / ".venv").exists() else "", os.environ.get("PATH", "")) if p)
+        result = await self._sandbox.run(
+            command, cwd=self.root, policy=self._policy(), timeout_s=timeout or DEFAULT_TIMEOUT_S, env={"PATH": path, **(env or {})},
+        )
+        if result.timed_out:
+            raise SandboxTimeoutError(timeout or DEFAULT_TIMEOUT_S)
+        # Strands wants stdout and stderr apart; the Sandbox returns them interleaved, so all of it is stdout.
+        if result.output:
+            yield StreamChunk(data=result.output)
+        yield ExecutionResult(exit_code=result.exit_code, stdout=result.output, stderr="")
 
 
-def build_shell(root: Path) -> DecoratedFunctionTool[Any, Any]:
-    return make_shell(sandbox=ProjectSandbox(root))
+def build_shell(root: Path, *, network: bool = False) -> DecoratedFunctionTool[Any, Any]:
+    return make_shell(sandbox=ProjectSandbox(root, network=network))
 

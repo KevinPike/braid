@@ -1,3 +1,5 @@
+import socket
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -68,10 +70,54 @@ def test_current_time_uses_the_requested_zone(project: Path) -> None:
         ts["current_time"]("Mars/Base")
 
 
+darwin_only = pytest.mark.skipif(sys.platform != "darwin", reason="Seatbelt is macOS only")
+
+
+@darwin_only
 async def test_shell_runs_in_the_project_folder(project: Path) -> None:
     result = await ProjectSandbox(project).execute("pwd")
     assert result.stdout.strip() == str(project.resolve())
     assert build_shell(project).tool_name == "shell"
+
+
+@darwin_only
+async def test_an_approved_shell_command_cannot_write_outside_the_root(project: Path, tmp_path_factory: pytest.TempPathFactory) -> None:
+    outside = tmp_path_factory.mktemp("outside")
+    result = await ProjectSandbox(project).execute(f"echo x > {outside}/escape.txt; echo y > {project}/inside.txt")
+    assert "Operation not permitted" in result.stderr + result.stdout
+    assert not (outside / "escape.txt").exists()
+    assert (project / "inside.txt").read_text() == "y\n"
+
+
+@darwin_only
+async def test_shell_env_is_scrubbed_and_network_follows_the_option(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BRAID_TEST_SECRET", "leaky")
+    server = socket.socket()
+    server.bind(("127.0.0.1", 0))
+    server.listen()
+    port = server.getsockname()[1]
+    cmd = f"echo \"[$BRAID_TEST_SECRET]\"; curl -sS -m 3 http://127.0.0.1:{port}/ >/dev/null 2>&1; echo curl=$?"
+    try:
+        off = await ProjectSandbox(project).execute(cmd)
+        assert off.stdout.splitlines() == ["[]", "curl=7"]  # 7: could not connect
+        on = await ProjectSandbox(project, network=True).execute(cmd)
+        assert on.stdout.splitlines()[1] != "curl=7"
+    finally:
+        server.close()
+
+
+@darwin_only
+async def test_shell_timeout_raises_the_strands_error(project: Path) -> None:
+    from strands.sandbox.errors import SandboxTimeoutError
+
+    with pytest.raises(SandboxTimeoutError):
+        await ProjectSandbox(project).execute("sleep 30", timeout=0.5)
+
+
+def test_shell_network_defaults_off() -> None:
+    from harness.config import ToolsConfig
+
+    assert ToolsConfig().shell_network is False
 
 
 def test_search_notes_skips_symlinks_that_leave_the_notes_folder(project: Path, tmp_path_factory: pytest.TempPathFactory) -> None:

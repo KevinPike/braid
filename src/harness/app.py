@@ -298,7 +298,7 @@ class HarnessApp(App[None]):
         if cfg.write:
             tools.append(build_write_file(cfg.root))
         if cfg.shell:
-            tools.append(build_shell(cfg.root))
+            tools.append(build_shell(cfg.root, network=cfg.shell_network))
         return tools
 
     @property

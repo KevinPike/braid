@@ -40,7 +40,8 @@ class ToolsConfig(BaseModel):
     enabled: bool = True
     root: Path = Path(".")  # the one project folder every tool is bound to
     notes_dir: Path = Path("notes")  # relative to root unless absolute
-    shell: bool = False  # runs commands with root as cwd; every command still needs TUI approval (M8)
+    shell: bool = False  # runs commands in the Sandbox with root as cwd; every command still needs TUI approval (M8)
+    shell_network: bool = False  # lets sandboxed shell commands reach the network
     write: bool = True  # write_file inside root; every write needs TUI approval (M8)
     # Tools that need approval. `shell` and `write_file` are always in it, whatever the file says.
     approve: list[str] = ["shell", "write_file"]

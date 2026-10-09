@@ -23,7 +23,8 @@ offload_tokens = 4000
 enabled = true
 root = "."
 notes_dir = "notes"
-shell = true                  # every command needs TUI approval (ADR 0003)
+shell = true                  # every command needs TUI approval (ADR 0003) and runs in the Sandbox (ADR 0005)
+shell_network = false         # allow network access to sandboxed shell commands
 write = true                  # write_file; every write needs TUI approval
 approve = ["shell", "write_file"]   # tools gated by approval; these two are always gated
 
