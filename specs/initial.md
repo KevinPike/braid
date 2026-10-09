@@ -4,7 +4,7 @@ Source: Claude Docs "Local Agent Harness Plan" (2026-10-08). Milestones are zero
 
 ## Where we left off (2026-10-08)
 
-**Done:** M0–M4 and M7–M9, all with their validation gates as pytest tests (185 pass, 4 live tests skipped by default; `mypy --strict` clean). **Skipped for now:** M5 (MCP) and M6 (Skills); there are no MCP servers or skills to use yet. **Next:** M10 (stretch), or M5/M6 when there is something to connect. Commits `9788338` to `2417067` are M3, M4 and the fixes between them.
+**Done:** M0–M4 and M7–M9, all with their validation gates as pytest tests (185 pass, 4 live tests skipped by default; `mypy --strict` clean). **Skipped for now:** M5 (MCP) and M6 (Skills); there are no MCP servers or skills to use yet. **Next:** M11–M15, Workflows (`specs/workflows.md`; planned 2026-10-09), starting with the M11 spike. Goal: learning by using it on hobby projects, with Plans from Claude and execution on local models; the spec says what success means. M10 stays stretch; M5/M6 wait until there is something to connect. Commits `9788338` to `2417067` are M3, M4 and the fixes between them.
 
 **Run it:** `uv run harness [config.toml] [--resume ID | --continue]`; commands are `/model [name]`, `/compact`, `/trims`, `/tools`, `/decisions`, `/sessions`, `/resume <id>`, `/fork [id]`, `/new`, `/inspect [n]` and `/exit`; `ctrl+t` opens the transcript inspector. Model comparison: `uv run --group evals harness-eval`. Live gates: `HARNESS_LIVE=1 uv run pytest tests/test_live_recall.py tests/test_live_tools.py tests/test_live_evals.py`.
 
@@ -324,6 +324,57 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 **Validation:** each stretch item has a before-and-after measurement in the M9 eval report.
 
+### M11 — Spike: real models in the example Execution loop
+
+Spec: `specs/workflows.md` § M11. ADRs 0004, 0005.
+
+- [ ] `format` (JSON schema output) on the guard client
+- [ ] Five kata repos in `~/projects/braid-practice/`, each with a `GOAL.md`
+- [ ] Plans from `claude -p`, with Behaviors sized for a small model
+- [ ] `examples/graphs/exec_live.py`: the example loop on a real model under Seatbelt, with run summaries and a report
+
+**Validation:** a no-hints baseline table for `gemma4:e4b` and `gemma4:12b` over all five katas, recorded in the status notes (measured, not asserted).
+
+### M12 — Sandbox and Workspace
+
+Spec: `specs/workflows.md` § M12. ADRs 0005, 0003.
+
+- [ ] `Sandbox` interface with a Seatbelt backend: writes only in the Workspace, no home reads beyond the toolchain, no network, scrubbed env, process-group timeout
+- [ ] `Workspace`: git worktree per run, dependency sync outside the Sandbox, flagged diff, `apply()` that refuses symlinks and escaping paths
+- [ ] Chat `shell` runs under the Sandbox too (Approval per command unchanged)
+
+**Validation:** model-style code run in a Workspace cannot read the home folder, write outside the Workspace, reach the network or outlive its timeout; a Workspace diff reaches the project only through `apply()`.
+
+### M13 — Execution loop (CLI)
+
+Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
+
+- [ ] The Plan schema and a structured model adapter over the guard client
+- [ ] LangGraph Execution loop: Assumption check, Red/Green per Behavior, Stuck, Sign-off, Polish, Approval of the diff
+- [ ] `harness-workflow build --plan <path>` and the `[workflow]` config
+
+**Validation:** given a Plan and a git project, the CLI reaches an applied diff or a clean stop, every model call pinned through the guard client and every command in the Sandbox.
+
+### M14 — Plan loop (CLI)
+
+Spec: `specs/workflows.md` § M14. ADR 0004.
+
+- [ ] Research as model-chosen queries the harness runs in-process, with checked citations
+- [ ] Plan loop: draft, parallel Critiques, open questions, human review rounds
+- [ ] `harness-workflow plan "<goal>"` writes a Plan that M13 consumes unchanged
+
+**Validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review.
+
+### M15 — Workflows in the TUI
+
+Spec: `specs/workflows.md` § M15.
+
+- [ ] `/plan`, `/build`, `/runs`; node progress in the chat pane; interrupts as an inline widget that holds the Prompt queue
+- [ ] SQLite checkpoints, resume after Ctrl-C or a killed app
+- [ ] Workflow hook events and telemetry
+
+**Validation:** both loops run from the TUI end to end, and a cancelled or killed run resumes from its last checkpoint without repeating model calls.
+
 ## Risks and open questions
 
 | Risk | Effect | Mitigation |
@@ -332,6 +383,8 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 | Calibration differs between Ollama versions | Wrong `max_ctx` after upgrades | Key calibration on Ollama version plus model digest; rerun on change |
 | tev1 is experimental and has a ~2K context | Wrong routing or policy calls | Advisory only; log every decision; human approval stays the gate |
 | Small models fail at multi-step tool use | M4 test set fails | Raise to the 26B MoE for tool tasks; keep tool count under about 8 |
+| `sandbox-exec` is deprecated by Apple | M12 Sandbox stops working after a macOS update | Behind the `Sandbox` interface; a container backend can replace it (ADR 0005) |
+| Small models stall in the Execution loop | Runs end Stuck | Attempt limits and human hints; measure per model in M13's live check; try `gemma4:12b` and the 26B MoE |
 | Claude subscription policy for third-party use keeps changing | M10 backend may break | Only use official `claude -p` or Agent SDK; recheck the help article before starting M10 |
 
 **Open questions**
