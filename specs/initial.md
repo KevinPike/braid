@@ -354,11 +354,20 @@ Spec: `specs/workflows.md` § M11. ADRs 0004, 0005.
 
 Spec: `specs/workflows.md` § M12. ADRs 0005, 0003.
 
-- [ ] `Sandbox` interface with a Seatbelt backend: writes only in the Workspace, no home reads beyond the toolchain, no network, scrubbed env, process-group timeout
-- [ ] `Workspace`: git worktree per run, dependency sync outside the Sandbox, flagged diff, `apply()` that refuses symlinks and escaping paths
-- [ ] Chat `shell` runs under the Sandbox too (Approval per command unchanged)
+- [x] `Sandbox` interface with a Seatbelt backend: writes only in the Workspace, no home reads beyond the toolchain, no network, scrubbed env, process-group timeout
+- [x] `Workspace`: git worktree per run, dependency sync outside the Sandbox, flagged diff, `apply()` that refuses symlinks and escaping paths
+- [x] Chat `shell` runs under the Sandbox too (Approval per command unchanged)
 
 **Validation:** model-style code run in a Workspace cannot read the home folder, write outside the Workspace, reach the network or outlive its timeout; a Workspace diff reaches the project only through `apply()`.
+
+**Status notes (2026-10-09):**
+
+- Built: `sandbox/policy.py` (`SandboxPolicy`, `RunResult`, `Sandbox`, `toolchain_paths`), `sandbox/seatbelt.py` (`SeatbeltSandbox`, `LocalSandbox`, shared `run_process`), `sandbox/workspace.py` (`Workspace`, `Change`); `ProjectSandbox` in `tools/builtin.py` now runs through `SeatbeltSandbox`; `[tools] shell_network` in config and `harness.toml`. Shared fixtures (`fixture_repo`, session-scoped `fixture_venv` with pytest) are in `tests/conftest.py` for M13.
+- 12.1 gates, `tests/test_sandbox.py`: (1) `test_denied_read_is_blocked_and_writable_read_works`, (2) `test_writes_only_inside_writable`, (3) `test_network_only_when_the_policy_allows_it`, (4) `test_environment_is_scrubbed_unless_passed`, (5) `test_timeout_kills_the_process_group_grandchild_included`, (6) `test_pytest_from_a_fixture_venv_runs_under_toolchain_paths`. Extra: output trimming and profile escaping.
+- 12.2 gates, `tests/test_workspace.py`: (1) `test_new_and_edited_files_reach_the_project_only_through_apply`, (2) `test_a_symlink_that_leaves_the_workspace_makes_apply_raise`, (3) `test_an_edited_conftest_carries_the_runs_on_import_flag`, (4) `test_model_code_in_the_workspace_cannot_write_a_project_git_hook`, (5) `test_remove_leaves_no_worktree`.
+- 12.3 gate, `tests/test_tools.py`: `test_an_approved_shell_command_cannot_write_outside_the_root`.
+- Divergences and additions: (1) Workspace git commands set `GIT_DIR` and `GIT_WORK_TREE` explicitly instead of trusting the `.git` file inside the Workspace, which model code can rewrite to point at a repository whose config runs commands outside the Sandbox. (2) `.tmp` and `.venv` are left out of `changes()` and `diff()`. (3) New files are made visible by listing `git ls-files --others` and adding them intent-to-add, because `git add -A` with an exclude pathspec fails when the excluded folder is gitignored. (4) `Workspace.create` returns the dirty-tree warning as `ws.warning`; `base` and `run_id` have defaults. (5) The Sandbox `PATH` defaults to `/usr/bin:/bin:/usr/sbin:/sbin` and `HOME` to the first writable path; `ProjectSandbox` passes the host `PATH` (venv first) so installed tools stay findable. (6) `Sandbox.run` has `timeout_s=120` as a default. (7) `ProjectSandbox` raises Strands' `SandboxTimeoutError` on timeout and returns the interleaved output as stdout (stderr empty); it runs to completion and then yields, not live streaming. (8) `.tmp/` added to `.gitignore` because the chat shell's `TMPDIR` is `<root>/.tmp`.
+- Open questions: none blocking. Not run live: the TUI Try it (`curl`, `cat ~/.zshrc`).
 
 ### M13 — Execution loop (CLI)
 
