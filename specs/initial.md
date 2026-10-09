@@ -328,12 +328,27 @@ Eleven milestones (M0–M10), run in order. Each one ships something usable and 
 
 Spec: `specs/workflows.md` § M11. ADRs 0004, 0005.
 
-- [ ] `format` (JSON schema output) on the guard client
-- [ ] Five kata repos in `~/projects/braid-practice/`, each with a `GOAL.md`
-- [ ] Plans from `claude -p`, with Behaviors sized for a small model
-- [ ] `examples/graphs/exec_live.py`: the example loop on a real model under Seatbelt, with run summaries and a report
+- [x] `format` (JSON schema output) on the guard client
+- [x] Five kata repos in `~/projects/braid-practice/`, each with a `GOAL.md`
+- [x] Plans from `claude -p`, with Behaviors sized for a small model
+- [x] `examples/graphs/exec_live.py`: the example loop on a real model under Seatbelt, with run summaries and a report
 
 **Validation:** a no-hints baseline table for `gemma4:e4b` and `gemma4:12b` over all five katas, recorded in the status notes (measured, not asserted).
+
+**Status notes (2026-10-09):** `gemma4:12b` baseline still open, so M11's validation is half met.
+
+- 11.1 gate: `tests/guard/test_ollama_client.py` (`format` is sent, `num_ctx` stays pinned, `format` omitted when unset). 11.2–11.4 are throwaway code in `examples/graphs/` (`make_katas.py`, `plan_prompt.md`, `claude_plan.sh`, `exec_live.py`, `report.py`), not under mypy.
+- Baseline, `gemma4:e4b`, `--no-hints`, one run per kata, `num_ctx` 16384, Plans from `claude -p` **unreviewed and unedited** (the user's Try it is still to do):
+
+| model | bowling | cron-next | roman-numerals | semver-compare | word-wrap | total Green |
+|---|---|---|---|---|---|---|
+| gemma4:e4b | 6/6 · 2a · 0r · 0h · 4s · 0.2m | 4/6 · 11a · 2r · 0h · 1s · 1.8m | 6/6 · 1a · 1r · 0h · 5s · 0.2m | 6/6 · 8a · 0r · 0h · 1s · 1.0m | 5/6 · 6a · 0r · 0h · 3s · 1.1m | 27/30 |
+
+  Cell: Behaviors Green/planned, implementation attempts (a), Red rejections (r), hints (h), Behaviors already satisfied by earlier code (s, counted as Green), minutes per Behavior (m). Polish was kept on bowling, roman-numerals and word-wrap and reverted on semver-compare and cron-next.
+- **12b was deferred** to save time; run `uv run --with langgraph python examples/graphs/exec_live.py <kata> --model gemma4:12b --no-hints` per kata, then `report.py`.
+- **Reading the table:** 12 of the 27 Green are "satisfied" (roman-numerals 5, bowling 4, word-wrap 3, semver 1, cron 1), so the Plans' Behaviors are often too close together or the model builds ahead. Real iterative work happened on cron-next (11 attempts, 4/6), semver-compare and word-wrap. One sample per cell, so differences of one Behavior may be noise.
+- **Divergences from the spec (decided with the user):** (1) a test that passes at Red marks the Behavior satisfied and moves on instead of routing back to `write_test`; this removes retry loops where earlier code already covers the Behavior, but it weakens "no test passes at Red", so M13 should decide whether to keep it. (2) The model sees only the Behaviors up to the current one and is told to make the smallest change; an earlier run that showed all six overbuilt at Behavior 1 (1/6 Green, 15 Red rejections).
+- Run summaries are under each kata's `runs/` (gitignored). Not exercised live: hinted runs, the `clarify` flow, a failing Probe.
 
 ### M12 — Sandbox and Workspace
 
