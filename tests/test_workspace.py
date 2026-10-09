@@ -107,3 +107,15 @@ async def test_odd_file_names_are_added_literally(fixture_repo: Path, base: Path
     (ws.path / "other.txt").write_text("y")
     assert {c.path for c in await ws.changes()} == {"a*b.txt", "other.txt"}
     await ws.remove()
+
+
+async def test_list_files_and_read_head_see_new_files_and_the_starting_contents(fixture_repo: Path, base: Path) -> None:
+    ws = await Workspace.create(fixture_repo, base, "r6")
+    (ws.path / "src" / "mod.py").write_text("changed = True\n")
+    (ws.path / "src" / "new.py").write_text("X = 1\n")
+    (ws.path / ".venv").mkdir()
+    (ws.path / ".venv" / "junk.py").write_text("")
+    assert await ws.list_files() == [".gitignore", "pyproject.toml", "src/mod.py", "src/new.py", "tests/test_mod.py"]
+    assert (await ws.read_head("src/mod.py") or b"").startswith(b"def add")
+    assert await ws.read_head("src/new.py") is None
+    await ws.remove()

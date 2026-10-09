@@ -41,3 +41,13 @@ service_name = "braid"
 [evals]
 models = ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gpt-oss:20b"]   # not-pulled models are skipped
 num_ctx = 8192
+
+[workflow]
+# model = "gemma4:12b"        # default: the [profile] model
+num_ctx = 16384
+max_attempts = 3
+max_polish_rounds = 1         # 0 skips Polish
+test_command = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
+lint_commands = []            # each must exit 0 after Polish, or Polish is reverted
+workspaces_dir = "~/.braid/workspaces"
+runs_dir = "~/.braid/runs"    # one JSONL log per run

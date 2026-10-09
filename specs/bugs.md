@@ -4,12 +4,25 @@ Tabled issues that are not on a milestone's critical path. Newest first. Close a
 
 ## Open
 
+### Context Usage Bar not updated after workflow edits
+
+- **Seen:** User feedback, post-M15.
+- **Symptom:** After specific changes or edits (e.g., "didn't accept workflow edits"), the context usage bar display does not refresh or accurately reflect the loaded model state.
+- **Likely cause (not confirmed):** The model state reporting mechanism in the UI or `Watchdog` is not robustly polling/rendering all loaded model contexts, leading to stale data being displayed.
+- **Possible fix:** Ensure the state polling logic captures and displays the total memory footprint and context usage of *all* currently loaded models, including helpers, immediately following any configuration or model state change.
+
 ### Status bar shows only one model when several are loaded
 
 - **Seen:** 2026-10-08, with `gemma4` and tev1 loaded together.
 - **Symptom:** the status bar reports a single model, so the other loaded model's size, GPU share and keep-alive are invisible.
 - **Likely cause (not confirmed):** `Watchdog.poll_once` builds `GuardState` from one `/api/ps` entry, the first that is not marked a helper (`head = next(m for m in models if m.name not in self._helpers)`). `GuardState` has no list of models, and helpers (the summarizer, tev1) are deliberately excluded from `model`, so they never reach the bar. Memory use is therefore under-reported while a helper is loaded.
 - **Possible fix:** carry every loaded model in `GuardState` and render the daily driver first with the helpers after it, for example `gemma4:e4b 6.6 GiB … + tev1:0.8b 0.8 GiB`. Spill and drift alerts already cover all loaded models; only the display is affected.
+
+### Commands and decisions must be inline in chat log
+
+- **Seen:** User specification update (post-M15).
+- **Symptom:** System behavior allows run commands and decision actions to appear in a separate panel or bottom view.
+- **Requirement:** All run commands and subsequent decision actions must be rendered directly inline within the main chat log transcript. They must not be relegated to a separate panel or bottom view to maintain a continuous, easy-to-follow conversational flow.
 
 ### Status bar still flickers when the model reloads
 
@@ -32,4 +45,3 @@ Tabled issues that are not on a milestone's critical path. Newest first. Close a
 - **Risk:** low. The notes folder comes from `harness.toml`, not the model, and the tools only read. It is still a gap in the "bound to one project folder" promise.
 - **Possible fix:** resolve the notes folder once, then skip any file whose resolved path falls outside it (`resolve_inside(folder, ...)`); add a test with a symlink pointing out of the folder, alongside the existing traversal tests in `tests/test_tools.py`.
 - **Fixed in:** (uncommitted, M8). `search_notes` resolves the notes folder (a relative one must stay inside the project folder) and skips any file whose resolved path leaves it. Tests: `tests/test_tools.py`.
-

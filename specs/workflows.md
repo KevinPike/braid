@@ -224,7 +224,7 @@ The Execution loop from `examples/graphs/exec_graph.py`, with a real model throu
 
 ### 13.2 The graph: `workflow/execute.py`
 
-`build_execution_graph(model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig) -> StateGraph` with nodes `check_assumptions`, `clarify`, `write_test`, `run_red`, `write_impl`, `run_green`, `stuck`, `next_behavior`, `sign_off`, `polish`, `verify_polish`, `finish`. Routing is the example's, plus `finish`. Prompts live in `workflow/prompts.py`; model replies use these schemas:
+`build_execution_graph(model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig) -> StateGraph` with nodes `check_assumptions`, `clarify`, `write_test`, `run_red`, `check_satisfied`, `write_impl`, `run_green`, `stuck`, `next_behavior`, `sign_off`, `polish`, `verify_polish`, `finish`. Routing is the example's, plus `finish`. Prompts live in `workflow/prompts.py`; model replies use these schemas:
 
 ```python
 class FileEdit(BaseModel):
@@ -239,19 +239,21 @@ Rules each node must keep:
 
 - **Paths:** every `FileEdit.path` goes through `resolve_inside(workspace.path, …)`. A refused edit is not written and counts as a failed attempt, with the refusal in `last_run`.
 - **Model context:** the Plan, the current Behavior, the Workspace file tree (`git ls-files`, up to 200 lines), the current contents of `plan.files` plus every file edited so far (up to 300 lines each, with a trim marker), and the tail of the last run (up to 40 lines). Never send the run history.
-- **Red** requires pytest exit 1, or exit 2 with `ModuleNotFoundError` or `ImportError` naming a module that is not the test file. A `SyntaxError` or other collection error in the test file, or a test that passes, routes back to `write_test` with that output. After `max_attempts` (default 3) test rewrites, route to `stuck`.
+- **Red** requires pytest exit 1, or exit 2 with `ModuleNotFoundError` or `ImportError` naming a module that is not the test file. A `SyntaxError` or other collection error in the test file routes back to `write_test` with that output. After `max_attempts` (default 3) rejected tests, route to `stuck`.
+- **Satisfied** (divergence from the first draft of this spec, decided with the user after M11): a new test can pass at Red because code written for earlier Behaviors already implements it. When `run_red` finds the test passing, the deterministic node `check_satisfied` runs the same test file(s) against the implementation as it was at Workspace creation (HEAD): it temporarily restores every non-test file changed since HEAD (files under `tests/` stay) to its HEAD contents and removes files added outside `tests/`, runs the test, and restores the current contents in a `finally`. If the test fails there (any non-zero exit, import errors included), the Behavior is **Satisfied**: it is recorded (`BehaviorStats.satisfied`, the summary's `satisfied` count) and the run goes to `next_behavior`. If it still passes at HEAD the test is vacuous: it counts as a Red rejection and routes to `write_test` with feedback that it passes without any implementation; after `max_attempts` such rewrites, route to `stuck`. The model is never asked.
 - **Green** runs the whole suite: `settings.test_command`, default `.venv/bin/python -m pytest -q --no-header -p no:cacheprovider`.
 - **Assumption check** runs each `probe` in the Sandbox with a 30 s timeout. Assumptions with `evidence` and no probe pass. A failure or any `open_questions` interrupts at `clarify`. The answer `abort` ends the run; any other answer waives the failed Assumptions, appends the answer to `plan.notes`, clears `open_questions`, and runs the Assumption check again.
 - **Stuck** interrupts with the Behavior and the last run. A hint resets attempts and goes into the next `write_impl` prompt; `abort` ends the run.
 - **Sign-off** runs `plan.demo` in the Sandbox when set, and shows its output with the list of passing tests. `yes` goes to `polish`; `abort` ends the run; any other text is appended as a new Behavior and routes to `write_test`.
 - **Polish** snapshots every file it will change, asks for `Edits` with "change structure and names, never behavior", then runs the suite and each of `settings.lint_commands` (default empty). Red reverts every snapshot. The run gets `max_polish_rounds` (default 1).
 - **Finish** interrupts with `workspace.changes()` (flags shown) and the diff. `yes` runs `workspace.apply()` and then `remove()`. Anything else keeps the Workspace and prints its path.
-- Each node appends one JSON line to `~/.braid/runs/<run_id>.jsonl`: node, timestamp, attempt, exit code, model latency.
+- Each node appends one JSON line to `<runs_dir>/<run_id>.jsonl` (`[workflow] runs_dir`, default `~/.braid/runs`), rich enough to debug a failed Behavior without rerunning: node, timestamp, Behavior index, attempt, and where relevant the prompt sent, the model's parsed reply, files written and refusals, exit code, `timed_out`, the output tail (40 lines), seconds and model latency.
 
 Gates (`tests/workflow/test_execute.py`, using a `ScriptedModel` fake for `WorkflowModel`, `LocalSandbox`, a fixture repo with a venv made by `uv venv` and pytest installed, and scripted interrupt answers):
 
 1. Happy path: two Behaviors, the model wrong once on the second. The node trace equals the expected sequence exactly, the run ends at `finish`, and after `yes` the project contains both tests and the implementation.
-2. A test that passes at Red routes back to `write_test`; three in a row interrupt at `stuck`.
+2. A test that passes at Red and also passes against the HEAD implementation routes back to `write_test`; three in a row interrupt at `stuck`.
+2b. A test that passes at Red but fails against the HEAD implementation marks the Behavior Satisfied and moves to `next_behavior`, and the Workspace files are unchanged afterwards.
 3. A test file with a `SyntaxError` routes to `write_test`, never `write_impl`.
 4. Green failing `max_attempts` times interrupts at `stuck`; a hint resumes `write_impl`, and the next prompt contains the hint.
 5. A failing Probe interrupts at `clarify` before any file is written (`changes()` is empty).
@@ -268,7 +270,7 @@ Gates (`tests/workflow/test_execute.py`, using a `ScriptedModel` fake for `Workf
 
 **Live check** (`tests/test_live_workflow.py`, `HARNESS_LIVE=1`): one kata from `~/projects/braid-practice/` with its Claude `plan.json`, `gemma4:12b`, hints off. The test passes when the run ends at `finish` or `stuck` without an exception; model quality is measured, not gated. Then rerun the M11 baseline (all five katas, `gemma4:e4b` and `gemma4:12b`, plus `llama3.1:8b` once it is pulled) through `harness-workflow build`, and put the new table next to M11's in the status notes. A drop from the spike is a bug in the port, not in the model.
 
-**M13 validation:** given a Plan and a git project, `harness-workflow build` reaches an applied diff or a clean stop, with every model call pinned through the guard client and every command run in the Sandbox; all nine graph gates pass with a scripted model.
+**M13 validation:** given a Plan and a git project, `harness-workflow build` reaches an applied diff or a clean stop, with every model call pinned through the guard client and every command run in the Sandbox; all ten graph gates pass with a scripted model.
 
 **Try it:** build a CLI from rung 2 of the practice ladder from a Claude Plan, apply the diff, and use the tool. Then add a feature to an existing hobby repo (rung 3).
 

@@ -122,6 +122,22 @@ class Workspace:
                 env={**self._git_env, "GIT_LITERAL_PATHSPECS": "1"}, stdin="\0".join(new).encode() + b"\0",
             )
 
+    async def list_files(self) -> list[str]:
+        """Tracked and new (not ignored) files, sorted: what ``git ls-files`` shows, minus the Workspace's own scratch.
+        Tracked files deleted from disk are left out."""
+        _, listing = await _git(self.path, "ls-files", "--cached", "--others", "--exclude-standard", "-z", env=self._git_env)
+        names = {f for f in listing.split("\0") if f and f.split("/")[0] not in SCRATCH}
+        return sorted(f for f in names if (self.path / f).is_file() and not (self.path / f).is_symlink())
+
+    async def read_head(self, path: str) -> bytes | None:
+        """A file's contents at HEAD (the Workspace's starting point), or None when HEAD has no such file."""
+        proc = await asyncio.create_subprocess_exec(
+            "git", "show", f"HEAD:{path}", cwd=self.path, env={**os.environ, **self._git_env, "GIT_LITERAL_PATHSPECS": "1"},
+            stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        return out if proc.returncode == 0 else None
+
     async def changes(self) -> list[Change]:
         await self._intent_to_add()
         _, raw = await _git(

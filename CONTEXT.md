@@ -120,6 +120,10 @@ _Avoid_: Preflight (that is the **Guard**'s checklist), validation
 A **Behavior**'s new test failing for the expected reason before the code that satisfies it exists.
 _Avoid_: Failing test (a failing test can also mean broken)
 
+**Satisfied**:
+A **Behavior** whose new test passes at **Red** but fails against the implementation as it was when the **Workspace** was created, so code written for earlier Behaviors already covers it; it counts as done without an implementation attempt.
+_Avoid_: Skipped, already passing, vacuous (a test that passes even at the starting implementation checks nothing and is rejected)
+
 **Green**:
 The whole test suite passing after an implementation attempt.
 _Avoid_: Passing

@@ -79,6 +79,20 @@ class EvalsConfig(BaseModel):
     num_ctx: int = 8192  # modest on purpose: the M4 prompts are short and every model must fit without spilling
 
 
+class WorkflowConfig(BaseModel):
+    """The Execution loop (M13). ``model`` defaults to the Profile's model."""
+
+    model: str | None = None
+    num_ctx: int = 16384
+    max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
+    max_polish_rounds: int = 1  # 0 skips Polish
+    test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
+    lint_commands: list[str] = []  # each must exit 0 after Polish, or Polish is reverted
+    command_timeout_s: float = 120.0
+    workspaces_dir: Path = Path("~/.braid/workspaces")
+    runs_dir: Path = Path("~/.braid/runs")  # one <run_id>.jsonl per run
+
+
 class PathsConfig(BaseModel):
     data_dir: Path = Path("~/.braid")
 
@@ -119,6 +133,7 @@ class HarnessConfig(BaseModel):
     decide: DecideConfig = DecideConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
+    workflow: WorkflowConfig = WorkflowConfig()
     paths: PathsConfig = PathsConfig()
 
 
