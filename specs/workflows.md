@@ -275,6 +275,8 @@ Gates (`tests/workflow/test_execute.py`, using a `ScriptedModel` fake for `Workf
 
 **Live check** (`tests/test_live_workflow.py`, `HARNESS_LIVE=1`): one kata from `~/projects/braid-practice/` with its Claude `plan.json`, `gemma4:12b`, hints off. The test passes when the run ends at `finish` or `stuck` without an exception; model quality is measured, not gated. Then rerun the M11 baseline (all five katas, `gemma4:e4b` and `gemma4:12b`, plus `llama3.1:8b` once it is pulled) through `harness-workflow build`, and put the new table next to M11's in the status notes. A drop from the spike is a bug in the port, not in the model.
 
+The live check also exercises, once each by a person or with scripted stdin, three paths M11 never ran live: a **hinted run** (answer a Stuck with a hint and see the next `write_impl` use it), the **`clarify` flow** (a Plan with an open question, answered with text, and once with `abort`), and a **failing Probe** (an Assumption whose Probe exits non-zero). Record each outcome in the M13 status notes: what was asked, what the answer did, and anything that surprised you.
+
 **M13 validation:** given a Plan and a git project, `harness-workflow build` reaches an applied diff or a clean stop, with every model call pinned through the guard client and every command run in the Sandbox; all ten graph gates pass with a scripted model.
 
 **Try it:** build a CLI from rung 2 of the practice ladder from a Claude Plan, apply the diff, and use the tool. Then add a feature to an existing hobby repo (rung 3).
@@ -300,7 +302,8 @@ On rounds after the first, the human's `research: …` text goes into step 1's p
 Nodes `research`, `draft`, `critique` (fanned out with `Send`, one per angle), `synthesize`, `human_review`, `finalize`, routed as in the example.
 
 - `draft` returns a `Plan`. Every Assumption needs a `probe` or a verified `evidence`; otherwise the draft is retried once with the offending Assumptions named, then those go into `open_questions`.
-- `[workflow] critique_angles`, default `["feasibility", "scope", "testability", "risk"]`. Each angle has its own system prompt in `workflow/prompts.py` and returns `{points: list[str]}` (up to 3). Use a reducer keyed by round, as in the example.
+- **Spacing:** the M11 spike had 14 of 27 Green Behaviors end up Satisfied, so the Behaviors were too close together or the model built ahead. The `draft` prompt requires that each Behavior need new code beyond the earlier ones, and a new Critique angle `spacing` asks, for each Behavior, whether the code for the earlier Behaviors would already make its test pass, and names those Behaviors.
+- `[workflow] critique_angles`, default `["feasibility", "scope", "testability", "risk", "spacing"]`. Each angle has its own system prompt in `workflow/prompts.py` and returns `{points: list[str]}` (up to 3). Use a reducer keyed by round, as in the example.
 - `synthesize` returns `open_questions` (up to 5): questions only the human can answer.
 - `human_review` routes `approve` to `finalize`, `research: …` to `research`, and any other text to `draft`. At `max_rounds` (default 3) it goes to `finalize` with `"stopped at round limit"` in `notes`.
 - `finalize` saves the Plan to `~/.braid/plans/<id>.json` and prints a Markdown rendering of it.
@@ -314,9 +317,11 @@ Gates (`tests/workflow/test_plan_loop.py`, `ScriptedModel`, fixture repo):
 3. A query whose target is outside the project is refused and nothing outside is read.
 4. A finding citing a missing file or an out-of-range line is marked `unverified` and appears in `open_questions`.
 5. An Assumption with neither a probe nor verified evidence triggers exactly one draft retry.
-6. The finalized Plan loads with `Plan.load` and runs through `build_execution_graph` up to its first interrupt with the scripted model.
+6. The default `critique_angles` include `spacing`; one round makes a call for it, and its prompt carries every Behavior in order.
+7. The `draft` system prompt contains the new-code-per-Behavior requirement (a string check on `prompts.py`), and a scripted `spacing` Critique reaches `synthesize` in state.
+8. The finalized Plan loads with `Plan.load` and runs through `build_execution_graph` up to its first interrupt with the scripted model.
 
-**Live check:** plan the five M11 katas locally with `gemma4:12b`, approving each at the first review that has no open questions. Run each local Plan through `harness-workflow build --no-hints`, and put the results in the status notes next to the Claude-Plan results for the same model. This comparison measures what the Plan loop is worth.
+**Live check:** plan the five M11 katas locally with `gemma4:12b`, approving each at the first review that has no open questions. Run each local Plan through `harness-workflow build --no-hints`, and put the results in the status notes next to the Claude-Plan results for the same model. This comparison measures what the Plan loop is worth. The table also reports the **Satisfied count per Plan** (from the run summary's `satisfied`) next to Claude's Plans for the same katas, so it shows whether `spacing` spaces the Behaviors better than the M11 baseline of 14 Satisfied in 27 Green.
 
 **M14 validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review, and that Plan feeds M13 unchanged.
 
@@ -326,24 +331,37 @@ Gates (`tests/workflow/test_plan_loop.py`, `ScriptedModel`, fixture repo):
 
 ## M15 — Workflows in the TUI
 
-Runs both loops from the TUI, with resume. ADRs: 0003, 0005.
+Runs both loops from the TUI, with resume, inline decisions, timing feedback and a status bar that tells the truth about loaded models. ADRs: 0003, 0005. Closes four bugs in `specs/bugs.md`; each item below names its bug.
 
-- **Commands:** `/plan <goal>`, `/build [plan-id]` (most recent Plan when omitted), and `/runs` (recent runs with their state). Add them to the command table in `app.py`.
-- **Progress:** one line per node update in the chat pane, styled like status lines, not like model replies.
-- **Interrupts:** an inline widget modelled on `ApprovalPrompt` that shows the payload and takes a free-text answer. `finish` uses the real Approval path, so it emits `ApprovalRequested` and `ApprovalResolved` and holds the Prompt queue. Every other interrupt holds the queue too.
-- **Checkpointing:** `langgraph-checkpoint-sqlite` at `~/.braid/workflows.db`, with `thread_id` = run id. `/build --resume <run-id>` and `/runs` read it.
+- **Commands:** `/plan <goal>`, `/build [plan-id]` (most recent Plan when omitted), `/runs` (recent runs with their state) and `/runs <run-id>` (item 6). Add them to the command table in `app.py`.
+- **Interrupts:** every human pause holds the Prompt queue. `finish` uses the real Approval path, so it emits `ApprovalRequested` and `ApprovalResolved`.
+- **Checkpointing:** `langgraph-checkpoint-sqlite` at `~/.braid/workflows.db`, with `thread_id` = run id. `/build --resume <run-id>` and `/runs` read it. The `Recorder` (per-Behavior stats) and the run's start time move into the checkpointed state, so a resumed run's summary table and elapsed time cover the whole run; `RunLog` lines are append-only and do not replay.
 - **Ctrl-C:** cancels the running node's task, kills its Sandbox process group, and pauses the run at its last checkpoint. It never applies anything.
-- **Models:** a `[workflow] model` other than the loaded model is preflighted, and the loaded model is unloaded for the run, as in evals. The status bar shows the workflow model while the run is active.
 - **Hook events:** add `WorkflowNodeFinished(run_id, node, duration_s, attempt)` and `WorkflowInterrupted(run_id, kind)` to `hooks.py`. Telemetry turns each into a span or metric.
 
-Gates (`tests/test_app_workflows.py`, Textual pilot, `ScriptedModel`, `LocalSandbox`):
+### Items
+
+1. **Inline in the chat log** (closes "Commands and decisions must be inline in chat log"). Workflow interrupts and Approvals are widgets mounted into the chat log, not fixed widgets. That includes the chat shell and `write_file` per-call Approval, so the `ApprovalPrompt` yielded in `compose()` is replaced by one mounted in the log. Once answered, a widget collapses to a permanent line recording the question and the answer (`✓ run pytest? approved`). Sandbox commands a workflow runs (pytest, Probes, the demo) appear inline with their exit code and duration (`$ pytest -q  exit 1  3.2s`).
+2. **Timing feedback**, mirroring M13's CLI. While a node runs, one progress line in the chat pane updates in place (node, `Behavior i/N`, elapsed seconds). A finished node's line shows its result and duration (and model latency for model nodes). The status bar shows the run's elapsed time while a run is active. The run ends with the per-Behavior table (Green, Satisfied or Stuck; attempts; seconds). Line, result and table text come from `workflow/progress.py`'s formatting functions (`line`, `describe`, `final_report`) with the clock injected, so the CLI and the TUI cannot disagree.
+3. **Every loaded model in the status bar** (closes "Status bar shows only one model when several are loaded"). `GuardState` carries all `/api/ps` models, not only the first non-helper. The bar renders the active model first and helpers after it (`gemma4:12b 9.1 GiB … + tev1:0.8b 0.8 GiB …`). Memory totals include helpers. Spill and drift alerts are unchanged.
+4. **Model swap around a run** (closes "Context Usage Bar not updated after workflow edits"). When a run ends, is cancelled or fails, the chat model is preflighted again, and the status bar and context panel show it within one poll (2 s).
+5. **No flicker on reload** (closes "Status bar still flickers when the model reloads"). The workflow's unload and preflight set the loading state (`loading <model>…`), so no empty "no model loaded" frame is rendered between the two models. During a run the app logs every `/api/ps` poll and every state the status bar renders to a timestamped debug log under `~/.braid/`, so a flicker seen live can be matched to a poll.
+6. **Inspector visibility.** `/runs <run-id>` opens the run's JSONL log (`<runs_dir>/<run_id>.jsonl`) in the transcript inspector: for each node the prompt, reply, files written, exit code and output tail. Workflow model calls are not written to the session `calls` table, which already grows quadratically.
+
+Gates (`tests/test_app_workflows.py`, Textual pilot, `ScriptedModel`, `LocalSandbox`; fakes for `/api/ps` and the clock):
 
 1. `/build` runs to a `stuck` interrupt; a prompt submitted meanwhile stays queued until the widget is answered.
 2. The `finish` Approval emits both approval hook events, and `n` leaves the project unchanged.
-3. Ctrl-C during a node, then `/build --resume`, finishes the run without re-running completed nodes (count `ScriptedModel` calls).
+3. Ctrl-C during a node, then `/build --resume`, finishes the run without re-running completed nodes (count `ScriptedModel` calls), and the final table still counts the Behaviors finished before the cancel.
 4. Killing the app mid-run and restarting with `/build --resume <id>` continues from the checkpoint.
 5. Every node update emits `WorkflowNodeFinished`.
+6. Inline: a `stuck` interrupt and a chat-shell Approval each mount inside the chat log (no `ApprovalPrompt` in `compose()`); once answered each is replaced by a one-line record with the question and answer, and a scripted run's pytest command appears inline with exit code and duration.
+7. Timing: with a fake clock, the progress line for a running node updates in place (one line, seconds advance), a finished node line shows result and duration, the status bar shows elapsed time while the run is active and none after, and the end-of-run table matches `final_report` output for the same records.
+8. Models: a fake `/api/ps` returning `gemma4:12b` and `tev1:0.8b` renders the active model first and the helper after it, and the memory total includes both.
+9. Swap: with the workflow model different from the chat model, a completed, a cancelled and a failed run each end with the chat model preflighted again, and the status bar and context panel show it within one poll.
+10. No flicker: across a scripted swap (unload, load, run, unload, reload) no rendered status state is empty; the loading state shows throughout, and each poll and rendered state is in the debug log.
+11. Inspector: `/runs <run-id>` opens the transcript inspector with each node's prompt, reply, files, exit code and tail from a fixture JSONL log, and the session `calls` table has no new rows from the run.
 
-**M15 validation:** both loops run from the TUI end to end, every human pause holds the Prompt queue, and a cancelled or killed run resumes from its last checkpoint without repeating model calls.
+**M15 validation:** both loops run from the TUI end to end; every human pause and every Approval is inline in the chat log and holds the Prompt queue; the TUI shows the same timings as the CLI; the status bar shows every loaded model and never an empty frame across a model swap; a cancelled or killed run resumes from its last checkpoint without repeating model calls; `/runs <id>` shows what each node sent and got.
 
 **Try it:** for a week, start hobby work with `/plan` or a Claude Plan and `/build`. Kill braid mid-run once and resume. Then take rung 4: build `/export` in braid with braid.

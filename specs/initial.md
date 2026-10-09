@@ -397,7 +397,7 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 Spec: `specs/workflows.md` § M14. ADR 0004.
 
 - [ ] Research as model-chosen queries the harness runs in-process, with checked citations
-- [ ] Plan loop: draft, parallel Critiques, open questions, human review rounds
+- [ ] Plan loop: draft, parallel Critiques (including `spacing`, against Satisfied Behaviors), open questions, human review rounds
 - [ ] `harness-workflow plan "<goal>"` writes a Plan that M13 consumes unchanged
 
 **Validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review.
@@ -406,11 +406,13 @@ Spec: `specs/workflows.md` § M14. ADR 0004.
 
 Spec: `specs/workflows.md` § M15.
 
-- [ ] `/plan`, `/build`, `/runs`; node progress in the chat pane; interrupts as an inline widget that holds the Prompt queue
-- [ ] SQLite checkpoints, resume after Ctrl-C or a killed app
-- [ ] Workflow hook events and telemetry
+- [ ] `/plan`, `/build`, `/runs [id]`; interrupts and Approvals as widgets inline in the chat log that hold the Prompt queue and collapse to a record once answered
+- [ ] Timing feedback in the TUI (live node line, durations, elapsed time in the status bar, per-Behavior table) from the same formatting as the CLI
+- [ ] Status bar shows every loaded model; the chat model is preflighted again after a run; no empty frame on reload (debug log of polls)
+- [ ] SQLite checkpoints (including the `Recorder`), resume after Ctrl-C or a killed app
+- [ ] Workflow hook events and telemetry; `/runs <id>` opens the run log in the inspector
 
-**Validation:** both loops run from the TUI end to end, and a cancelled or killed run resumes from its last checkpoint without repeating model calls.
+**Validation:** both loops run from the TUI end to end; every human pause and Approval is inline in the chat log and holds the Prompt queue; the TUI shows the CLI's timings; the status bar shows every loaded model and never an empty frame across a swap; a cancelled or killed run resumes from its last checkpoint without repeating model calls.
 
 ## Risks and open questions
 
