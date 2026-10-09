@@ -191,7 +191,7 @@ class BehaviorStats:
     red_rejections: int = 0
     hints: int = 0
     seconds: float = 0.0
-    passing_at_red: int = 0  # Red rejections because the new test already passed (the code already did this)
+    satisfied: bool = False  # the new test passed at Red: earlier code already does this, so no implementation attempt
     note: str = ""
 
 
@@ -214,6 +214,7 @@ class State(TypedDict, total=False):
     last_run: str
     passed: bool
     red_ok: bool
+    satisfied: bool
     phase: Literal["test", "impl", "skipped"]
     waived: Annotated[list[str], operator.add]
     failed: list[str]
@@ -348,7 +349,7 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
         written, refused = apply(state, edits, "tests")
         out: dict[str, Any] = {"idx": idx, "phase": "test", "test_paths": [*written]}
         if fresh:
-            out.update(snapshot=capture(), red_tries=0)
+            out.update(snapshot=capture(), red_tries=0, satisfied=False)
         if refused:
             print(f"    refused: {refused}")
             out["last_run"] = "Edit refused: " + "; ".join(refused)
@@ -366,13 +367,17 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
         print(f"    red: {'failed as it should' if red_ok else f'REJECTED (pytest exit {r.code})'}")
         if red_ok:
             return {"red_ok": True, "last_run": tail(r.output)}
+        if r.code == 0:  # a passing test is not a bad test here: keep it and move on rather than burn retries
+            current(state).satisfied = True
+            return {"red_ok": False, "satisfied": True}
         current(state).red_rejections += 1
-        current(state).passing_at_red += r.code == 0
         return {"red_ok": False, "red_tries": tries + 1, "last_run": tail(r.output)}
 
-    def after_red(state: State) -> Literal["write_test", "write_impl", "stuck"]:
+    def after_red(state: State) -> Literal["write_test", "write_impl", "next_behavior", "stuck"]:
         if state["red_ok"]:
             return "write_impl"
+        if state.get("satisfied"):
+            return "next_behavior"
         return "stuck" if state["red_tries"] >= MAX_ATTEMPTS else "write_test"
 
     async def write_impl(state: State) -> dict[str, Any]:
@@ -418,8 +423,6 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
             return {"status": "aborted"}
         if answer.lower().startswith("skip"):  # mark failed and put the Workspace back as this Behavior found it
             stats.green, stats.note = False, "stuck"
-            if stats.passing_at_red and state.get("phase") == "test":
-                stats.note = "stuck: tests kept passing at Red, so earlier code may already satisfy it"
             stats.seconds = time.monotonic() - rec.behavior_started
             restore(state["snapshot"])
             return {"phase": "skipped", "idx": state["idx"] + 1, "attempts": 0, "hint": "", "last_run": "", "edited": {}}
@@ -500,7 +503,7 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
     g.add_conditional_edges("check_assumptions", after_check, ["clarify", "write_test"])
     g.add_conditional_edges("clarify", after_clarify, ["check_assumptions", END])
     g.add_edge("write_test", "run_red")
-    g.add_conditional_edges("run_red", after_red, ["write_test", "write_impl", "stuck"])
+    g.add_conditional_edges("run_red", after_red, ["write_test", "write_impl", "next_behavior", "stuck"])
     g.add_edge("write_impl", "run_green")
     g.add_conditional_edges("run_green", after_green, ["next_behavior", "write_impl", "stuck"])
     g.add_conditional_edges("stuck", after_stuck, ["write_test", "write_impl", "sign_off", END])
@@ -578,7 +581,7 @@ def write_summary(kata: Path, args: argparse.Namespace, work: Path, rec: Recorde
         "totals": {
             "green": sum(b.green for b in rec.behaviors), "attempts": sum(b.attempts for b in rec.behaviors),
             "red_rejections": sum(b.red_rejections for b in rec.behaviors), "hints": sum(b.hints for b in rec.behaviors),
-            "passing_at_red": sum(b.passing_at_red for b in rec.behaviors),
+            "satisfied": sum(b.satisfied for b in rec.behaviors),
             "seconds": round(time.monotonic() - rec.started, 1), "model_seconds": round(model.model_seconds, 1),
             "model_calls": model.calls,
         },

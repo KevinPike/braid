@@ -28,7 +28,7 @@ def cell(run: dict[str, Any] | None) -> str:
         return "-"
     t = run["totals"]
     minutes = t["seconds"] / 60 / max(run["planned"], 1)
-    return f"{t['green']}/{run['planned']} · {t['attempts']}a · {t['red_rejections']}r · {t['hints']}h · {t.get('passing_at_red', 0)}p · {minutes:.1f}m"
+    return f"{t['green']}/{run['planned']} · {t['attempts']}a · {t['red_rejections']}r · {t['hints']}h · {t.get('satisfied', 0)}s · {minutes:.1f}m"
 
 
 def table(runs: dict[tuple[str, str], dict[str, Any]]) -> str:
@@ -41,7 +41,7 @@ def table(runs: dict[tuple[str, str], dict[str, Any]]) -> str:
         planned = sum(r["planned"] for r in got if r)
         lines.append(f"| {model} | " + " | ".join(cell(r) for r in got) + f" | {green}/{planned} |")
     lines.append("")
-    lines.append("Cell: Behaviors Green/planned · impl attempts (a) · Red rejections (r) · hints (h) · rejections where the test already passed (p) · minutes per Behavior (m).")
+    lines.append("Cell: Behaviors Green/planned · impl attempts (a) · Red rejections (r) · hints (h) · Behaviors already satisfied by earlier code (s, counted as Green) · minutes per Behavior (m).")
     return "\n".join(lines)
 
 
