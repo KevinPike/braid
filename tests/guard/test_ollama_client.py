@@ -52,6 +52,26 @@ async def test_caller_options_cannot_override_pinned_num_ctx(client: OllamaClien
     assert opts == {"num_ctx": 8192, "temperature": 0.2}
 
 
+@respx.mock
+async def test_format_schema_is_sent_and_num_ctx_stays_pinned(client: OllamaClient) -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(return_value=ndjson(FINAL))
+    schema = {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}
+    _ = [c async for c in client.chat("m", [], format=schema)]
+    _ = [c async for c in client.chat("m", [], format="json")]
+
+    first, second = (json.loads(call.request.content) for call in route.calls)
+    assert first["format"] == schema
+    assert second["format"] == "json"
+    assert first["options"]["num_ctx"] == 8192
+
+
+@respx.mock
+async def test_format_is_omitted_when_unset(client: OllamaClient) -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(return_value=ndjson(FINAL))
+    _ = [c async for c in client.chat("m", [])]
+    assert "format" not in json.loads(route.calls.last.request.content)
+
+
 async def test_unpinned_model_is_refused(client: OllamaClient) -> None:
     with pytest.raises(UnpinnedModelError):
         _ = [c async for c in client.chat("other", [])]
