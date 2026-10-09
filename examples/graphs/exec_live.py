@@ -253,7 +253,8 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
         return (
             f"Goal: {plan['goal']}\nOut of scope: {'; '.join(plan.get('out_of_scope', [])) or 'nothing listed'}\n"
             f"{('Notes:' + chr(10) + notes + chr(10)) if notes else ''}"
-            f"All behaviors, in order:\n" + "\n".join(f"{i + 1}. {b}" for i, b in enumerate(plan["behaviors"]))
+            # Later behaviors stay hidden: a model that sees them builds them all now, and their tests then pass at Red.
+            f"Behaviors so far, in order:\n" + "\n".join(f"{i + 1}. {b}" for i, b in enumerate(plan["behaviors"][: state.get("idx", 0) + 1]))
             + f"\n\nProject files:\n{file_tree(work)}\n\nCurrent file contents:\n{files or '(none yet)'}"
         )
 
@@ -388,7 +389,8 @@ def build(model: LiveModel, box: Seatbelt, work: Path, rec: Recorder, args: argp
         behavior = state["plan"]["behaviors"][state["idx"]]
         prompt = (
             f"{context(state)}\n\nTask: make the tests pass by editing the implementation (not the tests). "
-            f"Current behavior: {behavior}\nKeep all earlier behaviors working.\n\n"
+            f"Current behavior: {behavior}\nWrite the SMALLEST change that makes the tests pass. Do not handle cases no test covers yet; "
+            "later behaviors will get their own tests. Keep all earlier behaviors working.\n\n"
             f"Last pytest output (tail):\n{state.get('last_run', '')}"
         )
         if state.get("hint"):
