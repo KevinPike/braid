@@ -10,9 +10,9 @@ import inspect
 import operator
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal, TypedDict, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -96,6 +96,12 @@ def classify_red(result: RunResult, test_paths: list[str]) -> tuple[Literal["red
     return "rejected", f"pytest exit {result.exit_code}: not a failing test (collection or syntax error?)"
 
 
+class _NodeFn(Protocol):
+    """The shape LangGraph's typing wants for a node: a callable whose parameter is named ``state``."""
+
+    async def __call__(self, state: ExecState) -> dict[str, Any]: ...
+
+
 class _Loop:
     def __init__(
         self, model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
@@ -103,6 +109,7 @@ class _Loop:
     ) -> None:
         self.model, self.sandbox, self.ws, self.cfg = model, sandbox, workspace, settings
         self.hints, self.rec, self.runlog = hints, recorder, log
+        self.node_started = time.monotonic()
         venv_bin = workspace.path / ".venv" / "bin"
         self.env = {
             "PATH": f"{venv_bin}:/usr/bin:/bin:/usr/sbin:/sbin", "VIRTUAL_ENV": str(workspace.path / ".venv"),
@@ -113,7 +120,7 @@ class _Loop:
     def log(self, node: str, state: ExecState, **fields: Any) -> None:
         self.rec.trace.append(node)
         if self.runlog:
-            self.runlog.write(node, behavior=state.get("idx"), **fields)
+            self.runlog.write(node, behavior=state.get("idx"), node_seconds=round(time.monotonic() - self.node_started, 2), **fields)
 
     async def sh(self, command: str, timeout: float | None = None) -> RunResult:
         return await self.sandbox.run(
@@ -462,13 +469,22 @@ class _Loop:
         self.log("finish", state, answer=answer, outcome=status, detail=detail, changes=payload["changes"])
         return {"status": status}
 
+    def timed(self, node: Callable[[ExecState], Any]) -> _NodeFn:
+        """Stamp the node's start, so its log line carries the node's wall time (``node_seconds``)."""
+        async def run(state: ExecState) -> dict[str, Any]:
+            self.node_started = time.monotonic()
+            result = node(state)
+            return cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+
+        return run
+
     def graph(self) -> StateGraph[ExecState]:
         g = StateGraph(ExecState)
         for name in (
             "check_assumptions", "clarify", "write_test", "run_red", "check_satisfied", "write_impl", "run_green", "stuck",
             "next_behavior", "sign_off", "polish", "verify_polish", "finish",
         ):
-            g.add_node(name, getattr(self, name))
+            g.add_node(name, self.timed(getattr(self, name)))
         g.add_edge(START, "check_assumptions")
         g.add_conditional_edges("check_assumptions", self.after_check, ["clarify", "write_test"])
         g.add_conditional_edges("clarify", self.after_clarify, ["check_assumptions", END])
@@ -500,7 +516,8 @@ Ask = Callable[[dict[str, Any]], str | Awaitable[str]]
 
 async def drive_graph(
     graph: StateGraph[ExecState], state: ExecState, ask: Ask, *,
-    on_update: Callable[[str, dict[str, Any]], None] | None = None, thread_id: str = "exec",
+    on_update: Callable[[str, dict[str, Any]], None] | None = None, on_start: Callable[[str], None] | None = None,
+    thread_id: str = "exec",
 ) -> ExecState:
     """Run ``graph`` to the end, answering each interrupt with ``ask(payload)``; returns the final state."""
     compiled = graph.compile(checkpointer=InMemorySaver())
@@ -508,8 +525,13 @@ async def drive_graph(
     run_input: Any = state
     while True:
         pending: dict[str, Any] | None = None
-        async for update in compiled.astream(run_input, config, stream_mode="updates"):
-            for node, value in update.items():
+        events = cast(AsyncIterator[tuple[str, Any]], compiled.astream(run_input, config, stream_mode=["updates", "tasks"]))
+        async for mode, data in events:
+            if mode == "tasks":
+                if on_start and "input" in data:  # a task starting (its result event has no "input")
+                    on_start(data["name"])
+                continue
+            for node, value in data.items():
                 if node == "__interrupt__":
                     pending = value[0].value
                 elif on_update:
