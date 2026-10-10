@@ -6,15 +6,15 @@ Ollama goes through the guard client (ADR 0004); Claude goes through the Anthrop
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Protocol, TypeVar
+from typing import Protocol, TypeVar
 
 import anthropic
 from pydantic import BaseModel, ValidationError
 
+from harness.config import Effort
 from harness.guard.ollama_client import OllamaClient
 
 T = TypeVar("T", bound=BaseModel)
-Effort = Literal["low", "medium", "high", "xhigh", "max"]
 
 
 class WorkflowModelError(RuntimeError):
@@ -69,8 +69,19 @@ class GuardedWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
-# USD per million tokens (input, output). Cache reads cost 0.1x input, cache writes 1.25x input.
-PRICING: dict[str, tuple[float, float]] = {"claude-haiku-5-5": (0.10, 0.50)}
+@dataclass(frozen=True)
+class Price:
+    """USD per million tokens. A prompt (input + cache reads + cache writes) over ``long_over`` tokens bills at the long tier."""
+
+    input: float
+    output: float
+    long_input: float
+    long_output: float
+    long_over: int = 100_000
+
+
+# Cache reads cost 0.1x the tier's input price, cache writes 1.25x.
+PRICING: dict[str, Price] = {"claude-haiku-5-5": Price(0.10, 0.50, 0.50, 2.50)}
 
 
 @dataclass(frozen=True)
@@ -107,7 +118,9 @@ class AnthropicWorkflowModel:
         u = response.usage
         cache_read = u.cache_read_input_tokens or 0
         cache_write = u.cache_creation_input_tokens or 0
-        price_in, price_out = PRICING[self.model_id]
+        price = PRICING[self.model_id]
+        long = u.input_tokens + cache_read + cache_write > price.long_over
+        price_in, price_out = (price.long_input, price.long_output) if long else (price.input, price.output)
         cost = (u.input_tokens * price_in + cache_read * price_in * 0.1 + cache_write * price_in * 1.25
                 + u.output_tokens * price_out) / 1_000_000
         self.calls.append(ApiCall(u.input_tokens, u.output_tokens, cache_read, cache_write, cost, response._request_id))

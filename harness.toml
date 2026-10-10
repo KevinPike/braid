@@ -43,7 +43,12 @@ models = ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gpt-oss:20b"]   # not-pulle
 num_ctx = 8192
 
 [workflow]
-# model = "gemma4:e4b"        # default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
+backend = "ollama"            # "anthropic" runs Workflows on the Anthropic API (ADR 0006): data leaves the machine and runs cost money
+# model = "gemma4:e4b"        # Ollama model; default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
+# anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
+# effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
+max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
+# No API key here, ever: the SDK reads ANTHROPIC_API_KEY, else an `ant auth login` profile.
 num_ctx = 16384
 think = false                 # thinking text is dropped, so do not pay for it
 num_predict = 4096            # max generated tokens per model call

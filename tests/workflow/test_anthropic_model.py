@@ -112,18 +112,33 @@ async def test_max_tokens_twice_raises() -> None:
 
 async def test_usage_cost_and_request_id_are_recorded_per_call() -> None:
     usage = {
-        "input_tokens": 1_000_000, "output_tokens": 1_000_000,
-        "cache_read_input_tokens": 1_000_000, "cache_creation_input_tokens": 1_000_000,
+        "input_tokens": 50_000, "output_tokens": 1_000_000,
+        "cache_read_input_tokens": 20_000, "cache_creation_input_tokens": 10_000,
     }
     model, _ = make([message("bad", usage=usage), message(GOOD)])
     await model.complete("sys", "go", Answer)
     first, second = model.calls
-    assert (first.input_tokens, first.output_tokens) == (1_000_000, 1_000_000)
-    assert (first.cache_read_input_tokens, first.cache_creation_input_tokens) == (1_000_000, 1_000_000)
-    assert first.cost_usd == pytest.approx(0.10 + 0.50 + 0.01 + 0.125)
+    assert (first.input_tokens, first.output_tokens) == (50_000, 1_000_000)
+    assert (first.cache_read_input_tokens, first.cache_creation_input_tokens) == (20_000, 10_000)
+    assert first.cost_usd == pytest.approx((50_000 * 0.10 + 20_000 * 0.01 + 10_000 * 0.125) / 1_000_000 + 0.50)
     assert (first.request_id, second.request_id) == ("req_1", "req_2")
     assert second.cost_usd == pytest.approx((10 * 0.10 + 5 * 0.50) / 1_000_000)
     assert model.cost_usd == pytest.approx(first.cost_usd + second.cost_usd)
+
+
+@pytest.mark.parametrize(("usage", "per_mtok_in", "per_mtok_out"), [
+    ({"input_tokens": 100_000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}, 0.10, 0.50),  # at the limit
+    ({"input_tokens": 100_001, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}, 0.50, 2.50),
+    ({"input_tokens": 1_000, "cache_read_input_tokens": 99_000, "cache_creation_input_tokens": 1}, 0.50, 2.50),  # cached tokens count
+    ({"input_tokens": 1_000, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 99_000}, 0.10, 0.50),
+])
+async def test_a_prompt_over_100k_tokens_bills_at_the_long_tier(usage: dict[str, int], per_mtok_in: float, per_mtok_out: float) -> None:
+    model, _ = make([message(GOOD, usage={**usage, "output_tokens": 1_000})])
+    await model.complete("sys", "go", Answer)
+    u = usage
+    expected = (u["input_tokens"] * per_mtok_in + u["cache_read_input_tokens"] * per_mtok_in * 0.1
+                + u["cache_creation_input_tokens"] * per_mtok_in * 1.25 + 1_000 * per_mtok_out) / 1_000_000
+    assert model.cost_usd == pytest.approx(expected)
 
 
 def test_an_unknown_model_id_is_rejected() -> None:

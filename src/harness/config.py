@@ -8,6 +8,8 @@ from typing import Literal
 
 from pydantic import BaseModel, field_validator
 
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+
 
 class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
@@ -80,9 +82,16 @@ class EvalsConfig(BaseModel):
 
 
 class WorkflowConfig(BaseModel):
-    """The Execution loop (M13) and the Plan loop (M14). ``model` defaults to the Profile's model."""
+    """The Execution loop (M13) and the Plan loop (M14). ``model`` (Ollama) defaults to the Profile's model.
 
+    ``backend = "anthropic"`` runs on the Anthropic API (ADR 0006), with ``anthropic_model``; a ``claude-`` model id
+    picks it too. Credentials are never config: the SDK reads ``ANTHROPIC_API_KEY`` or an ``ant auth`` profile."""
+
+    backend: Literal["ollama", "anthropic"] = "ollama"
     model: str | None = None
+    anthropic_model: str = "claude-haiku-5-5"
+    effort: Effort | None = None  # Anthropic only; None leaves the model's default
+    max_cost_usd: float = 0.10  # Spend cap: an API-backed run stops at the next node boundary once it has cost more
     num_ctx: int = 16384
     think: bool | None = False  # sent as /api/chat's top-level ``think``; false stops thinking models spending the output on it
     num_predict: int | None = 4096  # cap on generated tokens per model call
