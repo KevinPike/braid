@@ -144,6 +144,14 @@ _Avoid_: Cleanup, refactor stage
 A **Workflow** run's saved state after a node (SQLite, keyed by run id), including the per-Behavior stats; a run that was cancelled with Ctrl-C or killed resumes from its last one without repeating finished nodes.
 _Avoid_: Save point, snapshot (the Workspace snapshots are Polish's)
 
+**Invariant**:
+A rule from the **Plan** written as a Python expression over one call (`args`, `kwargs`, `result`) that every expected value in a test must satisfy; it lets code, not a model, decide whether a test is wrong.
+_Avoid_: Property, constraint
+
+**Dispute**:
+An implementer's claim that a test is wrong; it never routes by itself, it only triggers an **Invariant** check on that test.
+_Avoid_: Objection, challenge
+
 **Spend cap**:
 The most an API-backed **Workflow** run may cost (`max_cost_usd`); passing it stops the run at the next node boundary with status `spend_cap`, and nothing is applied.
 _Avoid_: Budget (that is the `num_ctx` limit), quota

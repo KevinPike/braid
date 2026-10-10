@@ -2,7 +2,7 @@
 
 M11–M15 are built (see `specs/initial.md` status notes). These are the next features, planned 2026-10-10 from the live results: e4b gets 28/30 Green with Claude's Plans, but only 11/24 with its own; mixed edits cost attempts; small-model planning does not converge. Terms are from `CONTEXT.md`. Each feature lists its gates; every gate gets a pytest test with fakes, and live numbers are measured, not gated.
 
-**Order:** F1 → F2 → F3 → F4 → F5. F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
+**Order:** F1 → F2 → F3 → F4 → F5 (F2 rewritten 2026-10-10 after the F1 live check; `write_change` moved under Later). F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
 
 ---
 
@@ -54,30 +54,43 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
   - Bowling, local Plan: one test expects 58 for a game the rules score 70; another has an expected value that is an unreadable expression for an incomplete game.
   - Word-wrap Behavior 2 (local Plan): the test's expected output is wrong.
 
-  In each case Haiku said so on all three attempts and would not special-case the implementation. This argues for F2's rule (a wrong test goes to Stuck with a hint) and F3's Plan checks. It also suggests Stuck should show the model's "the test is wrong" reason to the human.
+  In each case Haiku said so on all three attempts and would not special-case the implementation. This led to the new F2 (test disputes settled by Plan invariants).
 - **Not measured:** effort `low` against `medium`; the Spend cap ($0.10) was never close.
 
 **Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider (allowed by ADR 0006; build it when it is needed). Anthropic Batches for a cheap overnight baseline.
 
 ---
 
-## F2 — `write_change`: test and implementation in one reply
+## F2 — Test disputes, settled by Plan invariants
 
-The live runs showed that models want to write the test and the code together. Splitting them across `write_test` and `write_impl` caused every mixed-edit refusal. Keep the guarantee, drop the ritual.
+The F1 live check: all four Haiku Stucks were tests whose expected value contradicts the Plan. For example, word-wrap expects `"ij yo"` at width 4, and a bowling test expects 58 for a game the rules score 70. Haiku said the test was wrong on every attempt, spent three attempts, and the run went to Stuck without saying why. An invalid test that reaches implementation should be caught and sent back to `write_test` with the reason. A model's claim must never decide the route (ADR 0004), so a deterministic check decides it, against invariants the Plan states.
 
-- Replace `write_test` → `run_red` → `check_satisfied` → `write_impl` → `run_green` with `write_change` → `check_red` → `run_green`.
-- `write_change` returns `Edits` with the new test file(s) and the implementation change together.
-- `check_red` runs only the new test(s) against the Workspace **as it was before this change**: it restores the pre-change contents of every non-test file, runs the tests, then restores again in a `finally` (the `check_satisfied` machinery). The new test must fail there for an expected reason, which is the existing Red rule (exit 1, or an import error naming a non-test module). If it passes there, it is vacuous or Satisfied, and `check_satisfied`'s HEAD comparison decides which.
-- `run_green` runs the whole suite as now. On failure, the next attempt may edit the implementation and the new test, but never earlier Behaviors' tests (from the semver-compare live run: a wrong earlier test should go to Stuck with a hint, not be silently rewritten).
-- **Build it as a prototype first** in `examples/graphs/` and run two or three katas on e4b, plus Haiku once F1 lands, against the current graph. Port it into `workflow/execute.py` only if Green is at least as good with fewer model calls. Keep the split graph behind `[workflow] execution = "split" | "change"` until the numbers decide.
+- **Invariants in the Plan.**
+  - `Plan.invariants: list[Invariant]`, where `Invariant(text, check)`. `check` is a Python expression over one call of the function under test: `fn` (its name), `args`, `kwargs` and `result`. Examples:
+    - `all(len(line) <= args[1] for line in result.split("\n"))` (word-wrap)
+    - `0 <= result <= 300` (bowling)
+  - The Plan loop's `draft` writes them, from the goal's rules. F3's Plan checks add a check that a Plan with rules in its goal has at least one invariant.
+  - Hand-written Plans (`plan.json`) can add them by hand.
+- **Extracting the asserted examples.** A deterministic helper parses a test file with `ast` and finds `assert fn(<literals>) == <literal>`, both ways round, including inside `pytest.mark.parametrize` tables when the values are literals. It returns `(test name, fn, args, kwargs, expected)` for each. Asserts it can't evaluate with `ast.literal_eval` are skipped and counted, never guessed.
+- **`check_invariants`**, a deterministic node.
+  - It evaluates every invariant on every extracted example, with `result = expected`, in the Sandbox.
+  - A violation returns `{test, example, invariant, value}`.
+  - It runs at two points:
+    1. **After `run_red`**, on the new test, before implementation sees it. A violation goes back to `write_test` with the invariant and the example named, and counts as a Red rejection.
+    2. **On a dispute.** `write_impl`'s reply schema gains an optional `dispute: {test, reason}`. A dispute does not route by itself: it triggers `check_invariants` on the disputed test.
+       - A violation goes back to `write_test` for that Behavior with the implementer's reason and the failed invariant. The implementation attempt is not counted.
+       - No violation means the dispute is not upheld, and the attempt counts as usual. The dispute reason goes into the next prompt and into the run log.
+- **Stuck shows the dispute.** A Behavior that ends Stuck with disputes on record shows the last reason and any invariant that was checked. This lets the human fix the test or add the missing invariant, then resume.
+- **Earlier Behaviors' tests:** a dispute naming an earlier Behavior's test goes through the same check. A violation sends the work back to that Behavior's `write_test`, then reruns its Red/Green before continuing. This is the semver-compare case from M13. Otherwise it goes to Stuck as now.
+- **Prototype first** in `examples/graphs/` with a scripted model. Then replay the four disputed Behaviors from the F1 live check, using the Plans with invariants added by hand, on Haiku and on e4b. Port it into `workflow/execute.py` once a corrected test reaches Green in those replays.
 
-**Gates** (`tests/workflow/test_execute.py`, extended):
-1. A change whose test fails before and passes after reaches `next_behavior` in one model call.
-2. A test that passes before the change goes to the vacuous-or-Satisfied decision. The two branches are the same as gates 2 and 2b.
-3. An edit to an earlier Behavior's test is refused and counts as an attempt.
-4. The pre-change restore leaves the Workspace byte-identical, even when the test run raises.
-
----
+**Gates** (`tests/workflow/test_execute.py` and a new `tests/workflow/test_invariants.py`):
+1. The extractor finds plain and parametrized literal asserts, in both orders, and skips non-literal ones without guessing.
+2. A new test whose expected value breaks an invariant goes back to `write_test` after `run_red` with the invariant named, and implementation never sees it.
+3. A dispute on a test that breaks an invariant goes back to `write_test` with the reason and does not use an implementation attempt. The corrected test then reaches Green.
+4. A dispute on a test that breaks no invariant is not upheld: the attempt counts, and the reason is in the next prompt and the log.
+5. A Behavior that ends Stuck after disputes shows the dispute reason in the Stuck interrupt.
+6. An invariant expression that raises counts as "unchecked", not as a violation, and is reported.
 
 ## F3 — Mixed edits and Plan checks
 
@@ -131,4 +144,5 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 
 - F1: does Haiku's adaptive thinking need `effort: low` for the katas, or is the default `medium` worth its cost? Measure both on one kata.
 - F1: should the Plan loop default to Haiku once F1 lands, since local Plans are weak? That decision belongs to the user after the live check.
-- F2: whether the split graph stays as an option once `write_change` wins, or is deleted.
+- F2: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? That would route on a model's claim, so it needs an ADR 0004 amendment. Another option is an arbiter on a stronger model (a crew). Decide after the F2 replays.
+- Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F3's mixed-edit handling covers e4b more cheaply.
