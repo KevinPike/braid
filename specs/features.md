@@ -36,6 +36,27 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
 
 **Live check:** the five katas with Claude's Plans on `claude-haiku-5-5`, `--no-hints`. Put the row next to M13's e4b row, with cost per kata. Then the five local Plans (M14) on Haiku, which separates "e4b is a weak planner" from "the Plans are bad". Expected cost: cents per kata. Record the real figures.
 
+**Status (2026-10-10): built and gated** (d946339, 5976a1b, b201b93, 9cfefdc; 336 tests).
+
+- **Live check:** `claude-haiku-5-5`, `--no-hints`, default effort (`medium`). The key came from `.env` via `uv run --env-file .env`. No key appeared in any run log or summary. Every call after the first read the system prompt from cache.
+
+| model · Plans | bowling | cron-next | roman-numerals | semver-compare | word-wrap | total Green | cost |
+|---|---|---|---|---|---|---|---|
+| gemma4:e4b · Claude (M13) | 6/6 · 2a · 0r · 0h · 4s | 6/6 · 7a · 1r · 0h · 1s | 6/6 · 1a · 0r · 0h · 5s | 4/6 · 10a · 0r · 0h · 1s | 6/6 · 7a · 0r · 0h · 2s | 28/30 | local |
+| claude-haiku-5-5 · Claude | 6/6 · 3a · 0r · 0h · 3s · $0.004 | 6/6 · 4a · 0r · 0h · 2s · $0.009 | 6/6 · 2a · 0r · 0h · 4s · $0.004 | 6/6 · 5a · 0r · 0h · 1s · $0.008 | 5/6 · 5a · 0r · 0h · 3s · $0.008 | 29/30 | $0.033 |
+| gemma4:e4b · local (M14) | 2/6 · 15a · 0r · 0h · 0s | 0/5 · 15a · 1r · 0h · 0s | 4/4 · 1a · 0r · 0h · 3s | 3/5 · 9a · 0r · 0h · 1s | 2/4 · 7a · 1r · 0h · 1s | 11/24 | local |
+| claude-haiku-5-5 · local | 4/6 · 9a · 0r · 0h · 1s · $0.012 | 5/5 · 1a · 0r · 0h · 4s · $0.008 | 4/4 · 4a · 0r · 0h · 0s · $0.002 | 5/5 · 2a · 0r · 0h · 3s · $0.007 | 3/4 · 5a · 0r · 0h · 1s · $0.005 | 21/24 | $0.034 |
+
+- **Runtime:** 0.1–0.3 minutes per Behavior on Haiku, against 0.9–13 minutes on e4b. The ten runs cost $0.067 in total.
+- **Local Plans are mostly fine.** Haiku gets 21/24 from e4b's own Plans, against e4b's 11/24, so most of M14's gap came from executing them, not from planning.
+- **Every Haiku Stuck came from a wrong test, not wrong code.**
+  - Word-wrap Behavior 5 (Claude Plan): the test expects `"ij yo"` at width 4, which is 5 characters and breaks the Plan's own width rule.
+  - Bowling, local Plan: one test expects 58 for a game the rules score 70; another has an expected value that is an unreadable expression for an incomplete game.
+  - Word-wrap Behavior 2 (local Plan): the test's expected output is wrong.
+
+  In each case Haiku said so on all three attempts and would not special-case the implementation. This argues for F2's rule (a wrong test goes to Stuck with a hint) and F3's Plan checks. It also suggests Stuck should show the model's "the test is wrong" reason to the human.
+- **Not measured:** effort `low` against `medium`; the Spend cap ($0.10) was never close.
+
 **Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider (allowed by ADR 0006; build it when it is needed). Anthropic Batches for a cheap overnight baseline.
 
 ---
