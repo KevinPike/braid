@@ -73,3 +73,70 @@ class Inspector(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.dismiss(None)
+
+
+_RUN_HEAD = ("ts", "behavior", "attempt", "round", "angle", "node_seconds", "model_seconds")
+_RUN_TEXT = ("prompt", "prompts", "reply", "written", "refused", "exit_code", "timed_out", "output_tail", "answer", "reason", "verdict")
+
+
+def describe_node(record: dict[str, object]) -> str:
+    """A node's log record as the run inspector shows it: the numbers, then what was sent and what came back."""
+    head = [f"{k} {record[k]}" for k in _RUN_HEAD if record.get(k) is not None]
+    lines = [f"{record.get('node', '?')}  " + " · ".join(head)]
+    shown = set(_RUN_HEAD) | set(_RUN_TEXT) | {"node"}
+    for key in _RUN_TEXT:
+        value = record.get(key)
+        if value is None or value == [] or value == "":
+            continue
+        if key == "reply" or isinstance(value, (list, dict)):
+            value = json.dumps(value, indent=2, ensure_ascii=False)
+        lines.append(f"\n--- {key} ---\n{value}")
+    rest = {k: v for k, v in record.items() if k not in shown and v not in (None, [], "")}
+    if rest:
+        lines.append("\n--- other ---\n" + json.dumps(rest, indent=2, ensure_ascii=False, default=str))
+    return "\n".join(lines)
+
+
+class RunInspector(ModalScreen[None]):
+    """A Workflow run's JSONL log: one entry per node, with its prompt, reply, files, exit code and output tail."""
+
+    DEFAULT_CSS = """
+    RunInspector { align: center middle; }
+    #run-inspector { width: 95%; height: 90%; border: round $accent; background: $surface; padding: 0 1; }
+    #run-nodes { width: 44; border-right: solid $primary; }
+    #run-body { padding: 0 1; }
+    """
+    BINDINGS = [Binding("escape", "close", "Close")]
+
+    def __init__(self, run_id: str, records: Sequence[dict[str, object]]) -> None:
+        super().__init__()
+        self.run_id = run_id
+        self.records = list(records)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="run-inspector"):
+            yield Static(f"Run {self.run_id}: {len(self.records)} node records (Esc closes)", markup=False)
+            if not self.records:
+                yield Static("the run log has no records yet", id="run-empty", markup=False)
+                return
+            with Horizontal():
+                yield OptionList(*[Option(f"{i + 1:>3} {r.get('node', '?')}", id=str(i)) for i, r in enumerate(self.records)], id="run-nodes")
+                with VerticalScroll(id="run-body"):
+                    yield Static("", id="run-detail", markup=False)
+
+    def on_mount(self) -> None:
+        if not self.records:
+            return
+        options = self.query_one(OptionList)
+        options.highlighted = 0
+        options.focus()
+        self._show(0)
+
+    def on_option_list_option_highlighted(self, event: OptionList.OptionHighlighted) -> None:
+        self._show(event.option_index)
+
+    def _show(self, index: int) -> None:
+        self.query_one("#run-detail", Static).update(describe_node(self.records[index]))
+
+    def action_close(self) -> None:
+        self.dismiss(None)

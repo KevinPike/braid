@@ -83,7 +83,12 @@ class RunLog:
             self.listener(json.loads(json.dumps(line, default=str)))
 
     def lines(self) -> list[dict[str, Any]]:
-        return [json.loads(line) for line in self.path.read_text().splitlines()] if self.path.exists() else []
+        return read_log(self.path)
+
+
+def read_log(path: Path) -> list[dict[str, Any]]:
+    """The records of a run log, oldest first; empty when there is no log."""
+    return [json.loads(line) for line in path.read_text().splitlines() if line.strip()] if path.exists() else []
 
 
 def write_summary(

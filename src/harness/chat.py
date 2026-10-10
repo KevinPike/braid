@@ -94,11 +94,36 @@ def render_context(record: CallRecord | None) -> str:
     return f"{render_gauge(cats, record.num_ctx)} {used}/{record.num_ctx} ({pct})\n{legend}\n{nums}"
 
 
+def render_loaded(record: CallRecord | None, state: GuardState | None) -> str:
+    """Which model is loaded right now, and (when the last call was on another one) whose numbers the gauge shows."""
+    if state is None or state.model is None:
+        return ""
+    text = f"loaded: {state.model}" + (f" at num_ctx {state.num_ctx}" if state.num_ctx else "")
+    if record is not None and record.model != state.model:
+        text += f" (gauge: last call on {record.model})"
+    return text
+
+
 class ContextPanel(Static):
     DEFAULT_CSS = "ContextPanel { height: 3; padding: 0 1; background: $panel; }"
 
+    _record: CallRecord | None = None
+    _state: GuardState | None = None
+
     def set_record(self, record: CallRecord | None) -> None:
-        self.update(render_context(record))
+        self._record = record
+        self._redraw()
+
+    def set_state(self, state: GuardState) -> None:
+        """The Watchdog's latest poll: the panel names the model that is loaded, so a swap shows within one poll."""
+        if state != self._state:
+            self._state = state
+            self._redraw()
+
+    def _redraw(self) -> None:
+        text = render_context(self._record)
+        loaded = render_loaded(self._record, self._state)
+        self.update(f"{text}\n{loaded}" if loaded and self._record is None else f"{text} · {loaded}" if loaded else text)
 
 
 class AlertBanner(Static):

@@ -43,7 +43,7 @@ models = ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gpt-oss:20b"]   # not-pulle
 num_ctx = 8192
 
 [workflow]
-# model = "gemma4:12b"        # default: the [profile] model
+# model = "gemma4:e4b"        # default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
 num_ctx = 16384
 think = false                 # thinking text is dropped, so do not pay for it
 num_predict = 4096            # max generated tokens per model call
@@ -54,6 +54,7 @@ lint_commands = []            # each must exit 0 after Polish, or Polish is reve
 workspaces_dir = "~/.braid/workspaces"
 runs_dir = "~/.braid/runs"    # one JSONL log per run
 plans_dir = "~/.braid/plans"  # Plan loop output, one <id>.json per Plan
+checkpoints_db = "~/.braid/workflows.db"  # TUI runs: checkpoints for /build --resume, and the /runs index
 max_rounds = 3                # Plan loop: draft/review rounds
 critique_angles = ["feasibility", "scope", "testability", "risk", "spacing"]
 # [workflow.critique_prompts]  # a system prompt per angle: a new angle, or a replacement for a built-in one

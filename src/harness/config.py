@@ -94,6 +94,7 @@ class WorkflowConfig(BaseModel):
     workspaces_dir: Path = Path("~/.braid/workspaces")
     runs_dir: Path = Path("~/.braid/runs")  # one <run_id>.jsonl per run
     plans_dir: Path = Path("~/.braid/plans")  # the Plan loop saves <plan id>.json here
+    checkpoints_db: Path = Path("~/.braid/workflows.db")  # TUI runs: LangGraph checkpoints (thread_id = run id) and the run index
     max_rounds: int = 3  # Plan loop: draft/review rounds before it finalizes with "stopped at round limit"
     critique_angles: list[str] = ["feasibility", "scope", "testability", "risk", "spacing"]  # one Critique call each per round
     critique_prompts: dict[str, str] = {}  # angle -> system prompt, for a new angle or to replace a built-in one
@@ -109,6 +110,11 @@ class PathsConfig(BaseModel):
     @property
     def trim_log_file(self) -> Path:
         return self.resolved_data_dir / "trims.db"
+
+    @property
+    def status_log_file(self) -> Path:
+        """Debug log of every /api/ps poll and every rendered status bar state during a Workflow run."""
+        return self.resolved_data_dir / "status-debug.log"
 
     @property
     def decisions_file(self) -> Path:
