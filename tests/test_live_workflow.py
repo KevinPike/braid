@@ -5,6 +5,7 @@ the summary JSON and ``examples/graphs/report.py``, not gated. Override the mode
 with HARNESS_KATA (default ~/projects/braid-practice/roman-numerals, which needs its Claude ``plan.json``).
 """
 
+import asyncio
 import json
 import os
 from pathlib import Path
@@ -12,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from harness.sandbox import Workspace
 from harness.workflow.cli import main
 
 pytestmark = pytest.mark.skipif(os.environ.get("HARNESS_LIVE") != "1", reason="set HARNESS_LIVE=1 to run against Ollama")
@@ -29,7 +31,11 @@ def test_one_kata_runs_to_finish_or_stuck(tmp_path: Path) -> None:
     def refuse(_payload: dict[str, Any]) -> str:
         return "no"  # finish asks for Approval; the live check never touches the kata
 
-    main(["build", "--plan", str(kata / "plan.json"), "--project", str(kata), "--model", model, "--no-hints", "--config", str(cfg)], ask=refuse)
+    try:
+        main(["build", "--plan", str(kata / "plan.json"), "--project", str(kata), "--model", model, "--no-hints", "--config", str(cfg)], ask=refuse)
+    finally:  # answering "no" keeps the Workspace, a git worktree of the kata; drop it so `git worktree list` stays clean
+        for path in (tmp_path / "ws").glob("*"):
+            asyncio.run(Workspace(path, kata.resolve(), gitdir=path / ".git").remove())  # remove() uses only path and project
     [summary] = [p for p in (kata / "runs").glob("*.json") if p.name not in before]
     run = json.loads(summary.read_text())
     assert run["trace"][-1] in {"finish", "stuck"}
