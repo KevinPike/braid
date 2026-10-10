@@ -1,6 +1,6 @@
 import io
 
-from harness.workflow.progress import CLEAR_LINE, Progress, describe, final_report, outcome
+from harness.workflow.progress import CLEAR_LINE, PLAN_NODES, Progress, describe, final_report, outcome
 from harness.workflow.records import BehaviorStats, Recorder
 
 
@@ -77,3 +77,18 @@ def test_final_report_lists_each_behavior_with_result_attempts_and_seconds() -> 
     text = final_report(rec, 61.0)
     assert "total wall time 61.0s, model time 9.5s over 4 calls" in text
     assert "second    satisfied         0      1.0" in text and "third     stuck             3      8.0" in text
+
+
+def test_plan_nodes_carry_the_round_label_and_describe_their_results() -> None:
+    live = Tty()
+    p = Progress(live, io.StringIO(), clock=Clock(), labelled=PLAN_NODES)
+    p.set_round(2, 3)
+    p.begin("draft")
+    assert live.getvalue().endswith("⠋ draft · round 2/3 · 0s")
+    assert describe({"node": "research", "findings": [{"verified": True}, {"verified": False}], "node_seconds": 1.0, "model_seconds": 0.5}) == (
+        "  research          2 findings, 1 unverified  1.0s  (model 0.5s)"
+    )
+    draft = {"node": "draft", "reply": {"behaviors": ["a", "b"], "assumptions": []}, "retried": True, "dropped": ["x"], "node_seconds": 2.0}
+    assert "2 behaviors, 0 assumptions (retried), 1 unchecked dropped" in describe(draft)
+    assert "[spacing] 2 points" in describe({"node": "critique", "angle": "spacing", "points": ["a", "b"]})
+    assert "route" not in describe({"node": "human_review", "route": "approve", "answer": "approve"})

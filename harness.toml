@@ -53,3 +53,8 @@ test_command = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
 lint_commands = []            # each must exit 0 after Polish, or Polish is reverted
 workspaces_dir = "~/.braid/workspaces"
 runs_dir = "~/.braid/runs"    # one JSONL log per run
+plans_dir = "~/.braid/plans"  # Plan loop output, one <id>.json per Plan
+max_rounds = 3                # Plan loop: draft/review rounds
+critique_angles = ["feasibility", "scope", "testability", "risk", "spacing"]
+# [workflow.critique_prompts]  # a system prompt per angle: a new angle, or a replacement for a built-in one
+# usability = "You review a draft Plan as the person who will use the tool ..."

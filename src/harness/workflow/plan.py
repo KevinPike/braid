@@ -31,3 +31,22 @@ class Plan(BaseModel):
         path = path.expanduser()
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(self.model_dump_json(indent=2) + "\n")
+
+    def to_markdown(self) -> str:
+        """A readable rendering for the human who approves it; empty sections are left out."""
+        out = [f"# {self.goal}", "", "## Behaviors", *(f"{i}. {b}" for i, b in enumerate(self.behaviors, 1))]
+
+        def section(title: str, lines: list[str]) -> None:
+            if lines:
+                out.extend(["", f"## {title}", *lines])
+
+        section("Assumptions", [
+            f"- {a.text}" + (f" (probe: `{a.probe}`)" if a.probe else "") + (f" (evidence: {a.evidence})" if a.evidence else "")
+            for a in self.assumptions
+        ])
+        section("Files", [f"- `{f}`" for f in self.files])
+        section("Demo", [f"`{self.demo}`"] if self.demo else [])
+        section("Out of scope", [f"- {s}" for s in self.out_of_scope])
+        section("Open questions", [f"- {q}" for q in self.open_questions])
+        section("Notes", [f"- {n}" for n in self.notes])
+        return "\n".join(out) + "\n"

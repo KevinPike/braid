@@ -13,6 +13,7 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 REFRESH_S = 0.25
 CLEAR_LINE = "\r\x1b[K"
 WORK_NODES = {"write_test", "run_red", "check_satisfied", "write_impl", "run_green", "stuck", "next_behavior"}
+PLAN_NODES = {"research", "draft", "critique", "synthesize", "human_review"}  # these carry the round label ("round 2/3")
 
 
 class Progress:
@@ -21,8 +22,10 @@ class Progress:
 
     def __init__(
         self, live: TextIO, out: TextIO, *, clock: Callable[[], float] = time.monotonic, tty: bool | None = None,
+        labelled: set[str] = WORK_NODES,
     ) -> None:
         self.live, self.out, self.clock = live, out, clock
+        self.labelled = labelled  # the nodes whose live line carries ``behavior_label``
         self.tty = live.isatty() if tty is None else tty
         self.node: str | None = None
         self.detail = ""
@@ -35,9 +38,12 @@ class Progress:
     def set_behavior(self, idx: int, total: int) -> None:
         self.behavior_label = f"Behavior {min(idx + 1, total)}/{total}"
 
+    def set_round(self, round_: int, total: int) -> None:
+        self.behavior_label = f"round {min(round_, total)}/{total}"
+
     def begin(self, node: str) -> None:
         self.node, self.started = node, self.clock()
-        self.detail = self.behavior_label if node in WORK_NODES else ""
+        self.detail = self.behavior_label if node in self.labelled else ""
         self.tick()
 
     def line(self) -> str:
@@ -108,6 +114,23 @@ def describe(record: dict[str, Any]) -> str:
         result = f"{record['outcome']}" + (f": {record['detail']}" if record["detail"] else "")
     elif node in ("clarify", "sign_off"):
         result = f"answer: {record['answer'][:50]}"
+    elif node == "research":
+        findings = record.get("findings", [])
+        bad = sum(not f["verified"] for f in findings)
+        result = f"{len(findings)} findings" + (f", {bad} unverified" if bad else "")
+    elif node == "draft":
+        reply = record.get("reply", {})
+        result = f"{len(reply.get('behaviors', []))} behaviors, {len(reply.get('assumptions', []))} assumptions"
+        result += " (retried)" if record.get("retried") else ""
+        result += f", {len(record['dropped'])} unchecked dropped" if record.get("dropped") else ""
+    elif node == "critique":
+        result = f"✗ [{record['angle']}] {record['model_error'][:50]}" if record.get("model_error") else f"[{record['angle']}] {len(record.get('points', []))} points"
+    elif node == "synthesize":
+        result = f"{len(record.get('questions', []))} open questions"
+    elif node == "human_review":
+        result = f"{record['route']}: {record['answer'][:50]}"
+    elif node == "finalize" and "path" in record:
+        result = f"{record['outcome']}: saved {record['path']}"
     text = f"  {node:<17} {result}  {record.get('node_seconds', 0.0):.1f}s"
     if record.get("model_seconds") is not None:
         text += f"  (model {record['model_seconds']:.1f}s)"

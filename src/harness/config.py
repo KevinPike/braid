@@ -80,7 +80,7 @@ class EvalsConfig(BaseModel):
 
 
 class WorkflowConfig(BaseModel):
-    """The Execution loop (M13). ``model`` defaults to the Profile's model."""
+    """The Execution loop (M13) and the Plan loop (M14). ``model` defaults to the Profile's model."""
 
     model: str | None = None
     num_ctx: int = 16384
@@ -93,6 +93,10 @@ class WorkflowConfig(BaseModel):
     command_timeout_s: float = 120.0
     workspaces_dir: Path = Path("~/.braid/workspaces")
     runs_dir: Path = Path("~/.braid/runs")  # one <run_id>.jsonl per run
+    plans_dir: Path = Path("~/.braid/plans")  # the Plan loop saves <plan id>.json here
+    max_rounds: int = 3  # Plan loop: draft/review rounds before it finalizes with "stopped at round limit"
+    critique_angles: list[str] = ["feasibility", "scope", "testability", "risk", "spacing"]  # one Critique call each per round
+    critique_prompts: dict[str, str] = {}  # angle -> system prompt, for a new angle or to replace a built-in one
 
 
 class PathsConfig(BaseModel):

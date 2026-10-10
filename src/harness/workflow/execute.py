@@ -12,7 +12,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, TypedDict, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
@@ -30,6 +30,7 @@ from harness.workflow.records import BehaviorStats, Recorder, RunLog, tail
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str
+S = TypeVar("S")
 YES = {"y", "yes", "ok", "looks good", "lgtm"}
 
 
@@ -515,11 +516,11 @@ Ask = Callable[[dict[str, Any]], str | Awaitable[str]]
 
 
 async def drive_graph(
-    graph: StateGraph[ExecState], state: ExecState, ask: Ask, *,
+    graph: StateGraph[Any], state: S, ask: Ask, *,
     on_update: Callable[[str, dict[str, Any]], None] | None = None, on_start: Callable[[str], None] | None = None,
     thread_id: str = "exec",
-) -> ExecState:
-    """Run ``graph`` to the end, answering each interrupt with ``ask(payload)``; returns the final state."""
+) -> S:
+    """Run ``graph`` (either loop) to the end, answering each interrupt with ``ask(payload)``; returns the final state."""
     compiled = graph.compile(checkpointer=InMemorySaver())
     config: Any = {"configurable": {"thread_id": thread_id}, "recursion_limit": 500}
     run_input: Any = state
@@ -537,6 +538,6 @@ async def drive_graph(
                 elif on_update:
                     on_update(node, value or {})
         if pending is None:
-            return cast(ExecState, compiled.get_state(config).values)
+            return cast(S, compiled.get_state(config).values)
         answer = ask(pending)
         run_input = Command(resume=await answer if inspect.isawaitable(answer) else answer)
