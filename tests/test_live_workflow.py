@@ -21,7 +21,7 @@ def test_one_kata_runs_to_finish_or_stuck(tmp_path: Path) -> None:
     kata = Path(os.environ.get("HARNESS_KATA", "~/projects/braid-practice/roman-numerals")).expanduser()
     if not (kata / "plan.json").exists():
         pytest.skip(f"{kata} has no plan.json (run examples/graphs/claude_plan.sh)")
-    model = os.environ.get("HARNESS_WORKFLOW_MODEL", "gemma4:12b")
+    model = os.environ.get("HARNESS_WORKFLOW_MODEL", "gemma4:e4b")
     cfg = tmp_path / "h.toml"
     cfg.write_text(f'[workflow]\nworkspaces_dir = "{tmp_path}/ws"\nruns_dir = "{tmp_path}/runs"\n')
     before = {p.name for p in (kata / "runs").glob("*.json")} if (kata / "runs").exists() else set()

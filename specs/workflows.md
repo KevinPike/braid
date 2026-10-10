@@ -87,7 +87,7 @@ This is `exec_graph.py` with the scripted parts replaced.
 - **Summary:** each run writes `<kata>/runs/<timestamp>-<model>.json` with the model, the kata, and per Behavior: whether it reached Green, attempts, Red rejections, hints and seconds. It also records totals, Stuck count, whether Polish was kept or reverted, and the node trace.
 - **Report:** `examples/graphs/report.py <practice-dir>` prints a Markdown table of models × katas from those summaries.
 
-**M11 validation:** the 11.1 gate passes, and a `report.py` table from `--no-hints` runs of `gemma4:e4b` and `gemma4:12b` over all five katas is pasted into this milestone's status notes in `specs/initial.md`. The table is a measurement, so it is recorded rather than asserted by pytest, the one exception to "every gate gets a test".
+**M11 validation:** the 11.1 gate passes, and a `report.py` table from `--no-hints` runs of `gemma4:e4b` over all five katas (`gemma4:12b` dropped 2026-10-10: too memory-heavy for a 24 GB Mac) is pasted into this milestone's status notes in `specs/initial.md`. The table is a measurement, so it is recorded rather than asserted by pytest, the one exception to "every gate gets a test".
 
 **Try it:** run `claude_plan.sh` on each kata and edit each Plan before running it, noting what you changed. Run one kata interactively and hint when it gets Stuck. Then run the `--no-hints` baseline. Read one trace and find the node where a run went wrong.
 
@@ -273,7 +273,7 @@ Gates (`tests/workflow/test_execute.py`, using a `ScriptedModel` fake for `Workf
 - `[workflow]` in `harness.toml` and `config.py`: `model` (default: the Profile's model), `num_ctx` (default 16384), `max_attempts`, `max_polish_rounds`, `test_command`, `lint_commands`, `workspaces_dir`, `runs_dir` (JSONL logs), `command_timeout_s`.
 - Dependency: `uv add langgraph`. When `mypy --strict` rejects LangGraph types, wrap them in a typed helper in `workflow/`; list any remaining `type: ignore` in the status notes.
 
-**Live check** (`tests/test_live_workflow.py`, `HARNESS_LIVE=1`): one kata from `~/projects/braid-practice/` with its Claude `plan.json`, `gemma4:12b`, hints off. The test passes when the run ends at `finish` or `stuck` without an exception; model quality is measured, not gated. Then rerun the M11 baseline (all five katas, `gemma4:e4b` and `gemma4:12b`, plus `llama3.1:8b` once it is pulled) through `harness-workflow build`, and put the new table next to M11's in the status notes. A drop from the spike is a bug in the port, not in the model.
+**Live check** (`tests/test_live_workflow.py`, `HARNESS_LIVE=1`): one kata from `~/projects/braid-practice/` with its Claude `plan.json`, `gemma4:e4b`, hints off. The test passes when the run ends at `finish` or `stuck` without an exception; model quality is measured, not gated. Then rerun the M11 baseline (all five katas, `gemma4:e4b`, plus `gemma4:e2b` or `llama3.1:8b` as an optional second row) through `harness-workflow build`, and put the new table next to M11's in the status notes. A drop from the spike is a bug in the port, not in the model.
 
 The live check also exercises, once each by a person or with scripted stdin, three paths M11 never ran live: a **hinted run** (answer a Stuck with a hint and see the next `write_impl` use it), the **`clarify` flow** (a Plan with an open question, answered with text, and once with `abort`), and a **failing Probe** (an Assumption whose Probe exits non-zero). Record each outcome in the M13 status notes: what was asked, what the answer did, and anything that surprised you.
 
@@ -321,7 +321,7 @@ Gates (`tests/workflow/test_plan_loop.py`, `ScriptedModel`, fixture repo):
 7. The `draft` system prompt contains the new-code-per-Behavior requirement (a string check on `prompts.py`), and a scripted `spacing` Critique reaches `synthesize` in state.
 8. The finalized Plan loads with `Plan.load` and runs through `build_execution_graph` up to its first interrupt with the scripted model.
 
-**Live check:** plan the five M11 katas locally with `gemma4:12b`, approving each at the first review that has no open questions. Run each local Plan through `harness-workflow build --no-hints`, and put the results in the status notes next to the Claude-Plan results for the same model. This comparison measures what the Plan loop is worth. The table also reports the **Satisfied count per Plan** (from the run summary's `satisfied`) next to Claude's Plans for the same katas, so it shows whether `spacing` spaces the Behaviors better than the M11 baseline of 14 Satisfied in 27 Green.
+**Live check:** plan the five M11 katas locally with `gemma4:e4b`, approving each at the first review that has no open questions. Run each local Plan through `harness-workflow build --no-hints`, and put the results in the status notes next to the Claude-Plan results for the same model. This comparison measures what the Plan loop is worth. The table also reports the **Satisfied count per Plan** (from the run summary's `satisfied`) next to Claude's Plans for the same katas, so it shows whether `spacing` spaces the Behaviors better than the M11 baseline of 14 Satisfied in 27 Green.
 
 **M14 validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review, and that Plan feeds M13 unchanged.
 

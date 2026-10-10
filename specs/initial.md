@@ -333,9 +333,9 @@ Spec: `specs/workflows.md` § M11. ADRs 0004, 0005.
 - [x] Plans from `claude -p`, with Behaviors sized for a small model
 - [x] `examples/graphs/exec_live.py`: the example loop on a real model under Seatbelt, with run summaries and a report
 
-**Validation:** a no-hints baseline table for `gemma4:e4b` and `gemma4:12b` over all five katas, recorded in the status notes (measured, not asserted).
+**Validation:** a no-hints baseline table for `gemma4:e4b` over all five katas (`gemma4:12b` dropped 2026-10-10, see notes), recorded in the status notes (measured, not asserted).
 
-**Status notes (2026-10-09):** `gemma4:12b` baseline still open, so M11's validation is half met.
+**Status notes (2026-10-09):** validation met with the `gemma4:e4b` table. **2026-10-10:** `gemma4:12b` dropped from the baselines: on this 24 GB Mac it pushed swap past 5 GiB and ran at 3–5 tok/s (see M13's notes).
 
 - 11.1 gate: `tests/guard/test_ollama_client.py` (`format` is sent, `num_ctx` stays pinned, `format` omitted when unset). 11.2–11.4 are throwaway code in `examples/graphs/` (`make_katas.py`, `plan_prompt.md`, `claude_plan.sh`, `exec_live.py`, `report.py`), not under mypy.
 - Baseline, `gemma4:e4b`, `--no-hints`, one run per kata, `num_ctx` 16384, Plans from `claude -p` **unreviewed and unedited** (the user's Try it is still to do):
@@ -345,7 +345,7 @@ Spec: `specs/workflows.md` § M11. ADRs 0004, 0005.
 | gemma4:e4b | 6/6 · 2a · 0r · 0h · 4s · 0.2m | 4/6 · 11a · 2r · 0h · 1s · 1.8m | 6/6 · 1a · 1r · 0h · 5s · 0.2m | 6/6 · 8a · 0r · 0h · 1s · 1.0m | 5/6 · 6a · 0r · 0h · 3s · 1.1m | 27/30 |
 
   Cell: Behaviors Green/planned, implementation attempts (a), Red rejections (r), hints (h), Behaviors already satisfied by earlier code (s, counted as Green), minutes per Behavior (m). Polish was kept on bowling, roman-numerals and word-wrap and reverted on semver-compare and cron-next.
-- **12b was deferred** to save time; run `uv run --with langgraph python examples/graphs/exec_live.py <kata> --model gemma4:12b --no-hints` per kata, then `report.py`.
+- **12b was deferred**, then dropped on 2026-10-10 as too memory-heavy for this Mac. `gemma4:e2b` is the optional second row: `uv run --with langgraph python examples/graphs/exec_live.py <kata> --model gemma4:e2b --no-hints`, then `report.py`.
 - **Reading the table:** 12 of the 27 Green are "satisfied" (roman-numerals 5, bowling 4, word-wrap 3, semver 1, cron 1), so the Plans' Behaviors are often too close together or the model builds ahead. Real iterative work happened on cron-next (11 attempts, 4/6), semver-compare and word-wrap. One sample per cell, so differences of one Behavior may be noise.
 - **Divergences from the spec (decided with the user):** (1) a test that passes at Red marks the Behavior satisfied and moves on instead of routing back to `write_test`; this removes retry loops where earlier code already covers the Behavior, but it weakens "no test passes at Red", so M13 should decide whether to keep it. (2) The model sees only the Behaviors up to the current one and is told to make the smallest change; an earlier run that showed all six overbuilt at Behavior 1 (1/6 Green, 15 Red rejections).
 - Run summaries are under each kata's `runs/` (gitignored). Not exercised live: hinted runs, the `clarify` flow, a failing Probe.
@@ -379,7 +379,7 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 
 **Validation:** given a Plan and a git project, the CLI reaches an applied diff or a clean stop, every model call pinned through the guard client and every command in the Sandbox.
 
-**Status notes (2026-10-09):** live baseline rerun for `gemma4:e4b` done (28/30, table below); `gemma4:12b` still open.
+**Status notes (2026-10-09):** live baseline rerun for `gemma4:e4b` done (28/30, table below). `gemma4:12b` dropped on 2026-10-10: too memory-heavy for this 24 GB Mac.
 
 - Built: `workflow/plan.py` (`Plan`, `Assumption`), `workflow/model.py` (`WorkflowModel`, `GuardedWorkflowModel`, `WorkflowModelError`), `workflow/prompts.py`, `workflow/execute.py` (`build_execution_graph`, `drive_graph`, `initial_state`, `FileEdit`, `Edits`), `workflow/records.py` (`RunLog`, `Recorder`, `BehaviorStats`, `write_summary`), `workflow/progress.py` (`Progress`, `describe`, `final_report`), `workflow/cli.py` (`harness-workflow build`), `[workflow]` in `config.py` and `harness.toml`, `langgraph` as a dependency (nothing from `langchain-*`). `Workspace` gained `list_files()` (`git ls-files` including new files) and `read_head(path)` so workflow code never runs git itself.
 - 13.1 gates, `tests/workflow/test_model.py`: `test_a_valid_reply_parses`, `test_one_invalid_reply_then_a_valid_one_parses_after_exactly_two_requests`, `test_two_invalid_replies_raise`, `test_every_request_carries_format_and_the_pinned_num_ctx`; plus the Plan round trip and min-length check.
@@ -398,7 +398,7 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 | gemma4:12b (M13) | not run | not run | 0/6, stopped in Behavior 1 after ~95 min | not run | not run | — |
 
   - e4b: no drop from the spike, so no port bug signalled. 13 Satisfied (spike: 14). Both semver-compare Stuck Behaviors (3 and 6) trace to a model-written Behavior 2 test asserting `compare('1.2.3', '1.2.3-rc1') == 0`, which contradicts Behavior 3; `write_impl` may not edit tests, so it oscillated. Minutes per Behavior are far above the spike's: the Mac was hot (GPU 90–94 °C) and swapping (swap peaked at 5.3 of 6 GiB), so the times are not comparable.
-  - 12b: run only on roman-numerals because swap was already above 3 GiB with no model loaded. `write_impl` got empty content twice (`WorkflowModelError`, 1214 s) while Ollama generated thousands of tokens at 3–5 tok/s. Likely cause, not confirmed: the model spends its output on thinking (dropped by `GuardedWorkflowModel`), made worse by memory pressure; the spike sent identical options and never ran 12b, so this is not a port regression. Candidate fixes: send `think: false` and a `num_predict` cap from `[workflow]`. SIGINT did not stop the CLI while a model call was in flight; it needed SIGTERM. The 12b row of both M11 and M13 stays open.
+  - 12b: run only on roman-numerals because swap was already above 3 GiB with no model loaded. `write_impl` got empty content twice (`WorkflowModelError`, 1214 s) while Ollama generated thousands of tokens at 3–5 tok/s. Likely cause, not confirmed: the model spends its output on thinking (dropped by `GuardedWorkflowModel`), made worse by memory pressure; the spike sent identical options and never ran 12b, so this is not a port regression. Candidate fixes: send `think: false` and a `num_predict` cap from `[workflow]`. SIGINT did not stop the CLI while a model call was in flight; it needed SIGTERM. On 2026-10-10 the user dropped 12b from the baselines as too big for this Mac; the `think`/`num_predict` fix still matters for any thinking model.
   - Not yet exercised live: a hinted run, the `clarify` flow, a failing Probe.
 
 
@@ -433,7 +433,7 @@ Spec: `specs/workflows.md` § M15.
 | tev1 is experimental and has a ~2K context | Wrong routing or policy calls | Advisory only; log every decision; human approval stays the gate |
 | Small models fail at multi-step tool use | M4 test set fails | Raise to the 26B MoE for tool tasks; keep tool count under about 8 |
 | `sandbox-exec` is deprecated by Apple | M12 Sandbox stops working after a macOS update | Behind the `Sandbox` interface; a container backend can replace it (ADR 0005) |
-| Small models stall in the Execution loop | Runs end Stuck | Attempt limits and human hints; measure per model in M13's live check; try `gemma4:12b` and the 26B MoE |
+| Small models stall in the Execution loop | Runs end Stuck | Attempt limits and human hints; measure per model in M13's live check; `gemma4:12b` is too memory-heavy on 24 GB (2026-10-10), so smaller Behaviors and hints come first |
 | Claude subscription policy for third-party use keeps changing | M10 backend may break | Only use official `claude -p` or Agent SDK; recheck the help article before starting M10 |
 
 **Open questions**
