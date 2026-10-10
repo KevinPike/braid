@@ -28,6 +28,7 @@ from harness.workflow.records import Recorder, RunLog, write_summary
 
 
 CANCELLED_EXIT = 130  # 128 + SIGINT
+SPEND_CAP_EXIT = 3  # the run passed max_cost_usd and stopped; nothing was applied or saved
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -158,7 +159,7 @@ async def run_build(
         return CANCELLED_EXIT
     out.write(final_report(rec, clock() - started) + f"\n\nstatus: {final.get('status')}; polish {rec.polish}\nsummary: {summary}\n")
     out.flush()
-    return 0
+    return SPEND_CAP_EXIT if final.get("status") == "spend_cap" else 0
 
 
 def cost_note(rec: Recorder) -> str:
@@ -215,7 +216,7 @@ async def run_plan(
     if final.get("status") == "spend_cap":
         out.write(f"\nstopped at the Spend cap (${rec.cost_usd:.4f} > ${cfg.max_cost_usd:.2f}); no Plan saved\nrun log: {log.path}\n")
         out.flush()
-        return 0
+        return SPEND_CAP_EXIT
     path = final["plan_path"]
     out.write(
         f"\n{final['markdown']}\ntotal wall time {clock() - started:.1f}s, model time {rec.model_seconds:.1f}s over "

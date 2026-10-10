@@ -19,7 +19,7 @@ from harness.config import HarnessConfig, WorkflowConfig
 from harness.sandbox import LocalSandbox, Sandbox, SeatbeltSandbox
 from harness.workflow import cli
 from harness.workflow.backend import choose, make_model
-from harness.workflow.cli import build_parser, run_build, run_plan, with_model
+from harness.workflow.cli import SPEND_CAP_EXIT, build_parser, run_build, run_plan, with_model
 from harness.workflow.model import AnthropicWorkflowModel, ApiCall, GuardedWorkflowModel
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import BehaviorStats, Recorder, read_log
@@ -225,6 +225,16 @@ def test_the_end_table_has_a_cost_column_only_for_api_runs() -> None:
 
 # --- gate 5: the Spend cap ---------------------------------------------------------------------------------------
 
+async def test_the_build_cli_exits_nonzero_at_the_spend_cap(fixture_repo: Path, fixture_venv: Path, tmp_path: Path) -> None:
+    out = io.StringIO()
+    code = await run_build(
+        Plan(goal="g", behaviors=["mul"]), fixture_repo, model=CostlyModel([MUL_TEST, MUL_IMPL, edit("src/mod.py", MUL)], price=0.06),
+        model_id="claude-haiku-5-5", sandbox=LocalSandbox(), config=cfg(tmp_path, fixture_venv), hints=False,
+        ask=lambda _p: "yes", out=out, err=io.StringIO(),
+    )
+    assert code == SPEND_CAP_EXIT and "status: spend_cap" in out.getvalue()
+
+
 async def test_passing_the_spend_cap_stops_at_the_next_node_boundary_and_applies_nothing(
     fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
 ) -> None:
@@ -271,7 +281,7 @@ async def test_the_plan_cli_reports_the_cap(fixture_repo: Path, fixture_venv: Pa
         "g", fixture_repo, model=CostlySchemas(scripted().replies, price=0.06), model_id="claude-haiku-5-5", config=cfg(tmp_path, fixture_venv),
         ask=lambda _p: "approve", out=out, err=io.StringIO(),
     )
-    assert code == 0 and "Spend cap" in out.getvalue() and "no Plan saved" in out.getvalue()
+    assert code == SPEND_CAP_EXIT and "Spend cap" in out.getvalue() and "no Plan saved" in out.getvalue()
     assert not list((tmp_path / "plans").glob("*.json"))
 
 
