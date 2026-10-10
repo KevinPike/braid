@@ -82,10 +82,12 @@ class CostlySchemas(SchemaModel):
 
 # --- backend selection -------------------------------------------------------------------------------------------
 
-def test_a_claude_model_id_picks_the_anthropic_backend_whatever_the_config_says() -> None:
+def test_the_model_id_picks_the_backend_whatever_the_config_says() -> None:
     config = HarnessConfig()
     assert choose(config, model="claude-haiku-5-5").backend == "anthropic"
     assert choose(config, model="gemma4:e4b").backend == "ollama"
+    on_api = HarnessConfig(workflow=WorkflowConfig(backend="anthropic"))
+    assert choose(on_api, model="gemma4:e4b").backend == "ollama"  # /build --model gemma4:e4b on an API config
 
 
 def test_without_a_model_id_each_backend_reads_its_own_model() -> None:

@@ -22,10 +22,12 @@ class Choice:
 
 
 def choose(config: HarnessConfig, *, model: str | None = None, backend: BackendName | None = None) -> Choice:
-    """An explicit ``backend`` wins, then a ``claude-`` model id, then ``[workflow] backend``. Without a model id,
-    each backend reads its own: ``anthropic_model``, or ``model`` then the Profile's model."""
+    """An explicit ``backend`` wins, then the model id (``claude-`` is anthropic, anything else ollama), then
+    ``[workflow] backend``. Without a model id, each backend reads its own: ``anthropic_model``, or ``model`` then the
+    Profile's model."""
     wf = config.workflow
-    picked: BackendName = backend or ("anthropic" if model and model.startswith(API_PREFIX) else wf.backend)
+    by_model: BackendName | None = None if not model else "anthropic" if model.startswith(API_PREFIX) else "ollama"
+    picked: BackendName = backend or by_model or wf.backend
     if model:
         return Choice(picked, model)
     return Choice(picked, wf.anthropic_model if picked == "anthropic" else wf.model or config.profile.model)
