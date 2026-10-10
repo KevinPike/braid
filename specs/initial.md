@@ -379,7 +379,7 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 
 **Validation:** given a Plan and a git project, the CLI reaches an applied diff or a clean stop, every model call pinned through the guard client and every command in the Sandbox.
 
-**Status notes (2026-10-09):** the live baseline rerun is pending (not run by the agent; the user runs it).
+**Status notes (2026-10-09):** live baseline rerun for `gemma4:e4b` done (28/30, table below); `gemma4:12b` still open.
 
 - Built: `workflow/plan.py` (`Plan`, `Assumption`), `workflow/model.py` (`WorkflowModel`, `GuardedWorkflowModel`, `WorkflowModelError`), `workflow/prompts.py`, `workflow/execute.py` (`build_execution_graph`, `drive_graph`, `initial_state`, `FileEdit`, `Edits`), `workflow/records.py` (`RunLog`, `Recorder`, `BehaviorStats`, `write_summary`), `workflow/progress.py` (`Progress`, `describe`, `final_report`), `workflow/cli.py` (`harness-workflow build`), `[workflow]` in `config.py` and `harness.toml`, `langgraph` as a dependency (nothing from `langchain-*`). `Workspace` gained `list_files()` (`git ls-files` including new files) and `read_head(path)` so workflow code never runs git itself.
 - 13.1 gates, `tests/workflow/test_model.py`: `test_a_valid_reply_parses`, `test_one_invalid_reply_then_a_valid_one_parses_after_exactly_two_requests`, `test_two_invalid_replies_raise`, `test_every_request_carries_format_and_the_pinned_num_ctx`; plus the Plan round trip and min-length check.
@@ -389,7 +389,17 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 - Other divergences and additions: (1) the graph takes keyword args `hints`, `recorder` and `log` beyond the spec signature; no-hints behaviour lives in the graph, not the CLI. (2) A Stuck answer of `skip` is also accepted interactively (restores the Workspace as the Behavior found it), as in the spike. (3) Edits are limited to `tests/` while writing a test and to non-`tests/` files while implementing or polishing, as in the spike. (4) A rewritten test starts from the Workspace as the Behavior found it, so a rejected test file cannot linger. (5) Every sandboxed command gets `PYTHONDONTWRITEBYTECODE=1` so a file rewritten within one second cannot run from a stale `.pyc`. (6) `Edits` is constrained to 1-3 files in its JSON schema, so a bad count triggers the model retry. (7) The model retry limit (two requests) means `WorkflowModelError` counts as a failed attempt in the graph, not a crash. (8) The Sign-off interrupt also lists passing tests (`pytest -rA`). (9) `max_polish_rounds` > 1 retries Polish after a revert with the failure fed back; a kept Polish ends the rounds. (10) Summaries go to `<project>/runs/` like the spike (gitignored in the katas); a project without that ignore will see an untracked `runs/`. (11) `[workflow] runs_dir` and `command_timeout_s` added. (12) Node wall time (`node_seconds`) is in every log line; interrupting nodes log only after they resume, so the human's wait is not in it.
 - `type: ignore`: none in `workflow/`. LangGraph typing needed `cast`s (`ExecState` from `get_state`, the multi-mode `astream` tuple), a `Protocol` (`_NodeFn`) for wrapped nodes, and a `Literal["__end__"]` constant because `END` is typed `str`.
 - Open questions: none blocking. M15 will need `Recorder` in the checkpointed state (it is an external object now) and `RunLog` lines do not replay on resume.
-- Live baseline rerun pending: run the five katas for `gemma4:e4b` and `gemma4:12b` with `harness-workflow build --no-hints` and compare with M11's table.
+- **Live baseline rerun (2026-10-09), `--no-hints`, `num_ctx` 16384, same unreviewed Claude Plans:**
+
+| model | bowling | cron-next | roman-numerals | semver-compare | word-wrap | total Green |
+|---|---|---|---|---|---|---|
+| gemma4:e4b (M11 spike) | 6/6 · 2a · 0r · 0h · 4s · 0.2m | 4/6 · 11a · 2r · 0h · 1s · 1.8m | 6/6 · 1a · 1r · 0h · 5s · 0.2m | 6/6 · 8a · 0r · 0h · 1s · 1.0m | 5/6 · 6a · 0r · 0h · 3s · 1.1m | 27/30 |
+| gemma4:e4b (M13) | 6/6 · 2a · 0r · 0h · 4s · 2.9m | 6/6 · 7a · 1r · 0h · 1s · 13.3m | 6/6 · 1a · 0r · 0h · 5s · 0.9m | 4/6 · 10a · 0r · 0h · 1s · 7.3m | 6/6 · 7a · 0r · 0h · 2s · 6.1m | 28/30 |
+| gemma4:12b (M13) | not run | not run | 0/6, stopped in Behavior 1 after ~95 min | not run | not run | — |
+
+  - e4b: no drop from the spike, so no port bug signalled. 13 Satisfied (spike: 14). Both semver-compare Stuck Behaviors (3 and 6) trace to a model-written Behavior 2 test asserting `compare('1.2.3', '1.2.3-rc1') == 0`, which contradicts Behavior 3; `write_impl` may not edit tests, so it oscillated. Minutes per Behavior are far above the spike's: the Mac was hot (GPU 90–94 °C) and swapping (swap peaked at 5.3 of 6 GiB), so the times are not comparable.
+  - 12b: run only on roman-numerals because swap was already above 3 GiB with no model loaded. `write_impl` got empty content twice (`WorkflowModelError`, 1214 s) while Ollama generated thousands of tokens at 3–5 tok/s. Likely cause, not confirmed: the model spends its output on thinking (dropped by `GuardedWorkflowModel`), made worse by memory pressure; the spike sent identical options and never ran 12b, so this is not a port regression. Candidate fixes: send `think: false` and a `num_predict` cap from `[workflow]`. SIGINT did not stop the CLI while a model call was in flight; it needed SIGTERM. The 12b row of both M11 and M13 stays open.
+  - Not yet exercised live: a hinted run, the `clarify` flow, a failing Probe.
 
 
 ### M14 — Plan loop (CLI)
