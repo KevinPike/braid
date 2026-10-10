@@ -6,9 +6,10 @@ import argparse
 import asyncio
 import os
 import re
+import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -22,6 +23,9 @@ from harness.workflow.model import GuardedWorkflowModel, WorkflowModel
 from harness.workflow.plan import Plan
 from harness.workflow.progress import Progress, describe, final_report
 from harness.workflow.records import Recorder, RunLog, write_summary
+
+
+CANCELLED_EXIT = 130  # 128 + SIGINT
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -111,8 +115,13 @@ async def run_build(
 
     ticker = asyncio.ensure_future(progress.ticker())
     started = clock()
+    cancelled = False
     try:
         final = await drive_graph(graph, initial_state(plan), answer, on_start=on_start, on_update=on_update)
+    except asyncio.CancelledError:
+        # Ctrl-C: the cancellation already closed the in-flight HTTP stream and killed any Sandbox process group
+        cancelled = True
+        final = {"status": "cancelled", "plan": {"behaviors": plan.behaviors}}
     finally:
         ticker.cancel()
         progress.clear()
@@ -120,6 +129,10 @@ async def run_build(
         project / "runs", model=model_id, project=project, no_hints=not hints, status=final.get("status"),
         planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path,
     )
+    if cancelled:
+        out.write(f"\ncancelled; Workspace kept at {workspace.path}\nsummary: {summary}\n")
+        out.flush()
+        return CANCELLED_EXIT
     out.write(final_report(rec, clock() - started) + f"\n\nstatus: {final.get('status')}; polish {rec.polish}\nsummary: {summary}\n")
     out.flush()
     return 0
@@ -153,8 +166,26 @@ async def _stdin(_payload: dict[str, Any]) -> str:
     return await asyncio.to_thread(input, "  > ")
 
 
+async def run_cancellable(coro: Coroutine[Any, Any, int]) -> int:
+    """Run ``coro`` as a task that the first SIGINT cancels; a second SIGINT falls back to KeyboardInterrupt."""
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(coro)
+
+    def interrupt() -> None:
+        loop.remove_signal_handler(signal.SIGINT)
+        task.cancel()
+
+    loop.add_signal_handler(signal.SIGINT, interrupt)
+    try:
+        return await task
+    except asyncio.CancelledError:
+        return CANCELLED_EXIT
+    finally:
+        loop.remove_signal_handler(signal.SIGINT)
+
+
 def main(argv: list[str] | None = None, *, ask: Ask = _stdin) -> None:
     args = build_parser().parse_args(argv)
-    code = asyncio.run(live_build(args, load_config(args.config), ask))
+    code = asyncio.run(run_cancellable(live_build(args, load_config(args.config), ask)))
     if code:
         raise SystemExit(code)

@@ -1,3 +1,4 @@
+import asyncio
 import os
 import socket
 import sys
@@ -119,3 +120,24 @@ def test_profile_escapes_quotes_and_resolves_paths(tmp_path: Path) -> None:
     odd.mkdir()
     text = render_profile(SandboxPolicy(writable=(odd,), denied_read=()))
     assert 'a\\"b' in text and str(tmp_path.resolve()) in text
+
+
+async def test_cancellation_kills_the_process_group_grandchild_included(dirs: tuple[Path, Path]) -> None:
+    work, secret_dir = dirs
+    code = "import subprocess; p = subprocess.Popen(['sleep', '300']); open('pid', 'w').write(str(p.pid)); p.wait()"
+    task = asyncio.ensure_future(LocalSandbox().run(f"{PY} -c \"{code}\"", cwd=work, policy=policy(work, secret_dir), timeout_s=60))
+    for _ in range(100):
+        if (work / "pid").exists() and (work / "pid").read_text():
+            break
+        await asyncio.sleep(0.1)
+    grandchild = int((work / "pid").read_text())
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    for _ in range(30):
+        try:
+            os.kill(grandchild, 0)
+        except ProcessLookupError:
+            return
+        await asyncio.sleep(0.1)
+    pytest.fail(f"grandchild {grandchild} outlived the cancellation")
