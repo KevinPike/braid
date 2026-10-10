@@ -18,8 +18,9 @@ from harness.config import HarnessConfig, load_config
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
+from harness.workflow.backend import choose, make_model
 from harness.workflow.execute import Ask, build_execution_graph, drive_graph, initial_state
-from harness.workflow.model import GuardedWorkflowModel, WorkflowModel, WorkflowModelError
+from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
 from harness.workflow.progress import PLAN_NODES, Progress, describe, final_report
@@ -35,13 +36,17 @@ def build_parser() -> argparse.ArgumentParser:
     g = sub.add_parser("plan", help="turn a goal into an approved Plan through research, Critiques and your review")
     g.add_argument("goal", help="what to build, in a sentence or two")
     g.add_argument("--project", type=Path, default=Path("."), help="the project to research (default .)")
-    g.add_argument("--model", help="model id (default [workflow] model, then the [profile] model)")
+    g.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
+    g.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    g.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
     g.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     g.add_argument("--unload", action="store_true", help="unload the model at the end")
     b = sub.add_parser("build", help="make each Behavior of a Plan Red then Green in a sandboxed Workspace")
     b.add_argument("--plan", type=Path, required=True, help="Plan JSON")
     b.add_argument("--project", type=Path, default=Path("."), help="the git project to build in (default .)")
-    b.add_argument("--model", help="model id (default [workflow] model, then the [profile] model)")
+    b.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
+    b.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    b.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
     b.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     b.add_argument("--no-hints", action="store_true", help="baseline: Stuck skips the Behavior, clarify waives, Sign-off says yes")
     b.add_argument("--unload", action="store_true", help="unload the model at the end")
@@ -156,6 +161,10 @@ async def run_build(
     return 0
 
 
+def cost_note(rec: Recorder) -> str:
+    return f", ${rec.cost_usd:.4f}" if rec.cost_usd else ""
+
+
 def plan_id_for(goal: str, stamp: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", goal.lower()).strip("-")[:40].strip("-")
     return f"{stamp}-{slug or 'plan'}"
@@ -203,10 +212,14 @@ async def run_plan(
     finally:
         ticker.cancel()
         progress.clear()
+    if final.get("status") == "spend_cap":
+        out.write(f"\nstopped at the Spend cap (${rec.cost_usd:.4f} > ${cfg.max_cost_usd:.2f}); no Plan saved\nrun log: {log.path}\n")
+        out.flush()
+        return 0
     path = final["plan_path"]
     out.write(
         f"\n{final['markdown']}\ntotal wall time {clock() - started:.1f}s, model time {rec.model_seconds:.1f}s over "
-        f"{rec.model_calls} calls, {final['round']} round(s), status: {final['status']}\n"
+        f"{rec.model_calls} calls{cost_note(rec)}, {final['round']} round(s), status: {final['status']}\n"
         f"plan saved: {path}\nbuild it: harness-workflow build --plan {path} --project {project}\n"
     )
     out.flush()
@@ -214,10 +227,17 @@ async def run_plan(
 
 
 async def with_model(
-    args: argparse.Namespace, config: HarnessConfig, body: Callable[[GuardedWorkflowModel, str], Awaitable[int]],
+    args: argparse.Namespace, config: HarnessConfig, body: Callable[[WorkflowModel, str], Awaitable[int]],
 ) -> int:
-    """Preflight and pin ``--model`` the way ``evals/runner.py`` does, then run ``body`` with the guarded model."""
-    model_id = args.model or config.workflow.model or config.profile.model
+    """Build the model for ``--backend``/``--model``/config, then run ``body`` with it. An Ollama model is preflighted and
+    pinned the way ``evals/runner.py`` does; an API run skips that, the Guard has nothing to watch (ADR 0006)."""
+    choice = choose(config, model=args.model, backend=args.backend)
+    if choice.backend == "anthropic":
+        model = make_model(config, choice, None)
+        assert model is not None
+        sys.stdout.write(f"model {choice.model_id} on the Anthropic API; spend cap ${config.workflow.max_cost_usd:.2f}\n")
+        return await body(model, choice.model_id)
+    model_id = choice.model_id
     client = OllamaClient(config.ollama.host, keep_alive="10m")  # every request pins num_ctx, so models never Reload
     try:
         try:
@@ -226,7 +246,8 @@ async def with_model(
             sys.stderr.write(f"preflight failed: {exc}\n")
             return 1
         sys.stdout.write(f"model {model_id} pinned at num_ctx {pre.num_ctx}\n")
-        model = GuardedWorkflowModel(client, model_id, think=config.workflow.think, num_predict=config.workflow.num_predict)
+        model = make_model(config, choice, client)
+        assert model is not None
         return await body(model, model_id)
     finally:
         if args.unload:
@@ -238,7 +259,7 @@ async def live_build(args: argparse.Namespace, config: HarnessConfig, ask: Ask) 
     plan = Plan.load(args.plan)
     project = args.project.expanduser().resolve()
 
-    async def body(model: GuardedWorkflowModel, model_id: str) -> int:
+    async def body(model: WorkflowModel, model_id: str) -> int:
         return await run_build(
             plan, project, model=model, model_id=model_id, sandbox=SeatbeltSandbox(), config=config, hints=not args.no_hints, ask=ask,
         )
@@ -249,7 +270,7 @@ async def live_build(args: argparse.Namespace, config: HarnessConfig, ask: Ask) 
 async def live_plan(args: argparse.Namespace, config: HarnessConfig, ask: Ask) -> int:
     project = args.project.expanduser().resolve()
 
-    async def body(model: GuardedWorkflowModel, model_id: str) -> int:
+    async def body(model: WorkflowModel, model_id: str) -> int:
         return await run_plan(args.goal, project, model=model, model_id=model_id, config=config, ask=ask)
 
     return await with_model(args, config, body)
@@ -280,6 +301,8 @@ async def run_cancellable(coro: Coroutine[Any, Any, int]) -> int:
 def main(argv: list[str] | None = None, *, ask: Ask = _stdin) -> None:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if args.max_cost is not None:
+        config.workflow.max_cost_usd = args.max_cost
     run = live_plan if args.command == "plan" else live_build
     code = asyncio.run(run_cancellable(run(args, config, ask)))
     if code:

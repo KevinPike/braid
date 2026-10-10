@@ -8,8 +8,10 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
+
+from harness.workflow.model import ApiCall
 
 TAIL_LINES = 40
 
@@ -28,6 +30,7 @@ class BehaviorStats:
     seconds: float = 0.0
     satisfied: bool = False  # the new test passed at Red and failed against the HEAD implementation: earlier code covers it
     note: str = ""
+    cost_usd: float = 0.0  # API-backed runs only
 
 
 @dataclass
@@ -40,6 +43,32 @@ class Recorder:
     behavior_started: float = 0.0
     model_calls: int = 0
     model_seconds: float = 0.0
+    cost_usd: float = 0.0  # running total over API calls (Ollama costs nothing): what the Spend cap compares
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_input_tokens: int = 0
+
+    def add_usage(self, calls: Sequence[ApiCall], behavior: int | None = None) -> dict[str, Any]:
+        """Count API ``calls`` toward the totals (and Behavior ``behavior``'s cost); returns the run-log fields for the
+        node that made them. Empty (so the line is unchanged) when there were none, as in every Ollama run."""
+        if not calls:
+            return {}
+        cost = sum(c.cost_usd for c in calls)
+        fields: dict[str, Any] = {
+            "input_tokens": sum(c.input_tokens for c in calls), "output_tokens": sum(c.output_tokens for c in calls),
+            "cache_read_input_tokens": sum(c.cache_read_input_tokens for c in calls),
+            "cache_creation_input_tokens": sum(c.cache_creation_input_tokens for c in calls),
+            "cost_usd": cost, "request_id": calls[-1].request_id,
+        }
+        if len(calls) > 1:  # a retry: every request id, the last one produced the reply
+            fields["request_ids"] = [c.request_id for c in calls]
+        self.cost_usd += cost
+        self.input_tokens += fields["input_tokens"]
+        self.output_tokens += fields["output_tokens"]
+        self.cache_read_input_tokens += fields["cache_read_input_tokens"]
+        if behavior is not None and 0 <= behavior < len(self.behaviors):
+            self.behaviors[behavior].cost_usd += cost
+        return fields
 
     def dump(self) -> dict[str, Any]:
         """Plain data for the checkpointed state. Clocks are stored as ages, so a resumed run (a new process, a
@@ -49,7 +78,9 @@ class Recorder:
             "behaviors": [asdict(b) for b in self.behaviors], "trace": list(self.trace), "stuck": self.stuck,
             "polish": self.polish, "elapsed_s": now - self.started,
             "behavior_age_s": now - self.behavior_started if self.behavior_started else 0.0,
-            "model_calls": self.model_calls, "model_seconds": self.model_seconds,
+            "model_calls": self.model_calls, "model_seconds": self.model_seconds, "cost_usd": self.cost_usd,
+            "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
+            "cache_read_input_tokens": self.cache_read_input_tokens,
         }
 
     def load(self, data: dict[str, Any]) -> None:
@@ -61,10 +92,29 @@ class Recorder:
         self.started = now - data["elapsed_s"]
         self.behavior_started = now - data["behavior_age_s"] if data["behavior_age_s"] else 0.0
         self.model_calls, self.model_seconds = data["model_calls"], data["model_seconds"]
+        self.cost_usd = data.get("cost_usd", 0.0)  # absent in a checkpoint from before the API backend
+        self.input_tokens, self.output_tokens = data.get("input_tokens", 0), data.get("output_tokens", 0)
+        self.cache_read_input_tokens = data.get("cache_read_input_tokens", 0)
 
     @property
     def elapsed_s(self) -> float:
         return time.monotonic() - self.started
+
+
+class UsageMeter:
+    """Hands out the API calls a model made since the last ``take``, so each node's log line carries its own usage.
+    A model without ``ApiCall``s in a ``calls`` list (anything Ollama-backed, or a fake) has none."""
+
+    def __init__(self, model: object) -> None:
+        self.model, self.mark = model, 0
+
+    def take(self) -> list[ApiCall]:
+        calls = getattr(self.model, "calls", None)
+        if not isinstance(calls, list):
+            return []
+        new = calls[self.mark:]
+        self.mark = len(calls)
+        return [c for c in new if isinstance(c, ApiCall)]
 
 
 class RunLog:
@@ -108,6 +158,8 @@ def write_summary(
             "red_rejections": sum(x.red_rejections for x in b), "hints": sum(x.hints for x in b),
             "satisfied": sum(x.satisfied for x in b), "seconds": round(time.monotonic() - rec.started, 1),
             "model_seconds": round(rec.model_seconds, 1), "model_calls": rec.model_calls,
+            "cost_usd": round(rec.cost_usd, 8), "input_tokens": rec.input_tokens, "output_tokens": rec.output_tokens,
+            "cache_read_input_tokens": rec.cache_read_input_tokens,
         },
         "stuck": rec.stuck, "polish": rec.polish, "trace": rec.trace, "workspace": str(workspace),
         "run_log": str(run_log) if run_log else None,

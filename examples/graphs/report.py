@@ -2,7 +2,7 @@
 
     uv run --no-project python examples/graphs/report.py ~/projects/braid-practice [--all]
 
-Per cell: Behaviors Green / planned, attempts, Red rejections, hints, minutes per Behavior.
+Per cell: Behaviors Green / planned, attempts, Red rejections, hints, minutes per Behavior, cost (API runs).
 By default only the latest --no-hints run of each model x kata counts; --all includes hinted runs too.
 """
 
@@ -28,7 +28,8 @@ def cell(run: dict[str, Any] | None) -> str:
         return "-"
     t = run["totals"]
     minutes = t["seconds"] / 60 / max(run["planned"], 1)
-    return f"{t['green']}/{run['planned']} · {t['attempts']}a · {t['red_rejections']}r · {t['hints']}h · {t.get('satisfied', 0)}s · {minutes:.1f}m"
+    cost = f" · ${t['cost_usd']:.3f}" if t.get("cost_usd") else ""  # API-backed runs only
+    return f"{t['green']}/{run['planned']} · {t['attempts']}a · {t['red_rejections']}r · {t['hints']}h · {t.get('satisfied', 0)}s · {minutes:.1f}m{cost}"
 
 
 def table(runs: dict[tuple[str, str], dict[str, Any]]) -> str:
@@ -41,7 +42,7 @@ def table(runs: dict[tuple[str, str], dict[str, Any]]) -> str:
         planned = sum(r["planned"] for r in got if r)
         lines.append(f"| {model} | " + " | ".join(cell(r) for r in got) + f" | {green}/{planned} |")
     lines.append("")
-    lines.append("Cell: Behaviors Green/planned · impl attempts (a) · Red rejections (r) · hints (h) · Behaviors already satisfied by earlier code (s, counted as Green) · minutes per Behavior (m).")
+    lines.append("Cell: Behaviors Green/planned · impl attempts (a) · Red rejections (r) · hints (h) · Behaviors already satisfied by earlier code (s, counted as Green) · minutes per Behavior (m) · cost in USD ($, API-backed runs only).")
     return "\n".join(lines)
 
 

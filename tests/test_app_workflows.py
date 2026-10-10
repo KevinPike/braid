@@ -491,6 +491,26 @@ async def test_swap_a_completed_run_ends_with_the_chat_model_preflighted_again(
     assert_chat_restored(app, backend)
 
 
+async def test_an_api_model_skips_preflight_and_the_swap_so_the_chat_model_stays_loaded(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    save_plan(tmp_path)
+    model = Gated([MUL_TEST, MUL_IMPL], at=1)
+    app, backend = await swap_app(tmp_path, fixture_repo, fixture_venv, model)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        loads = list(backend.load_log)
+        await submit(app, "/build --no-hints --model claude-haiku-5-5")
+        await until(pilot, lambda: model.calls == 2)
+        assert backend.loaded.get(CHAT) == 8192 and backend.load_log == loads  # nothing unloaded, nothing preflighted
+        model.release.set()
+        await until(pilot, lambda: bool(app.query(ApprovalPrompt)))
+        await pilot.press("n")
+        await finished(app, pilot)
+        await shows_chat_model(app, pilot)
+    assert backend.loaded.get(CHAT) == 8192 and backend.load_log == loads
+
+
 async def test_swap_a_cancelled_run_ends_with_the_chat_model_preflighted_again(
     fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
 ) -> None:

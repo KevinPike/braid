@@ -6,6 +6,7 @@ Node names and routing follow ``examples/graphs/exec_graph.py``.
 
 from __future__ import annotations
 
+import functools
 import inspect
 import operator
 import re
@@ -26,7 +27,7 @@ from harness.tools.builtin import resolve_inside
 from harness.workflow import prompts
 from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
-from harness.workflow.records import BehaviorStats, Recorder, RunLog, tail
+from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter, tail
 
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
@@ -112,6 +113,7 @@ class _Loop:
     ) -> None:
         self.model, self.sandbox, self.ws, self.cfg = model, sandbox, workspace, settings
         self.hints, self.rec, self.runlog = hints, recorder, log
+        self.meter = UsageMeter(model)
         self.node_started = time.monotonic()
         venv_bin = workspace.path / ".venv" / "bin"
         self.env = {
@@ -122,8 +124,9 @@ class _Loop:
     # --- helpers -------------------------------------------------------------------------------------------
     def log(self, node: str, state: ExecState, **fields: Any) -> None:
         self.rec.trace.append(node)
+        usage = self.rec.add_usage(self.meter.take(), state.get("idx"))  # the API calls this node made, if any
         if self.runlog:
-            self.runlog.write(node, behavior=state.get("idx"), node_seconds=round(time.monotonic() - self.node_started, 2), **fields)
+            self.runlog.write(node, behavior=state.get("idx"), node_seconds=round(time.monotonic() - self.node_started, 2), **fields, **usage)
 
     async def sh(self, command: str, timeout: float | None = None) -> RunResult:
         return await self.sandbox.run(
@@ -472,6 +475,20 @@ class _Loop:
         self.log("finish", state, answer=answer, outcome=status, detail=detail, changes=payload["changes"])
         return {"status": status}
 
+    # --- Spend cap -----------------------------------------------------------------------------------------
+    def spend_cap(self, state: ExecState) -> dict[str, Any]:
+        """Terminal node: the run cost more than ``max_cost_usd``. Nothing was applied and nothing is asked."""
+        self.log("spend_cap", state, spent=round(self.rec.cost_usd, 6), cap=self.cfg.max_cost_usd)
+        return {"status": "spend_cap"}
+
+    def gate(self, route: Callable[[ExecState], str]) -> Callable[[ExecState], str]:
+        """``route``, unless the Spend cap has been passed: every node boundary then goes to ``spend_cap`` instead."""
+        @functools.wraps(route)
+        def gated(state: ExecState) -> str:
+            return "spend_cap" if self.rec.cost_usd > self.cfg.max_cost_usd else route(state)
+
+        return gated
+
     def timed(self, node: Callable[[ExecState], Any]) -> _NodeFn:
         """Stamp the node's start, so its log line carries the node's wall time (``node_seconds``)."""
         async def run(state: ExecState) -> dict[str, Any]:
@@ -486,22 +503,31 @@ class _Loop:
         g = StateGraph(ExecState)
         for name in (
             "check_assumptions", "clarify", "write_test", "run_red", "check_satisfied", "write_impl", "run_green", "stuck",
-            "next_behavior", "sign_off", "polish", "verify_polish", "finish",
+            "next_behavior", "sign_off", "polish", "verify_polish", "finish", "spend_cap",
         ):
             g.add_node(name, self.timed(getattr(self, name)))
+        gate = self.gate
+
+        def to(name: str) -> Callable[[ExecState], str]:  # a fixed edge that still honors the Spend cap
+            return gate(lambda _state: name)
+
+        def edges(source: str, route: Callable[[ExecState], str], targets: list[str]) -> None:
+            g.add_conditional_edges(source, gate(route), [*targets, "spend_cap"])
+
         g.add_edge(START, "check_assumptions")
-        g.add_conditional_edges("check_assumptions", self.after_check, ["clarify", "write_test"])
-        g.add_conditional_edges("clarify", self.after_clarify, ["check_assumptions", END])
-        g.add_edge("write_test", "run_red")
-        g.add_conditional_edges("run_red", self.after_red, ["write_test", "write_impl", "check_satisfied", "stuck"])
-        g.add_conditional_edges("check_satisfied", self.after_satisfied, ["next_behavior", "write_test", "stuck"])
-        g.add_edge("write_impl", "run_green")
-        g.add_conditional_edges("run_green", self.after_green, ["next_behavior", "write_impl", "stuck"])
-        g.add_conditional_edges("stuck", self.after_stuck, ["write_test", "write_impl", "sign_off", END])
-        g.add_conditional_edges("next_behavior", self.after_next, ["write_test", "sign_off"])
-        g.add_conditional_edges("sign_off", self.after_sign_off, ["polish", "write_test", "finish", END])
-        g.add_edge("polish", "verify_polish")
-        g.add_conditional_edges("verify_polish", self.after_verify, ["polish", "finish"])
+        edges("check_assumptions", self.after_check, ["clarify", "write_test"])
+        edges("clarify", self.after_clarify, ["check_assumptions", END])
+        edges("write_test", to("run_red"), ["run_red"])
+        edges("run_red", self.after_red, ["write_test", "write_impl", "check_satisfied", "stuck"])
+        edges("check_satisfied", self.after_satisfied, ["next_behavior", "write_test", "stuck"])
+        edges("write_impl", to("run_green"), ["run_green"])
+        edges("run_green", self.after_green, ["next_behavior", "write_impl", "stuck"])
+        edges("stuck", self.after_stuck, ["write_test", "write_impl", "sign_off", END])
+        edges("next_behavior", self.after_next, ["write_test", "sign_off"])
+        edges("sign_off", self.after_sign_off, ["polish", "write_test", "finish", END])
+        edges("polish", to("verify_polish"), ["verify_polish"])
+        edges("verify_polish", self.after_verify, ["polish", "finish"])
+        g.add_edge("spend_cap", END)
         g.add_edge("finish", END)
         return g
 

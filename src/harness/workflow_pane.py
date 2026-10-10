@@ -36,9 +36,10 @@ from harness.hooks import ApprovalRequested, ApprovalResolved, WorkflowInterrupt
 from harness.inspector import RunInspector
 from harness.sandbox import RunResult, Sandbox, SandboxPolicy, SeatbeltSandbox, Workspace
 from harness.status import StatusBar
-from harness.workflow.cli import plan_id_for, show
+from harness.workflow.backend import choose, make_model
+from harness.workflow.cli import cost_note, plan_id_for, show
 from harness.workflow.execute import build_execution_graph, drive_graph, initial_state
-from harness.workflow.model import GuardedWorkflowModel, WorkflowModel
+from harness.workflow.model import WorkflowModel
 from harness.workflow.plan import Plan
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
 from harness.workflow.progress import PLAN_NODES, WORK_NODES, Progress, describe, final_report
@@ -344,8 +345,8 @@ class WorkflowPane:
         """Unload the chat model and preflight the workflow model, behind the status bar's loading state."""
         app = self.app
         backend = self._backend()
-        if backend is None:
-            return True
+        if backend is None or choose(app.config, model=model_id).backend == "anthropic":
+            return True  # an API run skips Preflight and the swap: the chat model stays loaded (ADR 0006)
         chat_model, chat_ctx = self._chat_target()
         if app._client is not None and chat_model is None:
             await app.note("workflow: the chat model is still loading; try again when preflight is done")
@@ -407,11 +408,8 @@ class WorkflowPane:
     def _model_for(self, model_id: str) -> WorkflowModel | None:
         if self.deps.model_factory is not None:
             return self.deps.model_factory(model_id)
-        client = self.app._client
-        if client is None:
-            return None
-        wf = self.app.config.workflow
-        return GuardedWorkflowModel(client, model_id, think=wf.think, num_predict=wf.num_predict)
+        config = self.app.config
+        return make_model(config, choose(config, model=model_id), self.app._client)
 
     def _resumed(self, values: dict[str, Any]) -> None:
         data = values.get("recorder")
@@ -522,8 +520,7 @@ class WorkflowPane:
             await self.app.note(f"/{name}: {exc}")
 
     def _pick_model(self, flags: Mapping[str, str]) -> str:
-        cfg = self.app.config
-        return flags.get("--model") or cfg.workflow.model or cfg.profile.model
+        return choose(self.app.config, model=flags.get("--model")).model_id
 
     @staticmethod
     def _new_id(model_id: str, prefix: str = "") -> str:
@@ -623,9 +620,11 @@ class WorkflowPane:
             graph = build_plan_graph(model, Path(info.project), wf, plan_id=Path(info.plan_path).stem, recorder=rec, log=log)
 
             def finish(final: dict[str, Any], total: float) -> tuple[str, str]:
+                if final.get("status") == "spend_cap":
+                    return f"stopped at the Spend cap (${rec.cost_usd:.4f} > ${wf.max_cost_usd:.2f}); no Plan saved", "spend_cap"
                 return (
                     f"{final['markdown']}\ntotal wall time {total:.1f}s, model time {rec.model_seconds:.1f}s over {rec.model_calls} "
-                    f"calls, {final['round']} round(s), status: {final['status']}\nplan saved: {final['plan_path']}\n"
+                    f"calls{cost_note(rec)}, {final['round']} round(s), status: {final['status']}\nplan saved: {final['plan_path']}\n"
                     f"build it: /build {Path(final['plan_path']).stem}",
                     str(final["status"]),
                 )

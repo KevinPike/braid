@@ -8,6 +8,7 @@ verified citation is bounced, and a human decides when the Plan is done. Node na
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import json
 import operator
@@ -22,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from harness.config import WorkflowConfig
 from harness.workflow import prompts
-from harness.workflow.model import WorkflowModel, WorkflowModelError
+from harness.workflow.model import ApiCall, WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
 from harness.workflow.research import check_citation, research, summarize
@@ -90,29 +91,32 @@ class _NodeFn(Protocol):
 
 class _SerialModel:
     """One model call at a time: Critiques run side by side in the graph, but a local GPU serves one request, and the
-    timings stay honest (latency excludes waiting for a sibling)."""
+    timings stay honest (latency excludes waiting for a sibling). It also hands each node the API calls it made."""
 
     def __init__(self, model: WorkflowModel, rec: Recorder) -> None:
         self.model, self.rec = model, rec
         self.lock = asyncio.Lock()
+        self.used: dict[asyncio.Task[Any] | None, list[ApiCall]] = {}  # per node (its task), until the node logs
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
-        async with self.lock:
-            start = time.monotonic()
-            try:
-                return await self.model.complete(system, prompt, schema)
-            finally:
-                self.rec.model_calls += 1
-                self.rec.model_seconds += time.monotonic() - start
+        return (await self.timed(system, prompt, schema))[0]
 
     async def timed(self, system: str, prompt: str, schema: type[T]) -> tuple[T, float]:
         async with self.lock:
+            calls = getattr(self.model, "calls", None)
+            mark = len(calls) if isinstance(calls, list) else 0
             start = time.monotonic()
             try:
                 return await self.model.complete(system, prompt, schema), time.monotonic() - start
             finally:
                 self.rec.model_calls += 1
                 self.rec.model_seconds += time.monotonic() - start
+                if isinstance(calls, list):
+                    self.used.setdefault(asyncio.current_task(), []).extend(c for c in calls[mark:] if isinstance(c, ApiCall))
+
+    def take(self) -> list[ApiCall]:
+        """The API calls the current node made since it last took."""
+        return self.used.pop(asyncio.current_task(), [])
 
 
 def plan_text(draft: dict[str, Any]) -> str:
@@ -149,8 +153,9 @@ class _PlanLoop:
 
     def log(self, node: str, started: float, round_: int, **fields: Any) -> None:
         self.rec.trace.append(node)
+        usage = self.rec.add_usage(self.model.take())
         if self.runlog:
-            self.runlog.write(node, round=round_, node_seconds=round(time.monotonic() - started, 2), **fields)
+            self.runlog.write(node, round=round_, node_seconds=round(time.monotonic() - started, 2), **fields, **usage)
 
     # --- research ------------------------------------------------------------------------------------------
     async def research(self, state: PlanState) -> dict[str, Any]:
@@ -280,6 +285,22 @@ class _PlanLoop:
         self.log("finalize", started, state["round"], outcome=status, path=str(path), plan=json.loads(plan.model_dump_json()))
         return {"plan_path": str(path), "markdown": markdown, "status": status}
 
+    # --- Spend cap -----------------------------------------------------------------------------------------
+    def spend_cap(self, state: PlanState) -> dict[str, Any]:
+        """Terminal node: the run cost more than ``max_cost_usd``; no Plan is saved."""
+        self.log("spend_cap", time.monotonic(), state.get("round", 0), spent=round(self.rec.cost_usd, 6), cap=self.cfg.max_cost_usd)
+        return {"status": "spend_cap"}
+
+    def gate(self, route: Callable[[PlanState], Any], *, let: str = "") -> Callable[[PlanState], Any]:
+        """``route``, unless the Spend cap has been passed. ``let`` is a destination that still runs: finalize makes no
+        model call, so a Plan the human has already approved is saved."""
+        @functools.wraps(route)
+        def gated(state: PlanState) -> Any:
+            where = route(state)
+            return where if where == let or self.rec.cost_usd <= self.cfg.max_cost_usd else "spend_cap"
+
+        return gated
+
     def timed(self, node: Callable[[PlanState], Any]) -> _NodeFn:
         async def run(state: PlanState) -> dict[str, Any]:
             result = node(state)
@@ -290,15 +311,20 @@ class _PlanLoop:
 
     def graph(self) -> StateGraph[PlanState]:
         g = StateGraph(PlanState)
-        for name in ("research", "draft", "synthesize", "human_review", "finalize"):
+        for name in ("research", "draft", "synthesize", "human_review", "finalize", "spend_cap"):
             g.add_node(name, self.timed(getattr(self, name)))
         g.add_node("critique", self.critique, input_schema=CritiqueTask)  # its input is the Send payload, not the state
+
+        def then(name: str) -> Callable[[PlanState], str]:
+            return lambda _state: name
+
         g.add_edge(START, "research")
-        g.add_edge("research", "draft")
-        g.add_conditional_edges("draft", self.fan_out, ["critique", "synthesize"])
+        g.add_conditional_edges("research", self.gate(then("draft")), ["draft", "spend_cap"])
+        g.add_conditional_edges("draft", self.gate(self.fan_out), ["critique", "synthesize", "spend_cap"])
         g.add_edge("critique", "synthesize")
-        g.add_edge("synthesize", "human_review")
-        g.add_conditional_edges("human_review", self.after_review, ["research", "draft", "finalize"])
+        g.add_conditional_edges("synthesize", self.gate(then("human_review")), ["human_review", "spend_cap"])
+        g.add_conditional_edges("human_review", self.gate(self.after_review, let="finalize"), ["research", "draft", "finalize", "spend_cap"])
+        g.add_edge("spend_cap", END)
         g.add_edge("finalize", END)
         return g
 

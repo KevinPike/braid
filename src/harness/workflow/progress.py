@@ -129,11 +129,15 @@ def describe(record: dict[str, Any]) -> str:
         result = f"{len(record.get('questions', []))} open questions"
     elif node == "human_review":
         result = f"{record['route']}: {record['answer'][:50]}"
+    elif node == "spend_cap":
+        result = f"✗ Spend cap: ${record['spent']:.4f} passed ${record['cap']:.2f}; stopped, nothing applied"
     elif node == "finalize" and "path" in record:
         result = f"{record['outcome']}: saved {record['path']}"
     text = f"  {node:<17} {result}  {record.get('node_seconds', 0.0):.1f}s"
     if record.get("model_seconds") is not None:
         text += f"  (model {record['model_seconds']:.1f}s)"
+    if record.get("cost_usd") is not None:
+        text += f"  ${record['cost_usd']:.4f}"
     return text
 
 
@@ -146,9 +150,18 @@ def outcome(stats: BehaviorStats) -> str:
 
 
 def final_report(rec: Recorder, total_s: float) -> str:
-    rows = [(s.behavior if len(s.behavior) <= 52 else s.behavior[:51] + "…", outcome(s), str(s.attempts), f"{s.seconds:.1f}") for s in rec.behaviors]
+    """The end table. An API-backed run (``rec.cost_usd``) gets a cost column and a token line."""
+    api = rec.cost_usd > 0
+    rows = [
+        (s.behavior if len(s.behavior) <= 52 else s.behavior[:51] + "…", outcome(s), str(s.attempts), f"{s.seconds:.1f}", f"${s.cost_usd:.4f}")
+        for s in rec.behaviors
+    ]
     width = max([len(r[0]) for r in rows] + [8])
-    lines = [f"\ntotal wall time {total_s:.1f}s, model time {rec.model_seconds:.1f}s over {rec.model_calls} calls", ""]
-    lines.append(f"{'Behavior':<{width}}  {'result':<9}  {'attempts':>8}  {'seconds':>7}")
-    lines += [f"{b:<{width}}  {o:<9}  {a:>8}  {sec:>7}" for b, o, a, sec in rows]
+    head = f"\ntotal wall time {total_s:.1f}s, model time {rec.model_seconds:.1f}s over {rec.model_calls} calls"
+    if api:
+        head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
+                 f"{rec.cache_read_input_tokens} cache-read tokens")
+    lines = [head, ""]
+    lines.append(f"{'Behavior':<{width}}  {'result':<9}  {'attempts':>8}  {'seconds':>7}" + (f"  {'cost':>8}" if api else ""))
+    lines += [f"{b:<{width}}  {o:<9}  {a:>8}  {sec:>7}" + (f"  {cost:>8}" if api else "") for b, o, a, sec, cost in rows]
     return "\n".join(lines)
