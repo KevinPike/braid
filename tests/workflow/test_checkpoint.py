@@ -52,7 +52,8 @@ def test_the_run_store_resolves_a_unique_prefix_and_lists_newest_first(tmp_path:
     assert store.resolve("20261010-1100") is not None and store.resolve("20261010-1") is None  # ambiguous
     assert store.resolve("nope") is None
     assert [r.run_id for r in store.list()][0] == "20261010-100000-a"  # updated last
-    assert store.get("20261010-100000-a") is not None and store.get("20261010-100000-a").state == "paused"  # type: ignore[union-attr]
+    got = store.get("20261010-100000-a")
+    assert got is not None and got.state == "paused"
 
 
 async def test_a_cancelled_build_resumes_from_its_last_checkpoint_without_repeating_finished_nodes(

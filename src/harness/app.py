@@ -25,7 +25,7 @@ from textual.widgets import Input, Static
 from textual.worker import Worker
 
 from harness.agent import build_agent, stream_reply
-from harness.approval import ApprovalGate, ApprovalRequest
+from harness.approval import APPLY_WORKSPACE, ApprovalGate, ApprovalRequest
 from harness.chat import AlertBanner, ApprovalPrompt, ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
 from harness.context.compaction import CompactionPolicy, Compactor, message_text
@@ -43,9 +43,11 @@ from harness.hooks import (
     CallRecorded, DecisionRecorded, GuardStateChanged, HarnessHooks, ModelCallCompleted,
     ModelRequestSent, QueueChanged, TrimRecorded,
 )
+from harness.debuglog import DebugLog
 from harness.inspector import Inspector
 from harness.prompts import PromptHistory, PromptQueue
 from harness.session.store import SessionInfo, SessionStore, settle
+from harness.workflow_pane import WorkflowDeps, WorkflowPane
 from harness.status import StatusBar
 from harness.telemetry import setup_telemetry
 
@@ -92,6 +94,9 @@ COMMANDS: dict[str, Command] = {
     "fork": Command("/fork [id]", immediate=False),
     "new": Command("/new", immediate=False),
     "inspect": Command("/inspect [n]", immediate=True),
+    "plan": Command("/plan <goal> | /plan --resume <run-id>", immediate=False),  # takes the GPU, so it waits for the running turn
+    "build": Command("/build [plan-id] [--no-hints] [--model m] | /build --resume <run-id>", immediate=False),
+    "runs": Command("/runs [run-id]", immediate=True),  # read-only
 }
 
 
@@ -129,13 +134,19 @@ class HarnessApp(App[None]):
         store: SessionStore | None = None,
         resume: str | None = None,
         continue_last: bool = False,
+        workflows: WorkflowDeps | None = None,
+        debug_log: DebugLog | None = None,
     ) -> None:
         super().__init__()
         self.config = config
         self.hooks = HarnessHooks()  # every Guard, context, decision, session and approval event; M9 registers here
         self._telemetry = setup_telemetry(config.telemetry, self.hooks)  # None unless [telemetry] enabled
         self._approvals_waiting = 0
+        self._pauses_waiting = 0  # Workflow questions open in the chat log; like an Approval, each holds the Prompt queue
         self._approval_lock = asyncio.Lock()
+        self.workflows = WorkflowPane(self, workflows)
+        self.debug_log = debug_log or (DebugLog(config.paths.status_log_file) if replier is None else None)
+        self.workflows.debug = self.debug_log
         self.trimlog = trimlog or TrimLog(config.paths.trim_log_file if replier is None else ":memory:")
         self.compactor = compactor
         self.decisions = decisions or DecisionLog(config.paths.decisions_file if replier is None else ":memory:")
@@ -169,6 +180,8 @@ class HarnessApp(App[None]):
             self.hooks.attach_client(self._client)
         if self._watchdog is not None:
             self.hooks.attach_watchdog(self._watchdog)
+            if self.debug_log is not None:
+                self._watchdog.subscribe_poll(self.debug_log.poll)
         self.hooks.attach_queue(self.queue)
         self.hooks.attach_ledger(self.ledger)
         self.hooks.attach_trimlog(self.trimlog)
@@ -205,8 +218,11 @@ class HarnessApp(App[None]):
         panel, status, banner = self.query_one(ContextPanel), self.query_one(StatusBar), self.query_one(AlertBanner)
         self.hooks.add_callback(CallRecorded, lambda e: panel.set_record(e.record))
         panel.set_record(None)
+        if self.debug_log is not None:
+            status.on_render = self.debug_log.rendered
         if self._watchdog is not None:
             self.hooks.add_callback(GuardStateChanged, lambda e: status.set_state(e.state))
+            self.hooks.add_callback(GuardStateChanged, lambda e: panel.set_state(e.state))
             self.hooks.add_callback(GuardStateChanged, lambda e: banner.set_state(e.state))
             self.hooks.add_callback(GuardStateChanged, lambda _e: self._pump())
             self.run_worker(self._watchdog.run(), name="watchdog", group="guard")
@@ -224,8 +240,12 @@ class HarnessApp(App[None]):
         self.call_later(self._note, f"decide {event.decision.line()}")
 
     def on_unmount(self) -> None:
+        self.workflows.close()
         if self._telemetry is not None:
             self._telemetry.shutdown()
+
+    async def note(self, text: str) -> None:
+        await self._note(text)
 
     async def _note(self, text: str) -> None:
         chat = self.query_one("#chat", VerticalScroll)
@@ -340,14 +360,17 @@ class HarnessApp(App[None]):
 
     async def _collapse(self, widget: Widget, record: str, previous: Widget | None) -> None:
         """Replace an answered inline widget with its permanent one-line record and give the focus back."""
-        try:
+        async def swap() -> None:
             await widget.remove()
             chat = self.query_one("#chat", VerticalScroll)
             await chat.mount(Static(record, classes="note record", markup=False))
             chat.scroll_end(animate=False)
             target = previous if previous is not None and previous.is_attached and previous.can_focus else self.query_one("#prompt")
             target.focus()
-        except Exception:  # the app may be shutting down underneath a cancelled prompt
+
+        try:
+            await asyncio.wait_for(swap(), 5)
+        except Exception:  # the app may be shutting down underneath a cancelled prompt (TimeoutError included)
             pass
 
     async def _advise_policy(self, tool: str, tool_input: Mapping[str, Any]) -> float | None:
@@ -447,6 +470,8 @@ class HarnessApp(App[None]):
             label = f"paused · {n} queued · Enter resumes, Esc clears"
         elif n and self.approval_pending:
             label = f"{n} queued · held by approval"
+        elif n and self._pauses_waiting:
+            label = f"{n} queued · held by workflow question"
         elif n and self.held_by_alert:
             label = f"{n} queued · held by alert"
         elif n:
@@ -507,6 +532,8 @@ class HarnessApp(App[None]):
             await self._switch_session(self.store.create(self._model_name, self._num_ctx, self._calibration()))
         elif name == "inspect":
             await self._inspect_command(args)
+        elif name in ("plan", "build", "runs"):
+            await self.workflows.command(name, args)
 
     async def _compact_command(self) -> None:
         if self.compactor is None:
@@ -625,6 +652,8 @@ class HarnessApp(App[None]):
         self.store.update(self.session_id, model=self._model_name, num_ctx=self._num_ctx, calibration=self._calibration())
 
     def _on_request(self, event: ModelRequestSent) -> None:
+        if self.workflows.running:  # Workflow model calls are in the run log, not the session's calls table
+            return
         pending = self.ledger.pending  # set by the ledger just before the main loop's call; None for summarizer calls
         num_ctx = int(event.body.get("options", {}).get("num_ctx", 0))
         self._open_calls[event.model] = self.store.record_call(
@@ -729,7 +758,7 @@ class HarnessApp(App[None]):
 
     def _pump(self) -> None:
         """Start the next queued prompt if idle, not paused, no approval is pending and no red Alert is active."""
-        if self._busy or self.approval_pending or self.held_by_alert or (self._client is not None and self._agent is None):
+        if self._busy or self.approval_pending or self._pauses_waiting or self.workflows.running or self.held_by_alert or (self._client is not None and self._agent is None):
             self._refresh_queue_label()
             return
         prompt = self.queue.pop()
@@ -789,7 +818,8 @@ class HarnessApp(App[None]):
         An open approval prompt is denied first, so the tool call it guards is cancelled, never run.
         """
         for prompt in self.query(ApprovalPrompt):
-            prompt.decide(False)
+            if prompt.request.tool != APPLY_WORKSPACE:  # a Workflow's own Approval is cancelled with its run, never answered
+                prompt.decide(False)
         if self.generating and self._worker is not None:
             self.queue.pause()
             self._worker.cancel()

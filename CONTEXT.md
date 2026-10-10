@@ -63,7 +63,7 @@ The SQLite record of what was dropped or summarized, when and why.
 _Avoid_: Compaction history
 
 **Prompt queue**:
-Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active or an approval is pending.
+Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active, an approval is pending, or a **Workflow** run is active or waiting on a human.
 _Avoid_: Backlog, pending messages
 
 **Approval**:
@@ -75,7 +75,7 @@ The tev1 question "is this action safe to run in the project folder?", shown on 
 _Avoid_: Safety check, guardrail
 
 **Hook events**:
-Guard, context, decision, session and approval events published on the app's Strands hook registry (`app.hooks`); consumers register there instead of subscribing to components.
+Guard, context, decision, session, approval and workflow events published on the app's Strands hook registry (`app.hooks`); consumers register there instead of subscribing to components.
 _Avoid_: Listeners, callbacks
 
 ### Workflows
@@ -139,6 +139,10 @@ _Avoid_: Acceptance (reserved for **Validation gate** language), approval (that 
 **Polish**:
 A behavior-preserving refactor after **Sign-off**, kept only if the suite stays **Green** and reverted otherwise.
 _Avoid_: Cleanup, refactor stage
+
+**Checkpoint**:
+A **Workflow** run's saved state after a node (SQLite, keyed by run id), including the per-Behavior stats; a run that was cancelled with Ctrl-C or killed resumes from its last one without repeating finished nodes.
+_Avoid_: Save point, snapshot (the Workspace snapshots are Polish's)
 
 ### Isolation
 
