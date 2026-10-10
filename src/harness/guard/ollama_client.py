@@ -138,6 +138,7 @@ class OllamaClient:
         options: Mapping[str, Any] | None = None,
         format: str | Mapping[str, Any] | None = None,
         estimate: int | None = None,
+        think: bool | None = None,
     ) -> AsyncIterator[ChatChunk]:
         num_ctx = self._pins.get(model)
         if num_ctx is None:
@@ -153,6 +154,8 @@ class OllamaClient:
             body["tools"] = list(tools)
         if format is not None:
             body["format"] = format if isinstance(format, str) else dict(format)
+        if think is not None:
+            body["think"] = think  # top-level in /api/chat, not an option
         for request_listener in self._request_listeners:
             request_listener(model, body)
         async with self._http.stream("POST", f"{self.host}/api/chat", json=body) as resp:

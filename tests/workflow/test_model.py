@@ -72,3 +72,41 @@ def test_plan_round_trips_and_needs_a_behavior(tmp_path: Path) -> None:
     assert Plan.load(tmp_path / "p.json") == plan
     with pytest.raises(ValueError):
         Plan(goal="g", behaviors=[])
+
+
+@respx.mock
+async def test_think_and_num_predict_are_sent_while_num_ctx_stays_pinned() -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(return_value=reply('{"value": 1, "why": "x"}'))
+    client = OllamaClient(HOST)
+    client.pin("m", 4096)
+    await GuardedWorkflowModel(client, "m", think=False, num_predict=512).complete("s", "go", Answer)
+    body = json.loads(route.calls.last.request.content)
+    assert body["think"] is False and body["options"]["num_predict"] == 512 and body["options"]["num_ctx"] == 4096
+
+
+@respx.mock
+async def test_think_and_num_predict_are_omitted_by_default() -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(return_value=reply('{"value": 1, "why": "x"}'))
+    await make().complete("s", "go", Answer)
+    body = json.loads(route.calls.last.request.content)
+    assert "think" not in body and "num_predict" not in body["options"]
+
+
+def thinking_only() -> httpx.Response:
+    lines = [{"message": {"role": "assistant", "content": "", "thinking": "hmm"}, "done": False}, {"done": True}]
+    return httpx.Response(200, content="\n".join(json.dumps(x) for x in lines).encode())
+
+
+@respx.mock
+async def test_a_thinking_only_reply_is_named_in_the_retry_and_the_error() -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(side_effect=[thinking_only(), thinking_only()])
+    with pytest.raises(WorkflowModelError, match="only thinking text"):
+        await make().complete("sys", "go", Answer)
+    assert "only thinking text" in json.loads(route.calls.last.request.content)["messages"][1]["content"]
+
+
+def test_workflow_config_defaults_stop_thinking_and_cap_output() -> None:
+    from harness.config import WorkflowConfig, load_config
+
+    assert WorkflowConfig().think is False and WorkflowConfig().num_predict == 4096
+    assert load_config(Path("harness.toml")).workflow.num_predict == 4096

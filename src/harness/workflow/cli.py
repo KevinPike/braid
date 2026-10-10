@@ -138,7 +138,9 @@ async def live_build(args: argparse.Namespace, config: HarnessConfig, ask: Ask) 
             return 1
         sys.stdout.write(f"model {model_id} pinned at num_ctx {pre.num_ctx}\n")
         return await run_build(
-            plan, project, model=GuardedWorkflowModel(client, model_id), model_id=model_id, sandbox=SeatbeltSandbox(),
+            plan, project, model=GuardedWorkflowModel(
+                client, model_id, think=config.workflow.think, num_predict=config.workflow.num_predict,
+            ), model_id=model_id, sandbox=SeatbeltSandbox(),
             config=config, hints=not args.no_hints, ask=ask,
         )
     finally:

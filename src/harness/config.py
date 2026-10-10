@@ -84,6 +84,8 @@ class WorkflowConfig(BaseModel):
 
     model: str | None = None
     num_ctx: int = 16384
+    think: bool | None = False  # sent as /api/chat's top-level ``think``; false stops thinking models spending the output on it
+    num_predict: int | None = 4096  # cap on generated tokens per model call
     max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
     max_polish_rounds: int = 1  # 0 skips Polish
     test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"

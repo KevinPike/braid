@@ -22,20 +22,37 @@ class WorkflowModel(Protocol):
 class GuardedWorkflowModel:
     """Asks ``OllamaClient.chat`` for JSON in ``schema``'s shape, so ``num_ctx`` stays pinned for every request."""
 
-    def __init__(self, client: OllamaClient, model_id: str, *, temperature: float = 0.2) -> None:
+    def __init__(
+        self, client: OllamaClient, model_id: str, *, temperature: float = 0.2, think: bool | None = None,
+        num_predict: int | None = None,
+    ) -> None:
         self.client = client
         self.model_id = model_id
         self.temperature = temperature
+        self.think = think
+        self.num_predict = num_predict
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
         error = ""
         for _ in range(2):  # one retry, with the validation error appended
             messages = [{"role": "system", "content": system}, {"role": "user", "content": prompt + error}]
-            text = "".join([
-                chunk.text async for chunk in self.client.chat(
-                    self.model_id, messages, format=schema.model_json_schema(), options={"temperature": self.temperature},
+            options: dict[str, float | int] = {"temperature": self.temperature}
+            if self.num_predict is not None:
+                options["num_predict"] = self.num_predict
+            parts: list[str] = []
+            thought = False
+            async for chunk in self.client.chat(
+                self.model_id, messages, format=schema.model_json_schema(), options=options, think=self.think,
+            ):
+                parts.append(chunk.text)
+                thought = thought or bool(chunk.thinking)  # thinking text is dropped
+            text = "".join(parts)
+            if not text.strip() and thought:
+                error = (
+                    "\n\nYour last reply had no content: the model returned only thinking text. "
+                    "Reply with valid JSON only, and keep any reasoning short."
                 )
-            ])  # thinking text is in chunk.thinking and is dropped
+                continue
             try:
                 return schema.model_validate_json(text)
             except ValidationError as exc:

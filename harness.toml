@@ -45,6 +45,8 @@ num_ctx = 8192
 [workflow]
 # model = "gemma4:12b"        # default: the [profile] model
 num_ctx = 16384
+think = false                 # thinking text is dropped, so do not pay for it
+num_predict = 4096            # max generated tokens per model call
 max_attempts = 3
 max_polish_rounds = 1         # 0 skips Polish
 test_command = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"

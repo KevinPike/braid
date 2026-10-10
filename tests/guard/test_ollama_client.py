@@ -170,3 +170,14 @@ async def test_show_requests_verbose_so_per_layer_arrays_are_not_elided(client: 
     }}))
     await client.show("m")
     assert json.loads(route.calls.last.request.content)["verbose"] is True
+
+
+@respx.mock
+async def test_think_is_a_top_level_key_sent_only_when_set(client: OllamaClient) -> None:
+    route = respx.post(f"{HOST}/api/chat").mock(return_value=httpx.Response(200, content=b'{"done": true}'))
+    _ = [c async for c in client.chat("m", [], think=False, options={"num_predict": 7})]
+    _ = [c async for c in client.chat("m", [])]
+    with_think, without = (json.loads(c.request.content) for c in route.calls)
+    assert with_think["think"] is False and "think" not in with_think["options"]
+    assert with_think["options"] == {"num_predict": 7, "num_ctx": 8192}
+    assert "think" not in without
