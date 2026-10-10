@@ -87,6 +87,24 @@ class ApprovalResolved(BaseHookEvent):
     approved: bool
 
 
+@dataclass
+class WorkflowNodeFinished(BaseHookEvent):
+    """A Workflow node finished (every graph update). ``attempt`` is the node's attempt number within its Behavior."""
+
+    run_id: str
+    node: str
+    duration_s: float
+    attempt: int
+
+
+@dataclass
+class WorkflowInterrupted(BaseHookEvent):
+    """A Workflow run stopped for a human: ``kind`` is clarify, stuck, sign_off, finish or review."""
+
+    run_id: str
+    kind: str
+
+
 class HarnessHooks:
     """Owns the registry for harness events and adapts each component's listener onto it."""
 
@@ -138,5 +156,6 @@ class HarnessHooks:
 
 __all__ = [
     "ApprovalRequested", "ApprovalResolved", "CallRecorded", "DecisionRecorded", "GuardStateChanged",
-    "HarnessHooks", "ModelCallCompleted", "ModelRequestSent", "QueueChanged", "TrimRecorded",
+    "HarnessHooks", "ModelCallCompleted", "ModelRequestSent", "QueueChanged", "TrimRecorded", "WorkflowInterrupted",
+    "WorkflowNodeFinished",
 ]

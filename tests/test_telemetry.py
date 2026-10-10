@@ -24,6 +24,8 @@ from harness.hooks import (
     HarnessHooks,
     ModelCallCompleted,
     TrimRecorded,
+    WorkflowInterrupted,
+    WorkflowNodeFinished,
 )
 from harness.telemetry import setup_telemetry
 
@@ -123,3 +125,17 @@ def test_telemetry_config_defaults_and_toml(tmp_path: Any) -> None:
     assert loaded.telemetry.enabled and loaded.telemetry.service_name == "x" and loaded.evals.models == ["a"]
     assert loaded.paths.evals_dir == loaded.paths.resolved_data_dir / "evals"
 
+
+
+def test_workflow_nodes_and_interrupts_become_metrics() -> None:
+    hooks, reader, _ = installed()
+    hooks.publish(WorkflowNodeFinished("run1", "write_impl", 12.5, 2))
+    hooks.publish(WorkflowNodeFinished("run1", "write_impl", 3.5, 1))
+    hooks.publish(WorkflowNodeFinished("run1", "run_green", 1.0, 1))
+    hooks.publish(WorkflowInterrupted("run1", "stuck"))
+    pts = points(reader)
+    nodes = {attrs(p)["node"]: p.value for p in pts["braid.workflow.nodes"]}
+    assert nodes == {"write_impl": 2, "run_green": 1}
+    seconds = {attrs(p)["node"]: p.sum for p in pts["braid.workflow.node_seconds"]}
+    assert seconds == {"write_impl": 16.0, "run_green": 1.0}
+    assert [(attrs(p)["kind"], p.value) for p in pts["braid.workflow.interrupts"]] == [("stuck", 1)]

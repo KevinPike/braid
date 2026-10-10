@@ -47,6 +47,8 @@ from harness.hooks import (
     HarnessHooks,
     ModelCallCompleted,
     TrimRecorded,
+    WorkflowInterrupted,
+    WorkflowNodeFinished,
 )
 
 EXPORT_TIMEOUT_S = 3.0  # per OTLP request; the exporters run on background threads either way
@@ -78,6 +80,11 @@ class MetricsHook(HookProvider):
         self._approvals = meter.create_counter("braid.approvals", unit="{approval}", description="Approvals by outcome")
         self._alerts = meter.create_counter(
             "braid.guard.alerts", unit="{alert}", description="Guard alerts, counted when they first appear")
+        self._node_seconds = meter.create_histogram(
+            "braid.workflow.node_seconds", unit="s", description="Wall time of a Workflow node, per node run")
+        self._nodes = meter.create_counter("braid.workflow.nodes", unit="{node}", description="Workflow nodes finished, by node")
+        self._interrupts = meter.create_counter(
+            "braid.workflow.interrupts", unit="{interrupt}", description="Workflow runs stopped for a human, by kind")
         self._active_alerts: set[tuple[str, str]] = set()
 
     def register_hooks(self, registry: HookRegistry, **kwargs: object) -> None:
@@ -87,6 +94,8 @@ class MetricsHook(HookProvider):
         registry.add_callback(TrimRecorded, self._on_trim)
         registry.add_callback(DecisionRecorded, self._on_decision)
         registry.add_callback(ApprovalResolved, self._on_approval)
+        registry.add_callback(WorkflowNodeFinished, self._on_node)
+        registry.add_callback(WorkflowInterrupted, self._on_interrupt)
 
     def _on_record(self, event: CallRecorded) -> None:
         rec = event.record
@@ -128,6 +137,14 @@ class MetricsHook(HookProvider):
 
     def _on_approval(self, event: ApprovalResolved) -> None:
         self._approvals.add(1, {"tool": event.request.tool, "outcome": "approved" if event.approved else "denied"})
+
+    def _on_node(self, event: WorkflowNodeFinished) -> None:
+        attrs: Attributes = {"node": event.node}
+        self._nodes.add(1, attrs)
+        self._node_seconds.record(event.duration_s, attrs)
+
+    def _on_interrupt(self, event: WorkflowInterrupted) -> None:
+        self._interrupts.add(1, {"kind": event.kind})
 
 
 @dataclass
