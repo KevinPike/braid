@@ -39,6 +39,18 @@ class Alert:
 
 
 @dataclass(frozen=True)
+class ModelStatus:
+    """One ``/api/ps`` entry as the status bar shows it."""
+
+    name: str
+    gpu_fraction: float
+    size: int
+    num_ctx: int
+    keep_alive_s: float
+    helper: bool = False
+
+
+@dataclass(frozen=True)
 class GuardState:
     model: str | None = None
     gpu_fraction: float | None = None
@@ -48,6 +60,17 @@ class GuardState:
     keep_alive_s: float | None = None
     memory_level: int = 1  # kern.memorystatus_vm_pressure_level: 1 normal, 2 warn, 4 critical
     alerts: tuple[Alert, ...] = ()
+    models: tuple[ModelStatus, ...] = ()  # every loaded model, the active one first, helpers after
+
+    @property
+    def helpers(self) -> tuple[ModelStatus, ...]:
+        """Loaded models other than the active one (the summarizer, tev1)."""
+        return tuple(m for m in self.models if m.name != self.model)
+
+    @property
+    def total_size(self) -> int | None:
+        """Memory held by every loaded model, helpers included; None when nothing is loaded."""
+        return sum(m.size for m in self.models) if self.models else None
 
     @property
     def level(self) -> Level:
@@ -159,6 +182,8 @@ class Watchdog:
         self._listeners: list[Callable[[GuardState], None]] = []
         self._calls: dict[str, int] = {}
         self._helpers: set[str] = set()
+        self._active: str | None = None
+        self._poll_listeners: list[Callable[[Sequence[RunningModel]], None]] = []
         self._speeds: list[float] = []
         self._last_tps: float | None = None
         self._call_alerts: list[tuple[datetime, Alert]] = []
@@ -171,6 +196,15 @@ class Watchdog:
 
     def subscribe(self, listener: Callable[[GuardState], None]) -> None:
         self._listeners.append(listener)
+
+    def subscribe_poll(self, listener: Callable[[Sequence[RunningModel]], None]) -> None:
+        """Called with the raw ``/api/ps`` entries of every poll (the status bar's debug log reads this)."""
+        self._poll_listeners.append(listener)
+
+    def set_active(self, model: str | None) -> None:
+        """The model the status bar names first (the workflow model during a run, else the chat model).
+        Without it, or while it is not loaded, the first loaded model that is not a helper is used."""
+        self._active = model
 
     def mark_helper(self, model: str) -> None:
         """A model loaded on demand (the summarizer): never the status bar's model, exempt from per-call checks."""
@@ -203,7 +237,11 @@ class Watchdog:
             for m in models:
                 if m.name not in self._helpers and (m.expires_at - now).total_seconds() < EVICTION_WINDOW_S:
                     await self._refresh(m.name)
-        head = next((m for m in models if m.name not in self._helpers), None)
+        for listener in self._poll_listeners:
+            listener(models)
+        head = next((m for m in models if m.name == self._active and m.name not in self._helpers), None)
+        head = head or next((m for m in models if m.name not in self._helpers), None)
+        ordered = ([head] if head else []) + [m for m in models if m is not head]
         self._ps_state = GuardState(
             model=head.name if head else None,
             gpu_fraction=head.gpu_fraction if head else None,
@@ -212,6 +250,10 @@ class Watchdog:
             keep_alive_s=(head.expires_at - now).total_seconds() if head else None,
             memory_level=mem,
             alerts=tuple(alerts),
+            models=tuple(
+                ModelStatus(m.name, m.gpu_fraction, m.size, m.context_length, (m.expires_at - now).total_seconds(), m.name in self._helpers)
+                for m in ordered
+            ),
         )
         return self._publish()
 
@@ -227,7 +269,7 @@ class Watchdog:
         self.state = GuardState(
             model=base.model, gpu_fraction=base.gpu_fraction, size=base.size, num_ctx=base.num_ctx,
             tokens_per_second=self._last_tps, keep_alive_s=base.keep_alive_s, memory_level=base.memory_level,
-            alerts=base.alerts + tuple(a for _, a in self._call_alerts),
+            alerts=base.alerts + tuple(a for _, a in self._call_alerts), models=base.models,
         )
         for listener in self._listeners:
             listener(self.state)

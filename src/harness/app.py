@@ -247,18 +247,19 @@ class HarnessApp(App[None]):
         try:
             result = await run_preflight(self._client, cands, env=os.environ, gpu_limit=system_gpu_limit())
         except PreflightError as exc:
-            status.show_loading(None)
+            await self._end_loading()
             for check in exc.checks:
                 await self._note(f"preflight {check.severity.value}: {check.detail}")
             await self._note(f"preflight failed: {exc}")
             return
+        await self._end_loading()
         for check in result.checks:
             if check.severity.value in ("warn", "fail"):
                 await self._note(f"preflight {check.severity.value}: {check.detail}")
-        status.show_loading(None)
         await self._note(f"preflight ok: {result.model} at num_ctx {result.num_ctx} (budget {result.budget})")
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
+            self._watchdog.set_active(result.model)
         self._agent = self._make_agent(result.model)
         self._model = result.model
         self._preflight = result
@@ -271,6 +272,16 @@ class HarnessApp(App[None]):
         else:
             self._save_session()
         self._pump()
+
+    async def _end_loading(self) -> None:
+        """Clear the status bar's loading state, but only after a fresh ``/api/ps`` poll: the last stored poll may
+        predate the load (it can say "no model loaded"), and rendering it would flash an empty frame."""
+        if self._watchdog is not None:
+            try:
+                await self._watchdog.poll_once()
+            except Exception:  # a failed poll must not leave the bar stuck on "loading"
+                pass
+        self.query_one(StatusBar).show_loading(None)
 
     def _make_agent(self, model: str) -> Agent:
         """An agent whose history is managed by the configured strategy (never Strands' silent default)."""
@@ -543,17 +554,18 @@ class HarnessApp(App[None]):
         try:
             result = await run_preflight(self._client, [Candidate(name, target)], env=os.environ, gpu_limit=system_gpu_limit())
         except PreflightError as exc:
-            status.show_loading(None)
+            await self._end_loading()
             await self._note(f"switch failed: {exc}")
             if old is not None:
                 await self._note(f"staying on {old}; it reloads on the next prompt")
             return False
-        status.show_loading(None)
+        await self._end_loading()
         for check in result.checks:
             if check.severity.value in ("warn", "fail"):
                 await self._note(f"preflight {check.severity.value}: {check.detail}")
         if self._watchdog is not None:
             self._watchdog.set_expected_size(result.model, result.weights)
+            self._watchdog.set_active(result.model)
         previous = self._agent
         self._agent = self._make_agent(result.model)
         if previous is not None:

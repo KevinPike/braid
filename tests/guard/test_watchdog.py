@@ -167,3 +167,43 @@ async def test_ps_undercount_raises_yellow_alert_when_expected_size_known() -> N
     st = await wd.poll_once()
     assert [(a.kind, a.level) for a in st.alerts] == [("ps_unreliable", Level.YELLOW)]
     assert "17251" in st.alerts[0].message
+
+
+async def test_every_loaded_model_is_in_the_state_the_active_one_first_helpers_after() -> None:
+    backend = FakeBackend(models={"big": (9 * GIB, 0.0), "tev": (1 * GIB, 0.0)})
+    for name in ("tev", "big"):  # the helper is loaded first, so ps lists it first
+        backend.pin(name, 8192)
+        await backend.warm(name)
+    wd = Watchdog(backend, pinned=backend.pins.get, memory_level=lambda: 1)
+    wd.mark_helper("tev")
+    st = await wd.poll_once()
+    assert st.model == "big" and [m.name for m in st.models] == ["big", "tev"]
+    assert [m.helper for m in st.models] == [False, True]
+    assert st.total_size == 10 * GIB and [m.name for m in st.helpers] == ["tev"]
+    assert st.size == 9 * GIB  # the head's own numbers are unchanged
+
+
+async def test_set_active_picks_the_status_models_head_and_a_stale_entry_is_not_shown_first() -> None:
+    backend = FakeBackend(models={"old": (2 * GIB, 0.0), "new": (3 * GIB, 0.0)})
+    for name in ("old", "new"):
+        backend.pin(name, 4096)
+        await backend.warm(name)
+    wd = Watchdog(backend, pinned=backend.pins.get, memory_level=lambda: 1)
+    assert (await wd.poll_once()).model == "old"
+    wd.set_active("new")
+    st = await wd.poll_once()
+    assert st.model == "new" and [m.name for m in st.models] == ["new", "old"]
+    wd.set_active("gone")  # not loaded: falls back to the first non-helper
+    assert (await wd.poll_once()).model == "old"
+
+
+async def test_poll_listeners_see_the_raw_ps_entries_of_every_poll() -> None:
+    backend = FakeBackend(models={"m": (GIB, 0.0)})
+    backend.pin("m", 4096)
+    wd = Watchdog(backend, pinned=backend.pins.get, memory_level=lambda: 1)
+    seen: list[list[str]] = []
+    wd.subscribe_poll(lambda models: seen.append([m.name for m in models]))
+    await wd.poll_once()
+    await backend.warm("m")
+    await wd.poll_once()
+    assert seen == [[], ["m"]]
