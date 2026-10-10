@@ -7,6 +7,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 dependencies = [
+    "anthropic>=1.13.0",
     "httpx>=0.28.1",
     "langgraph>=1.2.14",
     "langgraph-checkpoint-sqlite>=3.1.1",
