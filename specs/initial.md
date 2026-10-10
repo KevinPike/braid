@@ -400,7 +400,8 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
   - e4b: no drop from the spike, so no port bug signalled. 13 Satisfied (spike: 14). Both semver-compare Stuck Behaviors (3 and 6) trace to a model-written Behavior 2 test asserting `compare('1.2.3', '1.2.3-rc1') == 0`, which contradicts Behavior 3; `write_impl` may not edit tests, so it oscillated. Minutes per Behavior are far above the spike's: the Mac was hot (GPU 90–94 °C) and swapping (swap peaked at 5.3 of 6 GiB), so the times are not comparable.
   - 12b: run only on roman-numerals because swap was already above 3 GiB with no model loaded. `write_impl` got empty content twice (`WorkflowModelError`, 1214 s) while Ollama generated thousands of tokens at 3–5 tok/s. Likely cause, not confirmed: the model spends its output on thinking (dropped by `GuardedWorkflowModel`), made worse by memory pressure; the spike sent identical options and never ran 12b, so this is not a port regression. Candidate fixes: send `think: false` and a `num_predict` cap from `[workflow]`. SIGINT did not stop the CLI while a model call was in flight; it needed SIGTERM. On 2026-10-10 the user dropped 12b from the baselines as too big for this Mac; the `think`/`num_predict` fix still matters for any thinking model.
   - Follow-up (2026-10-10): `[workflow] think = false` and `num_predict = 4096` are sent on every model call (`OllamaClient.chat(think=...)`, top-level body key); an empty reply with thinking text now fails with "the model returned only thinking text" in the retry prompt and the `WorkflowModelError`. Ctrl-C cancels the build task (first SIGINT; a second raises `KeyboardInterrupt`): the HTTP stream closes, the Sandbox kills its process group, the Workspace is kept and printed, the summary gets status `cancelled`, exit 130. The live test removes its Workspace in teardown; the two stale worktrees in the roman-numerals kata were removed.
-  - Not yet exercised live: a hinted run, the `clarify` flow, a failing Probe.
+  - Live items (2026-10-10, `gemma4:e4b`, no traceback in any run): the live test passed (42 s, ends at `finish`, kata worktrees clean afterwards). Hinted run on semver-compare: a Stuck hint appeared verbatim in the next `write_impl` prompt and fixed that Behavior; a second hint did not help. `clarify` with text: the answer reached every later prompt; with `abort`: ended at once, nothing ran (its Workspace stays on disk). Failing Probe (`false`): interrupted at `clarify` before any `write_*` node.
+  - **Open question from the live runs:** a reply that mixes an in-scope file with an out-of-scope one (for example `write_impl` also returning `tests/test_behavior_N.py`) writes the in-scope file but skips `run_green` ("edit refused, nothing to run") and burns an attempt. This caused every Stuck on bowling with local Plans and several on semver-compare. Options: run the check on the in-scope files and feed the refusal back, or reject the whole reply. Undecided.
 
 
 ### M14 — Plan loop (CLI)
@@ -413,7 +414,7 @@ Spec: `specs/workflows.md` § M14. ADR 0004.
 
 **Validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review.
 
-**Status notes (2026-10-10):** built and gated with scripted models; **live check pending** (the user runs it with `gemma4:e4b`: plan the five katas locally, build each with `--no-hints`, and put the table with the Satisfied count per Plan next to Claude's).
+**Status notes (2026-10-10):** built and gated with scripted models; live check run with `gemma4:e4b` (table at the end of these notes): local Plans are much weaker than Claude's.
 
 - Built: `workflow/research.py` (`ResearchQueries`, `Findings`, `CheckedFinding`, `research()`, `run_query`, `check_citation`), `workflow/plan_loop.py` (`build_plan_graph`, `initial_plan_state`, `PlanState`, `PlanDraft`, `CritiqueReply`, `Questions`), Plan-loop prompts in `workflow/prompts.py` (`DRAFT_SYSTEM`, `SPACING_RULE`, `CRITIQUE_SYSTEMS` incl. `spacing`), `Plan.to_markdown()`, `harness-workflow plan` in `workflow/cli.py` (`run_plan`, shared `with_model` preflight), plan-node lines in `progress.py` (`PLAN_NODES`, `Progress.set_round`, `describe`), `[workflow] plans_dir`, `max_rounds`, `critique_angles`, `critique_prompts` in `config.py` and `harness.toml`. `drive_graph` now serves both loops.
 - 14.1 and gates 3-4: `tests/workflow/test_research.py` (read/grep/list limits, outside targets refused and not read, symlink to the outside skipped, citation checks, the two-call flow) and in `tests/workflow/test_plan_loop.py`: (3) `test_a_query_outside_the_project_is_refused_and_nothing_outside_is_read`, (4) `test_a_finding_with_a_bad_citation_is_unverified_and_becomes_an_open_question`.
@@ -431,6 +432,18 @@ uv run --project ~/projects/braid harness-workflow plan "$(cat GOAL.md)" --proje
 # answer each review: approve | research: <what to look into> | <revise notes>; the last line names the saved Plan
 uv run --project ~/projects/braid harness-workflow build --plan ~/.braid/plans/<id>.json --project . --model gemma4:e4b --no-hints --config $H
 ```
+
+- **Live check (2026-10-10, `gemma4:e4b` plans and builds, `--no-hints`).** An agent played the human: it answered review questions briefly from `GOAL.md` at rounds 1 and 2. Machine was swapping (peak 7.2 of 8 GiB), GPU up to 96 °C, no guard tripped.
+
+| Plan | bowling | cron-next | roman-numerals | semver-compare | word-wrap | total Green | Satisfied |
+|---|---|---|---|---|---|---|---|
+| Claude Plans, e4b (M13) | 6/6 · 2a · 0r · 0h · 4s | 6/6 · 7a · 1r · 0h · 1s | 6/6 · 1a · 0r · 0h · 5s | 4/6 · 10a · 0r · 0h · 1s | 6/6 · 7a · 0r · 0h · 2s | 28/30 | 13 |
+| Local Plans, e4b | 2/6 · 15a · 0r · 0h · 0s | 0/5 · 15a · 1r · 0h · 0s | 4/4 · 1a · 0r · 0h · 3s | 3/5 · 9a · 0r · 0h · 1s | 2/4 · 7a · 1r · 0h · 1s | 11/24 | 5 |
+
+  - Every local Plan hit `max_rounds` with five open questions: the model writes a fresh five each round, so answering them never converges. Answers given at the round limit are recorded as unapplied.
+  - Plan defects a deterministic check could catch: `files` naming modules that do not exist (`roman_converter.py`, `wrap.py`); a `demo` that is not valid Python (roman-numerals, semver-compare, bowling); vacuous probes (`python -c "len([0]*20)==20"` exits 0 regardless) and one that always fails (reads `sys.argv`). Each Plan had only one or two Assumptions; only word-wrap cited evidence.
+  - Stuck causes in the builds: model-written tests that are wrong (cron-next, semver-compare, word-wrap), `IndentationError` in rewritten files (cron-next), and mixed in-scope/out-of-scope edits (all of bowling's; see the M13 open question).
+  - Fewer Satisfied (5 vs 13), but on fewer Green; the `spacing` angle cannot be judged from this.
 
 ### M15 — Workflows in the TUI
 
