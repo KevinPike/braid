@@ -5,6 +5,7 @@ Python 3.12 TUI (Textual) over a Strands agent on local Ollama, with a runtime g
 ## Read first
 
 - **Plan and milestone status**: `specs/initial.md`. Milestones are zero-indexed; M0 is done. Work the next unticked milestone and meet its validation gate before starting another.
+- **After M15**: `specs/features.md` (F1–F5, in order).
 - **Vocabulary**: `CONTEXT.md`. Use its terms (Guard, Spill, Truncation, Pinned num_ctx) in code, tests and commits.
 - **Why a design is shaped this way**: `docs/adr/`. Surface a conflict with an ADR instead of overriding it.
 
