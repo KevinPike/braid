@@ -407,11 +407,30 @@ Spec: `specs/workflows.md` § M13. ADRs 0004, 0005.
 
 Spec: `specs/workflows.md` § M14. ADR 0004.
 
-- [ ] Research as model-chosen queries the harness runs in-process, with checked citations
-- [ ] Plan loop: draft, parallel Critiques (including `spacing`, against Satisfied Behaviors), open questions, human review rounds
-- [ ] `harness-workflow plan "<goal>"` writes a Plan that M13 consumes unchanged
+- [x] Research as model-chosen queries the harness runs in-process, with checked citations
+- [x] Plan loop: draft, parallel Critiques (including `spacing`, against Satisfied Behaviors), open questions, human review rounds
+- [x] `harness-workflow plan "<goal>"` writes a Plan that M13 consumes unchanged
 
 **Validation:** from a one-line goal the CLI produces a Plan whose every Assumption has a Probe or a checked citation, after at least one human review.
+
+**Status notes (2026-10-10):** built and gated with scripted models; **live check pending** (the user runs it with `gemma4:e4b`: plan the five katas locally, build each with `--no-hints`, and put the table with the Satisfied count per Plan next to Claude's).
+
+- Built: `workflow/research.py` (`ResearchQueries`, `Findings`, `CheckedFinding`, `research()`, `run_query`, `check_citation`), `workflow/plan_loop.py` (`build_plan_graph`, `initial_plan_state`, `PlanState`, `PlanDraft`, `CritiqueReply`, `Questions`), Plan-loop prompts in `workflow/prompts.py` (`DRAFT_SYSTEM`, `SPACING_RULE`, `CRITIQUE_SYSTEMS` incl. `spacing`), `Plan.to_markdown()`, `harness-workflow plan` in `workflow/cli.py` (`run_plan`, shared `with_model` preflight), plan-node lines in `progress.py` (`PLAN_NODES`, `Progress.set_round`, `describe`), `[workflow] plans_dir`, `max_rounds`, `critique_angles`, `critique_prompts` in `config.py` and `harness.toml`. `drive_graph` now serves both loops.
+- 14.1 and gates 3-4: `tests/workflow/test_research.py` (read/grep/list limits, outside targets refused and not read, symlink to the outside skipped, citation checks, the two-call flow) and in `tests/workflow/test_plan_loop.py`: (3) `test_a_query_outside_the_project_is_refused_and_nothing_outside_is_read`, (4) `test_a_finding_with_a_bad_citation_is_unverified_and_becomes_an_open_question`.
+- 14.2 gates, `tests/workflow/test_plan_loop.py`: (1) `test_one_round_makes_one_call_per_angle_synthesize_once_and_tags_critiques_with_the_round`, (2) `test_research_revise_and_approve_each_take_their_route` and `test_the_last_round_finalizes_without_asking_again_and_notes_the_limit`, (5) `test_an_assumption_without_a_probe_or_verified_evidence_triggers_exactly_one_draft_retry`, (6) `test_the_default_critique_angles_include_spacing_and_its_prompt_carries_every_behavior_in_order`, (7) `test_the_draft_prompt_requires_new_code_per_behavior_and_a_spacing_critique_reaches_synthesize`, (8) `test_the_finalized_plan_loads_and_runs_through_the_execution_graph_to_its_first_interrupt`. Extras: a config-only fifth angle with its own prompt and one run-log line per node, Markdown rendering.
+- 14.3, `tests/workflow/test_cli.py`: parser, `test_plan_prints_progress_the_review_and_the_saved_path_and_build_consumes_that_plan` (a saved Plan runs through `run_build` to an applied diff), the TTY round label, model failure (exit 1, nothing saved), and Ctrl-C (stream closed, exit 130, no Plan saved). `tests/workflow/test_progress.py` covers the plan-node lines.
+- Divergences and decisions: (1) `draft` asks for a `PlanDraft` (behaviors, assumptions, files, demo, out_of_scope), not a full `Plan`; the loop fills in the goal, `open_questions` and `notes`, so a small model is not shown fields it should leave empty. (2) The human review is always shown, including at round `max_rounds`; there a non-approve answer finalizes with `"stopped at round limit"` and `"unapplied review feedback: <text>"` in `notes`, and `approve` is an ordinary approval. (3) "Verified evidence" on an Assumption means its `path:line` citation passes the same check as findings (file exists, line in range); it need not match a finding. After the one retry, Assumptions still unchecked are dropped from the Plan and become `"Unchecked assumption ..."` open questions. (4) `open_questions` in the saved Plan are the model's up-to-5 questions plus the harness's own (unverified findings, dropped Assumptions), so the list can exceed 5. (5) Model calls go through a one-at-a-time lock, so the five Critiques are parallel in the graph but sequential on the GPU, and the logged latency excludes waiting for a sibling. (6) A Critique or `synthesize` call that fails twice yields no points or questions for that angle instead of ending the run; `research` and `draft` failures end the run with exit 1. (7) Research results shown to the second call are capped at 24 000 characters in total, so they cannot truncate the prompt. (8) `critique_prompts` (angle to system prompt) is an addition so a new angle needs only config; an unknown angle with no prompt gets a generic one. (9) Run logs are `<runs_dir>/plan-<stamp>-<model>.jsonl`; there is no summary JSON for plan runs. (10) Plan ids are `<stamp>-<slug of the goal>`.
+- `type: ignore`: none. LangGraph typing needed the `input_schema=CritiqueTask` overload for the `Send` target, `StateGraph[Any]` on `drive_graph` (its state type var is bound to TypedDict-likes), and a `cast` for the final state.
+- Open questions: none blocking. M15 will need the Plan-loop state (findings, critiques, feedback) in the checkpoint like Execution's; it is already plain data.
+- **Live check commands** (from a kata, with the repo's config so the `[workflow]` block applies):
+
+```sh
+cd ~/projects/braid-practice/roman-numerals
+H=~/projects/braid/harness.toml
+uv run --project ~/projects/braid harness-workflow plan "$(cat GOAL.md)" --project . --model gemma4:e4b --config $H
+# answer each review: approve | research: <what to look into> | <revise notes>; the last line names the saved Plan
+uv run --project ~/projects/braid harness-workflow build --plan ~/.braid/plans/<id>.json --project . --model gemma4:e4b --no-hints --config $H
+```
 
 ### M15 — Workflows in the TUI
 
