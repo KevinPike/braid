@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 
+from textual.app import ComposeResult
 from textual.binding import Binding
-from textual.widgets import Markdown, Static
+from textual.containers import Vertical
+from textual.widgets import Input, Markdown, Static
 
 from harness.approval import ApprovalRequest
 
@@ -114,14 +116,11 @@ class AlertBanner(Static):
 
 
 class ApprovalPrompt(Static, can_focus=True):
-    """Asks the user to approve one tool call. Hidden until ``ask``; takes focus so y and n reach it.
-
-    Calls are answered one at a time (a lock), so several tool calls from one model turn queue up here.
-    """
+    """Asks the user to approve one action; mounted into the chat log by ``HarnessApp.ask_approval``, not part of
+    the layout. Takes focus so y and n reach it; the app replaces it with a one-line record once it is answered."""
 
     DEFAULT_CSS = """
-    ApprovalPrompt { display: none; height: auto; padding: 0 1; border: round $warning; }
-    ApprovalPrompt.pending { display: block; }
+    ApprovalPrompt { height: auto; padding: 0 1; margin: 1 0; border: round $warning; }
     """
     BINDINGS = [
         Binding("y", "approve", "Approve"),
@@ -129,31 +128,22 @@ class ApprovalPrompt(Static, can_focus=True):
         Binding("escape", "deny", "Deny"),
     ]
 
-    def __init__(self) -> None:
-        super().__init__("", markup=False)
-        self._lock = asyncio.Lock()
+    def __init__(self, request: ApprovalRequest) -> None:
+        super().__init__(
+            f"Approve {request.tool}?   y approve · n or Esc deny\n{request.describe()}\n{request.advice.line()}",
+            markup=False, classes="decision pending",
+        )
+        self.request = request
         self._future: asyncio.Future[bool] | None = None
 
     @property
     def is_open(self) -> bool:
-        return self._future is not None
+        return self._future is not None and not self._future.done()
 
-    async def ask(self, request: ApprovalRequest) -> bool:
-        async with self._lock:
-            self._future = asyncio.get_running_loop().create_future()
-            previous = self.app.focused
-            self.update(
-                f"Approve {request.tool}?   y approve · n or Esc deny\n{request.describe()}\n{request.advice.line()}"
-            )
-            self.add_class("pending")
-            self.focus()
-            try:
-                return await self._future
-            finally:
-                self._future = None
-                self.remove_class("pending")
-                if previous is not None and previous.is_attached:
-                    previous.focus()
+    async def answer(self) -> bool:
+        """Wait for y or n. Cancelling the waiting task (Ctrl-C) leaves the action unapproved."""
+        self._future = asyncio.get_running_loop().create_future()
+        return await self._future
 
     def decide(self, approved: bool) -> None:
         if self._future is not None and not self._future.done():
@@ -164,3 +154,44 @@ class ApprovalPrompt(Static, can_focus=True):
 
     def action_deny(self) -> None:
         self.decide(False)
+
+
+class AnswerInput(Input):
+    """The text field of an ``AnswerPrompt``."""
+
+
+class AnswerPrompt(Vertical):
+    """A Workflow interrupt (Stuck, clarify, Sign-off, review) asked in the chat log: the question and a field for
+    the answer. The app replaces it with a one-line record once it is answered."""
+
+    DEFAULT_CSS = """
+    AnswerPrompt { height: auto; padding: 0 1; margin: 1 0; border: round $warning; }
+    AnswerPrompt Static { height: auto; }
+    AnswerPrompt Input { margin-top: 1; }
+    """
+
+    def __init__(self, body: str, hint: str) -> None:
+        super().__init__(classes="decision pending")
+        self.body = body
+        self.hint = hint
+        self._future: asyncio.Future[str] | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(self.body, markup=False)
+        yield AnswerInput(placeholder=self.hint)
+
+    def focus_field(self) -> None:
+        self.query_one(AnswerInput).focus()
+
+    async def answer(self) -> str:
+        self._future = asyncio.get_running_loop().create_future()
+        return await self._future
+
+    def decide(self, text: str) -> None:
+        if self._future is not None and not self._future.done():
+            self._future.set_result(text)
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()  # the app's own handler is for the prompt box, not for answers
+        if event.value.strip():
+            self.decide(event.value.strip())

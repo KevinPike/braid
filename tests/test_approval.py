@@ -193,6 +193,11 @@ def make_app(ran: list[str], answers: list[bool]) -> HarnessApp:
     return app
 
 
+def records(app: HarnessApp) -> list[str]:
+    """The one-line records answered inline prompts leave in the chat log."""
+    return [str(n.render()) for n in app.query(Static) if n.has_class("record")]
+
+
 async def submit(app: HarnessApp, text: str) -> None:
     box = app.query_one(Input)
     box.value = text
@@ -207,8 +212,8 @@ async def test_queued_prompts_wait_for_the_pending_approval_then_run_in_order() 
         await submit(app, "one")
         await pilot.pause(0.1)
         assert app.approval_pending and ran == ["one"]
-        prompt = app.query_one(ApprovalPrompt)
-        assert prompt.has_class("pending") and app.focused is prompt
+        prompt = app.query_one(ApprovalPrompt)  # mounted in the chat log when asked, not part of the layout
+        assert prompt.parent is app.query_one("#chat") and app.focused is prompt
         await submit(app, "two")
         await submit(app, "three")
         await pilot.pause(0.2)
@@ -221,7 +226,8 @@ async def test_queued_prompts_wait_for_the_pending_approval_then_run_in_order() 
         await pilot.press("n")  # nothing pending any more: a stray key does nothing
         await app.workers.wait_for_complete()
         assert answers == [True, True, True] and not app.approval_pending
-        assert not prompt.has_class("pending") and app.focused is app.query_one(Input)
+        assert not app.query(ApprovalPrompt) and app.focused is app.query_one(Input)
+        assert records(app) == [f"✓ shell: echo {p}? approved" for p in ("one", "two", "three")]
 
 
 async def test_pump_refuses_to_start_while_an_approval_is_pending_even_when_idle() -> None:
@@ -273,6 +279,7 @@ async def test_ctrl_c_during_an_approval_denies_it_and_pauses_the_queue() -> Non
         await pilot.pause(0.2)
         assert not app.approval_pending and not app.generating
         assert app.queue.paused and app.queue.pending == ("two",) and ran == ["one"]
+        assert not app.query(ApprovalPrompt) and records(app) == ["✗ shell: ls? denied"]
 
 
 async def test_the_gate_drives_the_prompt_and_notes_the_decision_in_the_chat(tmp_path: Path) -> None:
@@ -290,14 +297,14 @@ async def test_the_gate_drives_the_prompt_and_notes_the_decision_in_the_chat(tmp
         await task
         assert not event.cancel_tool
         await pilot.pause(0.1)
-        assert "approved shell: ls" in [str(n.render()) for n in app.query(Static) if n.has_class("note")]
+        assert records(app) == ["✓ shell: ls? approved"]
         task = asyncio.create_task(gate.before_tool(event))
         await pilot.pause(0.1)
         await pilot.press("n")
         await task
         assert event.cancel_tool
         await pilot.pause(0.1)
-        assert "denied shell: ls" in [str(n.render()) for n in app.query(Static) if n.has_class("note")]
+        assert records(app) == ["✓ shell: ls? approved", "✗ shell: ls? denied"]
 
 
 async def _empty() -> AsyncIterator[str]:

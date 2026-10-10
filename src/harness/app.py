@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 from collections.abc import AsyncIterator, Callable, Mapping
@@ -19,6 +20,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual.events import Key
+from textual.widget import Widget
 from textual.widgets import Input, Static
 from textual.worker import Worker
 
@@ -38,7 +40,7 @@ from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, PreflightResult, run_preflight, system_gpu_limit
 from harness.guard.watchdog import GuardState, Level, Watchdog
 from harness.hooks import (
-    ApprovalResolved, CallRecorded, DecisionRecorded, GuardStateChanged, HarnessHooks, ModelCallCompleted,
+    CallRecorded, DecisionRecorded, GuardStateChanged, HarnessHooks, ModelCallCompleted,
     ModelRequestSent, QueueChanged, TrimRecorded,
 )
 from harness.inspector import Inspector
@@ -133,6 +135,7 @@ class HarnessApp(App[None]):
         self.hooks = HarnessHooks()  # every Guard, context, decision, session and approval event; M9 registers here
         self._telemetry = setup_telemetry(config.telemetry, self.hooks)  # None unless [telemetry] enabled
         self._approvals_waiting = 0
+        self._approval_lock = asyncio.Lock()
         self.trimlog = trimlog or TrimLog(config.paths.trim_log_file if replier is None else ":memory:")
         self.compactor = compactor
         self.decisions = decisions or DecisionLog(config.paths.decisions_file if replier is None else ":memory:")
@@ -175,12 +178,10 @@ class HarnessApp(App[None]):
         self.hooks.add_callback(ModelCallCompleted, self._on_call_done)
         self.hooks.add_callback(TrimRecorded, self._on_trim)
         self.hooks.add_callback(DecisionRecorded, self._on_decision)
-        self.hooks.add_callback(ApprovalResolved, self._on_approval_resolved)
 
     def compose(self) -> ComposeResult:
         yield StatusBar("")
         yield VerticalScroll(id="chat")
-        yield ApprovalPrompt()
         yield PromptInput(self.history, placeholder="Message (Enter sends, Ctrl-C cancels, Esc clears queue)", id="prompt")
         yield ContextPanel("", markup=True)
         yield AlertBanner("", markup=False)
@@ -200,7 +201,7 @@ class HarnessApp(App[None]):
         return None
 
     async def on_mount(self) -> None:
-        self.query_one(Input).focus()
+        self.query_one('#prompt').focus()
         panel, status, banner = self.query_one(ContextPanel), self.query_one(StatusBar), self.query_one(AlertBanner)
         self.hooks.add_callback(CallRecorded, lambda e: panel.set_record(e.record))
         panel.set_record(None)
@@ -221,9 +222,6 @@ class HarnessApp(App[None]):
 
     def _on_decision(self, event: DecisionRecorded) -> None:
         self.call_later(self._note, f"decide {event.decision.line()}")
-
-    def _on_approval_resolved(self, event: ApprovalResolved) -> None:
-        self.call_later(self._note, f"{'approved' if event.approved else 'denied'} {event.request.label()}")
 
     def on_unmount(self) -> None:
         if self._telemetry is not None:
@@ -317,15 +315,40 @@ class HarnessApp(App[None]):
         return self._approvals_waiting > 0
 
     async def ask_approval(self, request: ApprovalRequest) -> bool:
-        """The Approver: show the approval prompt and wait for y or n. While it is open the queue is held."""
-        prompt = self.query_one(ApprovalPrompt)
+        """The Approver: mount an approval prompt in the chat log and wait for y or n. While it is open the queue is
+        held. Once answered the prompt is replaced by a one-line record of the question and the answer."""
         self._approvals_waiting += 1
         self._refresh_queue_label()
         try:
-            return await prompt.ask(request)
+            async with self._approval_lock:  # one prompt at a time, so several tool calls from one turn line up
+                prompt = ApprovalPrompt(request)
+                outcome = "cancelled"
+                previous = self.focused
+                chat = self.query_one("#chat", VerticalScroll)
+                await chat.mount(prompt)
+                chat.scroll_end(animate=False)
+                prompt.focus()
+                try:
+                    approved = await prompt.answer()
+                    outcome = "approved" if approved else "denied"
+                    return approved
+                finally:
+                    await self._collapse(prompt, f"{'✓' if outcome == 'approved' else '✗'} {request.label()}? {outcome}", previous)
         finally:
             self._approvals_waiting -= 1
             self._pump()
+
+    async def _collapse(self, widget: Widget, record: str, previous: Widget | None) -> None:
+        """Replace an answered inline widget with its permanent one-line record and give the focus back."""
+        try:
+            await widget.remove()
+            chat = self.query_one("#chat", VerticalScroll)
+            await chat.mount(Static(record, classes="note record", markup=False))
+            chat.scroll_end(animate=False)
+            target = previous if previous is not None and previous.is_attached and previous.can_focus else self.query_one("#prompt")
+            target.focus()
+        except Exception:  # the app may be shutting down underneath a cancelled prompt
+            pass
 
     async def _advise_policy(self, tool: str, tool_input: Mapping[str, Any]) -> float | None:
         """tev1's policy check, as advice for the approval prompt only (None when the decision layer is off)."""

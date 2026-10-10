@@ -21,6 +21,7 @@ from harness.hooks import ApprovalRequested, ApprovalResolved, HarnessHooks
 
 # Tools that are gated whatever the configuration says. The shell's name is Strands' make_shell default.
 ALWAYS_GATED: frozenset[str] = frozenset({"shell", "write_file"})
+APPLY_WORKSPACE = "apply_workspace"  # the Approval a Workflow run asks before applying its diff (ADR 0005)
 ADVICE_TIMEOUT_S = 10.0
 PREVIEW_CHARS = 600
 
@@ -47,6 +48,9 @@ class ApprovalRequest:
 
     def label(self) -> str:
         """One short line for the chat note: the shell command or the file path."""
+        if self.tool == APPLY_WORKSPACE:
+            n = len(self.input.get("changes", []))
+            return f"apply the Workspace diff ({n} file{'' if n == 1 else 's'})"
         key = {"shell": "command", "write_file": "path"}.get(self.tool)
         value = self.input.get(key) if key else None
         if value is None:
@@ -56,6 +60,12 @@ class ApprovalRequest:
 
     def describe(self) -> str:
         """What the approval prompt shows: the exact arguments, with a clipped preview of file content."""
+        if self.tool == APPLY_WORKSPACE:
+            lines = [f"workspace: {self.input.get('workspace', '')}"]
+            for c in self.input.get("changes", []):
+                flags = f"  [{', '.join(c['flags'])}]" if c["flags"] else ""
+                lines.append(f"  {c['status']:<8} {c['path']}{flags}")
+            return "\n".join([*lines, str(self.input.get("diff", ""))])
         if self.tool == "shell":
             return f"command: {self.input.get('command', '')}"
         if self.tool == "write_file":
