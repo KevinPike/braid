@@ -119,3 +119,18 @@ async def test_list_files_and_read_head_see_new_files_and_the_starting_contents(
     assert (await ws.read_head("src/mod.py") or b"").startswith(b"def add")
     assert await ws.read_head("src/new.py") is None
     await ws.remove()
+
+
+async def test_attach_reopens_a_workspace_from_its_path_and_refuses_a_stranger(fixture_repo: Path, base: Path, tmp_path: Path) -> None:
+    ws = await Workspace.create(fixture_repo, base, "r1")
+    (ws.path / "src" / "new.py").write_text("X = 1\n")
+    again = await Workspace.attach(fixture_repo, ws.path)  # what a resumed run does after the app was killed
+    assert [c.path for c in await again.changes()] == ["src/new.py"]
+    await again.apply()
+    assert (fixture_repo / "src" / "new.py").read_text() == "X = 1\n"
+    with pytest.raises(ValueError, match="gone"):
+        await Workspace.attach(fixture_repo, base / "missing")
+    stranger = tmp_path / "stranger"
+    stranger.mkdir()
+    with pytest.raises(ValueError, match="not a worktree"):
+        await Workspace.attach(fixture_repo, stranger)

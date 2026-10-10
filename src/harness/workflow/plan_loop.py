@@ -72,6 +72,7 @@ class PlanState(TypedDict, total=False):
     plan_path: str
     markdown: str
     status: str
+    recorder: dict[str, Any]  # Recorder.dump() after each node
 
 
 class CritiqueTask(TypedDict):
@@ -282,7 +283,8 @@ class _PlanLoop:
     def timed(self, node: Callable[[PlanState], Any]) -> _NodeFn:
         async def run(state: PlanState) -> dict[str, Any]:
             result = node(state)
-            return cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            return {**update, "recorder": self.rec.dump()}
 
         return run
 

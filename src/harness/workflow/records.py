@@ -41,6 +41,31 @@ class Recorder:
     model_calls: int = 0
     model_seconds: float = 0.0
 
+    def dump(self) -> dict[str, Any]:
+        """Plain data for the checkpointed state. Clocks are stored as ages, so a resumed run (a new process, a
+        different monotonic origin) keeps counting its elapsed and per-Behavior seconds from where they were."""
+        now = time.monotonic()
+        return {
+            "behaviors": [asdict(b) for b in self.behaviors], "trace": list(self.trace), "stuck": self.stuck,
+            "polish": self.polish, "elapsed_s": now - self.started,
+            "behavior_age_s": now - self.behavior_started if self.behavior_started else 0.0,
+            "model_calls": self.model_calls, "model_seconds": self.model_seconds,
+        }
+
+    def load(self, data: dict[str, Any]) -> None:
+        """Replace this Recorder's contents with a ``dump()``; the run goes on as if it had never stopped."""
+        now = time.monotonic()
+        self.behaviors[:] = [BehaviorStats(**b) for b in data["behaviors"]]
+        self.trace[:] = data["trace"]
+        self.stuck, self.polish = data["stuck"], data["polish"]
+        self.started = now - data["elapsed_s"]
+        self.behavior_started = now - data["behavior_age_s"] if data["behavior_age_s"] else 0.0
+        self.model_calls, self.model_seconds = data["model_calls"], data["model_seconds"]
+
+    @property
+    def elapsed_s(self) -> float:
+        return time.monotonic() - self.started
+
 
 class RunLog:
     """Appends one JSON object per node to ``path``; rich enough to debug a Behavior without rerunning it."""

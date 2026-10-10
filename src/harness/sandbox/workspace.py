@@ -93,6 +93,20 @@ class Workspace:
         _, gitdir = await _git(path, "rev-parse", "--absolute-git-dir")
         return cls(path.resolve(), project, Path(gitdir.strip()), warning)
 
+    @classmethod
+    async def attach(cls, project: Path, path: Path) -> Workspace:
+        """The Workspace ``create`` made earlier at ``path`` (a resumed run). Its git dir is taken from the project's
+        own ``.git/worktrees``, not from the ``.git`` file inside the Workspace, which model code can rewrite."""
+        project, path = project.resolve(), path.resolve()
+        if not path.is_dir():
+            raise ValueError(f"the Workspace {path} is gone")
+        _, common = await _git(project, "rev-parse", "--absolute-git-dir")
+        gitdir = Path(common.strip()) / "worktrees" / path.name
+        pointer = gitdir / "gitdir"
+        if not pointer.is_file() or Path(pointer.read_text().strip()).parent.resolve() != path:
+            raise ValueError(f"{path} is not a worktree of {project}")
+        return cls(path, project, gitdir)
+
     async def sync_deps(self) -> RunResult:
         """``uv sync --frozen`` from the lockfile at HEAD, in the harness: before the model writes anything."""
         if not (self.path / "uv.lock").exists():

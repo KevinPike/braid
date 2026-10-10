@@ -14,6 +14,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
 from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
@@ -65,6 +66,7 @@ class ExecState(TypedDict, total=False):
     edited: list[str]
     test_paths: list[str]
     status: str
+    recorder: dict[str, Any]  # Recorder.dump() after each node: the per-Behavior stats and elapsed time survive a resume
 
 
 def initial_state(plan: Plan) -> ExecState:
@@ -475,7 +477,8 @@ class _Loop:
         async def run(state: ExecState) -> dict[str, Any]:
             self.node_started = time.monotonic()
             result = node(state)
-            return cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            return {**update, "recorder": self.rec.dump()}
 
         return run
 
@@ -518,12 +521,26 @@ Ask = Callable[[dict[str, Any]], str | Awaitable[str]]
 async def drive_graph(
     graph: StateGraph[Any], state: S, ask: Ask, *,
     on_update: Callable[[str, dict[str, Any]], None] | None = None, on_start: Callable[[str], None] | None = None,
-    thread_id: str = "exec",
+    thread_id: str = "exec", checkpointer: BaseCheckpointSaver[Any] | None = None, resume: bool = False,
+    on_resume: Callable[[dict[str, Any]], None] | None = None,
 ) -> S:
-    """Run ``graph`` (either loop) to the end, answering each interrupt with ``ask(payload)``; returns the final state."""
-    compiled = graph.compile(checkpointer=InMemorySaver())
+    """Run ``graph`` (either loop) to the end, answering each interrupt with ``ask(payload)``; returns the final state.
+
+    ``checkpointer`` keeps the run's state per ``thread_id`` (default: in memory). ``resume=True`` ignores ``state`` and
+    continues the thread from its last checkpoint: a node that was cut off runs again, a pending interrupt is asked
+    again, and nothing that finished is repeated. ``on_resume`` gets the checkpointed values first."""
+    compiled = graph.compile(checkpointer=checkpointer or InMemorySaver())
     config: Any = {"configurable": {"thread_id": thread_id}, "recursion_limit": 500}
     run_input: Any = state
+    if resume:
+        snapshot = await compiled.aget_state(config)
+        if not snapshot.values:
+            raise ValueError(f"no checkpoint for run {thread_id}")
+        if on_resume:
+            on_resume(snapshot.values)
+        if not snapshot.next:
+            return cast(S, snapshot.values)
+        run_input = None
     while True:
         pending: dict[str, Any] | None = None
         events = cast(AsyncIterator[tuple[str, Any]], compiled.astream(run_input, config, stream_mode=["updates", "tasks"]))
@@ -538,6 +555,6 @@ async def drive_graph(
                 elif on_update:
                     on_update(node, value or {})
         if pending is None:
-            return cast(S, compiled.get_state(config).values)
+            return cast(S, (await compiled.aget_state(config)).values)
         answer = ask(pending)
         run_input = Command(resume=await answer if inspect.isawaitable(answer) else answer)
