@@ -10,7 +10,7 @@ M11–M15 are built (see `specs/initial.md` status notes). These are the next fe
 
 Run both loops on Claude through the Anthropic API, so the katas can be run on Claude Haiku 5.5 next to `gemma4:e4b`. Workflows only; the chat agent stays on Ollama.
 
-**Needs an ADR first (0006), amending ADR 0004.** ADR 0004 says Workflows call `OllamaClient` directly. The amendment: every **Ollama** request still goes through the guard client, so `num_ctx` stays pinned; a Workflow may instead use an API backend, built in `workflow/`. `guard/` stays Ollama-only and never imports `anthropic` (ADR 0001). Record what changes with an API backend: the Plan, the project files in `plan.files` and the run output all leave the machine, and each run costs money.
+**Decided in ADR 0006** (amends ADR 0004): the harness is no longer Ollama-only, and anything that needs Claude may use the Anthropic API. Every **Ollama** request still goes through the guard client, so `num_ctx` stays pinned; the Guard is Ollama-specific, and `guard/` never imports `anthropic` (ADR 0001). Data sent to the API leaves the machine, and each run costs money.
 
 **Shape**
 
@@ -19,7 +19,7 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
 - **Haiku 5.5 specifics** (as of 2026-10): model id `claude-haiku-5-5`, $0.10 input and $0.50 output per million tokens (up to 100K-token prompts). Thinking is adaptive and on by default, and effort defaults to `medium`. **Non-default sampling values return a 400, so never send `temperature`.** `GuardedWorkflowModel` sends `temperature` 0.2 today, so do not share that code path. There is no assistant prefill.
 - **Prompt caching:** the system prompt and the Plan/context prefix are stable within a run. Mark the prefix with `cache_control` and log `usage.cache_read_input_tokens` to confirm hits. The minimum cacheable prefix depends on the model, so short kata prompts may not cache.
 - **Credentials:** use the SDK's default resolution: `ANTHROPIC_API_KEY`, else an `ant auth login` profile. Never put a key in `harness.toml`, the run log or the summary JSON. The Sandbox env scrub (M12) already keeps the key away from model-written code, and a gate proves it (below).
-- **Config:** `[workflow] backend = "ollama" | "anthropic"`, and `model` is read per backend. Add `max_cost_usd` per run (default 1.00): the run stops cleanly at Stuck-like `budget` once the running cost estimate from `usage` passes it.
+- **Config:** `[workflow] backend = "ollama" | "anthropic"`, and `model` is read per backend. Add a **Spend cap**, `max_cost_usd` per run (default 0.10): the run stops cleanly with status `spend_cap` once the running cost estimate from `usage` passes it.
 - **CLI and TUI:** `harness-workflow build --backend anthropic --model claude-haiku-5-5`; `/build --model claude-haiku-5-5` picks the backend from the model id prefix. An API run skips Preflight and the model swap, and the chat model stays loaded.
 - **Records:** every JSONL line for a model node gets `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cost_usd` and the API `request_id`. The summary JSON gets totals, `report.py` gets a cost column, and the end table shows cost.
 - Dependency: `uv add anthropic`. Check the installed major version; 1.x uses `httpx2`, so do not hand it an `httpx` client.
@@ -30,13 +30,13 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
 2. No request carries `temperature`, `top_p` or `top_k`. The system prompt carries `cache_control`.
 3. `stop_reason: "refusal"` raises `WorkflowModelError` with the category. `max_tokens` triggers the retry.
 4. The run log and summary carry tokens and cost, and contain no API key even when the key is set in the environment.
-5. `max_cost_usd` stops a run at the next node boundary, with status `budget`, and nothing is applied.
+5. The Spend cap (`max_cost_usd`) stops a run at the next node boundary, with status `spend_cap`, and nothing is applied.
 6. A Sandbox command run during an API-backed build cannot see `ANTHROPIC_API_KEY` (the M12 env scrub, asserted again here).
 7. `guard/` does not import `anthropic` (an import-graph test, like the existing one for `strands`).
 
 **Live check:** the five katas with Claude's Plans on `claude-haiku-5-5`, `--no-hints`. Put the row next to M13's e4b row, with cost per kata. Then the five local Plans (M14) on Haiku, which separates "e4b is a weak planner" from "the Plans are bad". Expected cost: cents per kata. Record the real figures.
 
-**Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider. Anthropic Batches for a cheap overnight baseline.
+**Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider (allowed by ADR 0006; build it when it is needed). Anthropic Batches for a cheap overnight baseline.
 
 ---
 
