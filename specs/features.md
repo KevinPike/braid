@@ -2,7 +2,7 @@
 
 M11–M15 are built (see `specs/initial.md` status notes). These are the next features, planned 2026-10-10 from the live results: e4b gets 28/30 Green with Claude's Plans, but only 11/24 with its own; mixed edits cost attempts; small-model planning does not converge. Terms are from `CONTEXT.md`. Each feature lists its gates; every gate gets a pytest test with fakes, and live numbers are measured, not gated.
 
-**Order:** F1 → F2 → F3 → F4 → F5 → F6. On 2026-10-10, after the F1 live check, test disputes became F3, `write_change` moved under Later, and benchmarks were added as F2, so that every later feature is measured against a baseline. F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
+**Order:** F1 → F1b → F2 → F3 → F4 → F5 → F6. On 2026-10-10, after the F1 live check, test disputes became F3, `write_change` moved under Later, and benchmarks were added as F2, so that every later feature is measured against a baseline. F1b (the chat agent on Anthropic) follows ADR 0007, which freezes the Ollama path. F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
 
 ---
 
@@ -57,7 +57,43 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
   In each case Haiku said so on all three attempts and would not special-case the implementation. This led to the new F3 (test disputes settled by Plan invariants).
 - **Not measured:** effort `low` against `medium`; the Spend cap ($0.10) was never close.
 
-**Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider (allowed by ADR 0006; build it when it is needed). Anthropic Batches for a cheap overnight baseline.
+**Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent moved to F1b (ADR 0007). Anthropic Batches for a cheap overnight baseline.
+
+---
+
+## F1b — The chat agent on Anthropic
+
+ADR 0007: Anthropic becomes the default backend and the Ollama path is frozen. The chat agent moves too, so the app runs without Ollama.
+
+- **Model.**
+  - `AnthropicChatModel`: a thin Strands `Model` over `anthropic.AsyncAnthropic` (1.x), next to `GuardedOllamaModel` in `agent.py`. Strands' own Anthropic provider requires `anthropic<1.0`, so it can't be used.
+  - Reuse Strands' message and tool-spec types; check the `Model` interface against the installed Strands source.
+  - Stream with `messages.stream`, map events to Strands `StreamEvent`s, and support tool use.
+  - Send no sampling parameters. The system prompt and the stable history prefix get `cache_control`.
+- **Config.**
+  - `[profile] backend = "anthropic" | "ollama"`, defaulting to `"anthropic"`, with an `anthropic_model` (default `claude-haiku-5-5`).
+  - `[workflow] backend` now defaults to `"anthropic"`.
+  - A model id starting with `claude-` picks the backend, as in F1.
+- **Guard and status bar.**
+  - With the anthropic backend, Preflight, Calibration, the model swap and the watchdog's Ollama checks don't run.
+  - The status bar shows the model, the tokens used against the real context window (from `usage`), and the session's running cost.
+  - The Ledger records API usage in place of `prompt_eval_count`.
+- **Compaction and preserved thinking.**
+  - Find out, with one cheap live request and from the docs, whether `claude-haiku-5-5` accepts our compaction's rewritten history alongside thinking blocks.
+  - If it doesn't, either strip thinking blocks before compacting, or use server-side compaction (`compact-2026-01-12`, beta).
+  - Record which one in the status notes. The trigger thresholds move to the model's real window.
+- **Ctrl-C** still cancels generation: closing the stream cancels the request.
+- **Credentials and safety:** the same as F1. SDK resolution only; no key in config or logs. The Sandbox env scrub covers the chat's tools too.
+
+**Gates** (with `httpx2.MockTransport`, no network):
+1. A streamed text reply and a tool-use round trip reach the TUI as the Ollama path does.
+2. No request carries sampling parameters; the system prompt carries `cache_control`.
+3. With the anthropic backend, no Ollama request is made at startup or during chat (a fake guard client that fails on any call).
+4. The status bar shows tokens and cost from `usage`.
+5. Compaction produces a history the chosen strategy allows (thinking blocks stripped, or server compaction requested), checked on the request body.
+6. Cancelling mid-stream stops the request and leaves the session consistent.
+
+**Live check:** one short chat session with a tool call and a forced compaction on `claude-haiku-5-5`; record cost and cache reads.
 
 ---
 
