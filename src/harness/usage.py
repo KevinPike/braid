@@ -37,7 +37,7 @@ def require_pricing(model_id: str) -> Price:
 
 @dataclass(frozen=True)
 class ApiCall:
-    """Usage and cost of one Anthropic API request."""
+    """Usage and cost of one Anthropic API request, and the thinking summary its reply carried (F9)."""
 
     input_tokens: int
     output_tokens: int
@@ -45,6 +45,7 @@ class ApiCall:
     cache_creation_input_tokens: int
     cost_usd: float
     request_id: str | None
+    thinking: str = ""  # empty when the display is "omitted", or the model did not think
 
     @property
     def prompt_tokens(self) -> int:
@@ -54,7 +55,7 @@ class ApiCall:
 
 def api_call(
     model_id: str, input_tokens: int, output_tokens: int, cache_read: int | None, cache_write: int | None,
-    request_id: str | None,
+    request_id: str | None, *, thinking: str = "",
 ) -> ApiCall:
     """Price one request's usage counters."""
     price = require_pricing(model_id)
@@ -62,7 +63,7 @@ def api_call(
     long = input_tokens + read + write > price.long_over
     price_in, price_out = (price.long_input, price.long_output) if long else (price.input, price.output)
     cost = (input_tokens * price_in + read * price_in * 0.1 + write * price_in * 1.25 + output_tokens * price_out) / 1_000_000
-    return ApiCall(input_tokens, output_tokens, read, write, cost, request_id)
+    return ApiCall(input_tokens, output_tokens, read, write, cost, request_id, thinking)
 
 
 @dataclass(frozen=True)

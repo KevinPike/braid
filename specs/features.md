@@ -342,6 +342,21 @@ Two things a learner wants to see after a run: why the graph went where it went,
 3. Every conditional edge in a scripted run writes exactly one Route record, and the counts in the summary match the log.
 4. No request carries sampling parameters (F1's gate still holds).
 
+**Status (2026-10-11): built and gated** (`tests/workflow/test_trace.py`, 15 tests). No live calls.
+
+- **Route records.** `records.Route` is what every route function now returns: `to`, the deciding state `field` and its `value`, and a `basis`. Each loop's `gate(source, route)` writes it with `RunLog.route` and counts it on `Recorder.routes` (checkpointed with the rest of the Recorder). Both loops are covered: the Execution loop's 15 conditional edges and the Plan loop's 4 (`research → draft`, the Critique fan-out, `synthesize → human_review`, `after_review`). Where the spec was silent:
+  - A fixed edge that only the Spend cap can divert (`write_test → run_red`, `polish → verify_polish`, and so on) is a conditional edge in the graph, so it writes a record too, with `field: null`. A Spend cap diversion records `field: "cost_usd"` and the cost.
+  - The basis is `human` on the edges an interrupt answer decides (after `clarify`, Stuck, Sign-off and `human_review`; the field is `answer`). In a no-hints run, code answers in the human's place, so those edges are `code`. `human_review → finalize` at the round limit is `code` (`field: "round"`). `finish` goes to END on a plain edge, so it writes none.
+  - The fan-out records one route to `critique` with the angles as its value, not one per `Send`.
+  - String values are cut to 200 characters. Records also carry `behavior` (Execution loop) or `round` (Plan loop).
+  - Route records go to the log only. The RunLog listener, which drives the CLI progress lines and the TUI pane, still sees one record per node.
+  - The summary's `routes` is counted from the run log when there is one. A Checkpoint is taken before the last node's route runs, so a resumed Recorder can be one route short.
+- **F10's hook.** `Route.by_model(to, field, value, *, model, request_id, reason, thinking)`, returned from an `after_arbitrate` route function, writes a model-basis record and counts it under `model`. The arbitrate node gets `request_id` and `thinking` from its `ApiCall` (the model's `calls`) and puts them in the state with the Ruling, where the route function reads them.
+- **Thinking.** `anthropic_api.thinking_param` builds the field: `{type: "adaptive", display: "summarized"}`, or nothing at all for `"omitted"` (the request is then as it was before F9). Both API paths send it. Each `ApiCall` has a `thinking` field, so the summary reaches a node's log line the way its usage does (`Recorder.add_usage`), with no change to the `WorkflowModel` protocol. The Ollama model has no `ApiCall`s and logs none. A retry's summaries are joined.
+- **Inspectors.** The chat Inspector shows the summary above the request body. The session store's `calls` table gains a `thinking` column, added in place to an older store. The RunInspector lists Route records indented under the node they leave (`→ write_impl  code: red_verdict="red"`) and shows `--- thinking summary ---` after a node's reply. A model-basis route shows its model, request id, reason and thinking.
+- **Compaction** still strips thinking blocks. The F1b test now strips a summarized one.
+- **Existing tests changed.** The F1 "no `thinking` key" assertions now expect the summarized field, and four tests that compared the log one-to-one with the node trace now leave Route records out.
+
 ---
 
 ## F10 — The Arbiter: a stronger model settles uncovered Disputes

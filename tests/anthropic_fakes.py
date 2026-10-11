@@ -22,8 +22,9 @@ def text(s: str) -> dict[str, Any]:
     return {"type": "text", "text": s}
 
 
-def thinking(signature: str = "sig-1") -> dict[str, Any]:
-    return {"type": "thinking", "thinking": "", "signature": signature}
+def thinking(signature: str = "sig-1", summary: str = "") -> dict[str, Any]:
+    """A thinking block: empty, as with ``display: "omitted"``, or carrying a ``summary`` (F9)."""
+    return {"type": "thinking", "thinking": summary, "signature": signature}
 
 
 def tool_use(name: str, args: dict[str, Any], id: str = "toolu_1") -> dict[str, Any]:
@@ -53,6 +54,8 @@ def sse_events(
                 out.append(_event("content_block_delta", {"index": i, "delta": {"type": "text_delta", "text": part}}))
         elif kind == "thinking":
             out.append(_event("content_block_start", {"index": i, "content_block": {"type": "thinking", "thinking": "", "signature": ""}}))
+            if block["thinking"]:
+                out.append(_event("content_block_delta", {"index": i, "delta": {"type": "thinking_delta", "thinking": block["thinking"]}}))
             out.append(_event("content_block_delta", {"index": i, "delta": {"type": "signature_delta", "signature": block["signature"]}}))
         elif kind == "tool_use":
             out.append(_event("content_block_start", {"index": i, "content_block": {**block, "input": {}}}))

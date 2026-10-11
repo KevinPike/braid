@@ -3,6 +3,9 @@
 Models write, code checks: every pass/fail decision is a pytest or Probe run in the Sandbox, a path rule, an Invariant
 check in the Sandbox (F3), or a human. A Dispute from the implementer never routes by itself: it only triggers the
 Invariant check on the disputed test. Node names and routing follow ``examples/graphs/exec_graph.py``.
+
+Every conditional edge writes a Route record (F9, ADR 0008): the ``after_*`` functions return a ``Route`` naming the
+state field that decided it, and ``gate`` logs it. An edge an interrupt answer decides has a human basis.
 """
 
 from __future__ import annotations
@@ -30,7 +33,7 @@ from harness.workflow import invariants as inv
 from harness.workflow import prompts
 from harness.workflow.model import ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
-from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter, tail
+from harness.workflow.records import Basis, BehaviorStats, Recorder, Route, RunLog, UsageMeter, tail
 
 EXECUTION = "tdd-v2-invariants"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
 
@@ -96,6 +99,7 @@ class ExecState(TypedDict, total=False):
     dispute_note: str  # a Dispute not upheld, for the next write_impl prompt
     revisit: dict[str, int] | None  # {"idx": earlier Behavior whose test is being fixed, "back": the one to return to}
     status: str
+    answer: str  # the last interrupt answer (clarify, Stuck, Sign-off): what a human-basis route reads
     api_error: dict[str, Any]  # F8: set by drive_graph on a status "api_error" result, never checkpointed
     recorder: dict[str, Any]  # Recorder.dump() after each node: the per-Behavior stats and elapsed time survive a resume
 
@@ -300,8 +304,11 @@ class _Loop:
         self.log("check_assumptions", state, probes=results, failed=failed)
         return {"failed": failed}
 
-    def after_check(self, state: ExecState) -> Literal["clarify", "write_test"]:
-        return "clarify" if state["failed"] or self.plan(state).open_questions else "write_test"
+    def after_check(self, state: ExecState) -> Route:
+        if state["failed"]:
+            return Route("clarify", "failed", state["failed"])
+        questions = self.plan(state).open_questions
+        return Route("clarify" if questions else "write_test", "open_questions", questions)
 
     def clarify(self, state: ExecState) -> dict[str, Any]:
         plan = self.plan(state)
@@ -311,13 +318,17 @@ class _Loop:
             answer = "waived (no-hints run)"
         self.log("clarify", state, failed=state["failed"], open_questions=plan.open_questions, answer=answer)
         if is_abort(answer):
-            return {"status": "aborted"}
+            return {"status": "aborted", "answer": answer}
         plan = plan.model_copy(update={"open_questions": [], "notes": [*plan.notes, answer]})
-        return {"waived": state["failed"], "plan": plan.model_dump()}
+        return {"waived": state["failed"], "plan": plan.model_dump(), "answer": answer}
 
-    @staticmethod
-    def after_clarify(state: ExecState) -> Literal["check_assumptions", "__end__"]:
-        return LAST if state.get("status") == "aborted" else "check_assumptions"
+    def answered(self) -> Basis:
+        """An interrupt answer is a human's, except in a no-hints run, where code answers in their place."""
+        return "human" if self.hints else "code"
+
+    def after_clarify(self, state: ExecState) -> Route:
+        to = LAST if state.get("status") == "aborted" else "check_assumptions"
+        return Route(to, "answer", state.get("answer"), self.answered())
 
     # --- stage 2: make it work -----------------------------------------------------------------------------
     async def write_test(self, state: ExecState) -> dict[str, Any]:
@@ -364,14 +375,15 @@ class _Loop:
         self.current(state).red_rejections += 1
         return {"red_verdict": "rejected", "red_tries": tries + 1, "last_run": f"{reason}\n{tail(r.output)}"}
 
-    def after_red(self, state: ExecState) -> Literal["write_test", "write_impl", "check_satisfied", "check_invariants", "stuck"]:
-        if state.get("revisit") and state["red_verdict"] != "rejected":  # a corrected earlier test: check it, then go back
-            return "check_invariants"
-        if state["red_verdict"] == "red":
-            return "check_invariants" if self.plan(state).invariants and self.cfg.check_tests_at_red else "write_impl"
-        if state["red_verdict"] == "passed":
-            return "check_satisfied"
-        return "stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test"
+    def after_red(self, state: ExecState) -> Route:
+        verdict = state["red_verdict"]
+        if state.get("revisit") and verdict != "rejected":  # a corrected earlier test: check it, then go back
+            return Route("check_invariants", "revisit", state["revisit"])
+        if verdict == "red":
+            return Route("check_invariants" if self.plan(state).invariants and self.cfg.check_tests_at_red else "write_impl", "red_verdict", verdict)
+        if verdict == "passed":
+            return Route("check_satisfied", "red_verdict", verdict)
+        return Route("stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test", "red_tries", state["red_tries"])
 
     async def check_invariants(self, state: ExecState) -> dict[str, Any]:
         """After Red, before implementation sees the test: every expected value it asserts must satisfy the Plan's
@@ -383,10 +395,12 @@ class _Loop:
         self.current(state).red_rejections += 1
         return {"invariant_verdict": "violated", "red_tries": state.get("red_tries", 0) + 1, "last_run": inv.feedback(result.violations)}
 
-    def after_invariants(self, state: ExecState) -> Literal["write_impl", "write_test", "resume_behavior", "stuck"]:
+    def after_invariants(self, state: ExecState) -> Route:
         if state["invariant_verdict"] == "violated":
-            return "stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test"
-        return "resume_behavior" if state.get("revisit") else "write_impl"
+            return Route("stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test", "red_tries", state["red_tries"])
+        if state.get("revisit"):
+            return Route("resume_behavior", "revisit", state["revisit"])
+        return Route("write_impl", "invariant_verdict", state["invariant_verdict"])
 
     def resume_behavior(self, state: ExecState) -> dict[str, Any]:
         """An earlier Behavior's test was corrected after an upheld Dispute: back to the Behavior that disputed it, whose
@@ -418,10 +432,10 @@ class _Loop:
         self.current(state).red_rejections += 1
         return {"satisfied": False, "red_tries": state.get("red_tries", 0) + 1, "last_run": prompts.vacuous_feedback(tail(r.output))}
 
-    def after_satisfied(self, state: ExecState) -> Literal["next_behavior", "write_test", "stuck"]:
+    def after_satisfied(self, state: ExecState) -> Route:
         if state["satisfied"]:
-            return "next_behavior"
-        return "stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test"
+            return Route("next_behavior", "satisfied", True)
+        return Route("stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test", "red_tries", state["red_tries"])
 
     async def write_impl(self, state: ExecState) -> dict[str, Any]:
         stats = self.current(state)
@@ -448,8 +462,10 @@ class _Loop:
         )
         return out
 
-    def after_impl(self, state: ExecState) -> Literal["check_dispute", "run_green"]:
-        return "check_dispute" if state.get("dispute_raised") else "run_green"
+    @staticmethod
+    def after_impl(state: ExecState) -> Route:
+        raised = state.get("dispute_raised")
+        return Route("check_dispute" if raised else "run_green", "dispute_raised", raised)
 
     async def check_dispute(self, state: ExecState) -> dict[str, Any]:
         """The implementer disputed a test. Code decides (ADR 0004): the Plan's Invariants on that test's examples.
@@ -485,8 +501,8 @@ class _Loop:
         return out
 
     @staticmethod
-    def after_dispute(state: ExecState) -> Literal["write_test", "run_green"]:
-        return "write_test" if state.get("phase") == "test" else "run_green"
+    def after_dispute(state: ExecState) -> Route:
+        return Route("write_test" if state.get("phase") == "test" else "run_green", "phase", state.get("phase"))
 
     async def run_green(self, state: ExecState) -> dict[str, Any]:
         if state.get("refused"):  # nothing was written, so there is nothing to run
@@ -496,10 +512,10 @@ class _Loop:
         self.log("run_green", state, attempt=state["attempts"], **self.ran(r))
         return {"passed": r.exit_code == 0 and not r.timed_out, "last_run": tail(r.output)}
 
-    def after_green(self, state: ExecState) -> Literal["next_behavior", "write_impl", "stuck"]:
+    def after_green(self, state: ExecState) -> Route:
         if state["passed"]:
-            return "next_behavior"
-        return "write_impl" if state["attempts"] < self.cfg.max_attempts else "stuck"
+            return Route("next_behavior", "passed", True)
+        return Route("write_impl" if state["attempts"] < self.cfg.max_attempts else "stuck", "attempts", state["attempts"])
 
     async def stuck(self, state: ExecState) -> dict[str, Any]:
         behavior = self.plan(state).behaviors[state["idx"]]
@@ -517,22 +533,24 @@ class _Loop:
         stats = self.rec.behaviors[idx]
         self.log("stuck", state, answer=answer, last_run=tail(state.get("last_run", "")), dispute=dispute)
         if is_abort(answer):
-            return {"status": "aborted"}
+            return {"status": "aborted", "answer": answer}
         if answer.strip().lower().startswith("skip"):  # mark failed and put the Workspace back as this Behavior found it
             stats.green, stats.note = False, "stuck" + (" after a dispute" if dispute else "")
             stats.seconds = time.monotonic() - self.rec.behavior_started
             await self.restore(state["snapshot"])
             return {"phase": "skipped", "idx": idx + 1, "attempts": 0, "red_tries": 0, "hint": "", "last_run": "",
-                    "revisit": None, "dispute": None, "dispute_note": ""}
+                    "revisit": None, "dispute": None, "dispute_note": "", "answer": answer}
         stats.hints += 1
-        return {"attempts": 0, "red_tries": 0, "hint": answer}
+        return {"attempts": 0, "red_tries": 0, "hint": answer, "answer": answer}
 
-    def after_stuck(self, state: ExecState) -> Literal["write_test", "write_impl", "sign_off", "__end__"]:
+    def after_stuck(self, state: ExecState) -> Route:
         if state.get("status") == "aborted":
-            return LAST
-        if state.get("phase") == "skipped":
-            return "write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off"
-        return "write_test" if state.get("phase") == "test" else "write_impl"
+            to: str = LAST
+        elif state.get("phase") == "skipped":
+            to = "write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off"
+        else:  # a hint: back to the phase that got stuck
+            to = "write_test" if state.get("phase") == "test" else "write_impl"
+        return Route(to, "answer", state.get("answer"), self.answered())
 
     def next_behavior(self, state: ExecState) -> dict[str, Any]:
         stats = self.current(state)
@@ -541,8 +559,8 @@ class _Loop:
         self.log("next_behavior", state, satisfied=stats.satisfied, seconds=round(stats.seconds, 2))
         return {"idx": state["idx"] + 1, "attempts": 0, "phase": "impl", "hint": "", "last_run": "", "dispute": None, "dispute_note": ""}
 
-    def after_next(self, state: ExecState) -> Literal["write_test", "sign_off"]:
-        return "write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off"
+    def after_next(self, state: ExecState) -> Route:
+        return Route("write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off", "idx", state["idx"])
 
     # --- stage 3: make it right ----------------------------------------------------------------------------
     async def sign_off(self, state: ExecState) -> dict[str, Any]:
@@ -556,19 +574,21 @@ class _Loop:
             demo=self.ran(demo) if demo else None, demo_command=plan.demo,
         )
         if is_abort(answer):
-            return {"status": "aborted"}
+            return {"status": "aborted", "answer": answer}
         if is_yes(answer):
-            return {}
+            return {"answer": answer}
         # Anything else becomes a new Behavior, so the work loop runs again.
         plan = plan.model_copy(update={"behaviors": [*plan.behaviors, answer]})
-        return {"plan": plan.model_dump(), "phase": "impl"}
+        return {"plan": plan.model_dump(), "phase": "impl", "answer": answer}
 
-    def after_sign_off(self, state: ExecState) -> Literal["polish", "write_test", "finish", "__end__"]:
+    def after_sign_off(self, state: ExecState) -> Route:
         if state.get("status") == "aborted":
-            return LAST
-        if state["idx"] < len(self.plan(state).behaviors):
-            return "write_test"
-        return "polish" if self.cfg.max_polish_rounds > 0 else "finish"
+            to: str = LAST
+        elif state["idx"] < len(self.plan(state).behaviors):
+            to = "write_test"
+        else:
+            to = "polish" if self.cfg.max_polish_rounds > 0 else "finish"
+        return Route(to, "answer", state.get("answer"), self.answered())
 
     async def polish(self, state: ExecState) -> dict[str, Any]:
         round_ = state.get("polish_round", 0) + 1
@@ -601,10 +621,10 @@ class _Loop:
         self.log("verify_polish", state, kept=False, checks=checks)
         return {"polish_feedback": failure}
 
-    def after_verify(self, state: ExecState) -> Literal["polish", "finish"]:
-        if state.get("polish_feedback") and state["polish_round"] < self.cfg.max_polish_rounds:
-            return "polish"
-        return "finish"
+    def after_verify(self, state: ExecState) -> Route:
+        if not state.get("polish_feedback"):
+            return Route("finish", "polish_feedback", "")
+        return Route("polish" if state["polish_round"] < self.cfg.max_polish_rounds else "finish", "polish_round", state["polish_round"])
 
     async def finish(self, state: ExecState) -> dict[str, Any]:
         changes = await self.ws.changes()
@@ -631,11 +651,19 @@ class _Loop:
         self.log("spend_cap", state, spent=round(self.rec.cost_usd, 6), cap=self.cfg.max_cost_usd)
         return {"status": "spend_cap"}
 
-    def gate(self, route: Callable[[ExecState], str]) -> Callable[[ExecState], str]:
-        """``route``, unless the Spend cap has been passed: every node boundary then goes to ``spend_cap`` instead."""
+    def gate(self, source: str, route: Callable[[ExecState], Route]) -> Callable[[ExecState], str]:
+        """``route``, unless the Spend cap has been passed: every node boundary then goes to ``spend_cap`` instead.
+        Either way the edge writes one Route record (F9) and is counted by basis."""
         @functools.wraps(route)
         def gated(state: ExecState) -> str:
-            return "spend_cap" if self.rec.cost_usd > self.cfg.max_cost_usd else route(state)
+            if self.rec.cost_usd > self.cfg.max_cost_usd:
+                taken = Route("spend_cap", "cost_usd", round(self.rec.cost_usd, 6))
+            else:
+                taken = route(state)
+            self.rec.add_route(taken)
+            if self.runlog:
+                self.runlog.route(source, taken, behavior=state.get("idx"))
+            return taken.to
 
         return gated
 
@@ -661,13 +689,11 @@ class _Loop:
             "finish", "spend_cap",
         ):
             g.add_node(name, self.timed(getattr(self, name)))
-        gate = self.gate
+        def to(name: str) -> Callable[[ExecState], Route]:  # a fixed edge that still honors the Spend cap
+            return lambda _state: Route(name)
 
-        def to(name: str) -> Callable[[ExecState], str]:  # a fixed edge that still honors the Spend cap
-            return gate(lambda _state: name)
-
-        def edges(source: str, route: Callable[[ExecState], str], targets: list[str]) -> None:
-            g.add_conditional_edges(source, gate(route), [*targets, "spend_cap"])
+        def edges(source: str, route: Callable[[ExecState], Route], targets: list[str]) -> None:
+            g.add_conditional_edges(source, self.gate(source, route), [*targets, "spend_cap"])
 
         g.add_edge(START, "check_assumptions")
         edges("check_assumptions", self.after_check, ["clarify", "write_test"])

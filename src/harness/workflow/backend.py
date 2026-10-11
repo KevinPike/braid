@@ -35,7 +35,9 @@ def make_model(config: HarnessConfig, choice: Choice, ollama: OllamaClient | Non
     ``[anthropic] max_retries`` and ``timeout``."""
     wf = config.workflow
     if choice.backend == "anthropic":
-        return AnthropicWorkflowModel(make_client(config.anthropic), choice.model_id, effort=wf.effort)
+        return AnthropicWorkflowModel(
+            make_client(config.anthropic), choice.model_id, effort=wf.effort, thinking_display=config.anthropic.thinking_display,
+        )
     if ollama is None:
         return None
     return GuardedWorkflowModel(ollama, choice.model_id, think=wf.think, num_predict=wf.num_predict)

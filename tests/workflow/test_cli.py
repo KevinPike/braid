@@ -52,7 +52,9 @@ async def test_build_runs_a_plan_prints_progress_writes_the_summary_and_applies_
     data = json.loads(summary.read_text())
     assert data["no_hints"] is True and data["totals"]["green"] == 1 and data["planned"] == 1 and data["trace"][-1] == "finish"
     [log] = (tmp_path / "runs").glob("*.jsonl")
-    assert len(log.read_text().splitlines()) == len(data["trace"])
+    nodes = [json.loads(line)["node"] for line in log.read_text().splitlines()]
+    assert len([n for n in nodes if n != "route"]) == len(data["trace"])
+    assert data["routes"] == {"code": nodes.count("route"), "model": 0, "human": 0}  # a no-hints run: code answers
 
 
 async def test_a_no_hints_run_never_asks_for_anything_but_the_finish_approval(

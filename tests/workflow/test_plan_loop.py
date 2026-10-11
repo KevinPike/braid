@@ -248,7 +248,7 @@ async def test_a_new_angle_from_config_gets_its_own_prompt_and_every_node_writes
     run = await run_plan(fixture_repo, tmp_path, scripted(), ["approve"], cfg)
     [call] = run.model.of("CritiqueReply")
     assert call.system == "You are the person who uses the tool." and call.prompt.startswith("Review angle: usability")
-    lines = run.log.lines()
+    lines = [ln for ln in run.log.lines() if ln["node"] != "route"]  # Route records are tested in test_trace
     assert [ln["node"] for ln in lines] == run.rec.trace == ["research", "draft", "critique", "synthesize", "human_review", "finalize"]
     assert all("node_seconds" in ln and ln["round"] in (1,) for ln in lines)
     assert lines[1]["prompt"] and lines[1]["reply"]["behaviors"] and lines[-1]["plan"]["goal"] == GOAL

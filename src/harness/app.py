@@ -366,7 +366,7 @@ class HarnessApp(App[None]):
     def _on_api_call(self, model: str, call: ApiCall) -> None:
         n = self._open_calls.pop(model, None)
         if n is not None:
-            self.store.complete_call(self.session_id, n, call.prompt_tokens, call.output_tokens)
+            self.store.complete_call(self.session_id, n, call.prompt_tokens, call.output_tokens, call.thinking)
 
     async def _end_loading(self) -> None:
         """Clear the status bar's loading state, but only after a fresh ``/api/ps`` poll: the last stored poll may
@@ -394,7 +394,7 @@ class HarnessApp(App[None]):
             profile = self.config.profile
             chat_model = AnthropicChatModel(
                 self._anthropic, model, max_tokens=profile.max_tokens, effort=profile.effort, meter=self.meter,
-                ledger=self.ledger, context_window=self._window(model),
+                ledger=self.ledger, context_window=self._window(model), thinking_display=self.config.anthropic.thinking_display,
             )
             agent = build_api_agent(
                 chat_model, profile.system_prompt,
