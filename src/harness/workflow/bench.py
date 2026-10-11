@@ -8,6 +8,9 @@ range or "within noise". Comparison only: nothing here is a gate, and a drop nev
 
 F7 adds Hidden tests: a pair may name a held-out suite (``bench/exotic/<kata>/hidden``), and ``grade`` scores the final
 Workspace against it, and the model-written tests against each mutant, in scratch copies run in the Sandbox.
+
+F12 adds the frontier: ``report --frontier`` sets each label of a model x effort sweep against the others, hidden pass
+rate against cost per kata.
 """
 
 from __future__ import annotations
@@ -389,6 +392,74 @@ def compare_table(lines: Sequence[Mapping[str, Any]], label_a: str, label_b: str
         rows.append(row + (f" {' · '.join(_hidden(sa))} | {' · '.join(_hidden(sb))} |" if graded else ""))
     rows += [note for note in (api_errors(lines, label_a), api_errors(lines, label_b)) if note]  # F8
     return "\n".join([*rows, "", LEGEND, *([HIDDEN_LEGEND] if graded else [])])
+
+
+@dataclass(frozen=True)
+class FrontierPoint:
+    """One label of a sweep (F12): what it scored on the Hidden tests and what it cost, over its katas."""
+
+    label: str
+    model: str
+    effort: str
+    runs: int
+    hidden: float | None  # mean over katas of the mean hidden pass rate; None when nothing was graded
+    cost: float  # mean cost per kata run
+
+
+def frontier_points(lines: Sequence[Mapping[str, Any]], labels_: Sequence[str]) -> list[FrontierPoint]:
+    """A point per label that has ledger lines, its model and effort read from its summaries' provenance."""
+    points = []
+    for label in labels_:
+        stats = {k: s for k, s in aggregate(lines, label).items() if k != "total"}
+        if not stats:
+            continue
+        first = next(x["summary"] for x in lines if x.get("label") == label)
+        graded = [s.hidden for s in stats.values() if s.hidden is not None]
+        points.append(FrontierPoint(
+            label, str(first.get("model", "?")), str(first.get("effort") or "default"), sum(s.n for s in stats.values()),
+            mean(graded) if graded else None, mean(s.cost for s in stats.values()),
+        ))
+    return points
+
+
+def on_frontier(p: FrontierPoint, points: Sequence[FrontierPoint]) -> bool:
+    """No other graded label passes as many hidden tests or more for as little or less, and beats it on one of them."""
+    if p.hidden is None:
+        return False
+    return not any(
+        q is not p and q.hidden is not None and q.hidden >= p.hidden and q.cost <= p.cost
+        and (q.hidden > p.hidden or q.cost < p.cost)
+        for q in points
+    )
+
+
+FRONTIER_LEGEND = ("Frontier (F12): hidden pass rate (mean over katas) against mean cost per kata run, cheapest first. "
+                   "* marks a label no other label beats on both. Per kata: hidden pass rate · cost per run.")
+
+
+def frontier_table(lines: Sequence[Mapping[str, Any]], labels_: Sequence[str]) -> str:
+    points = frontier_points(lines, labels_)
+    missing = [x for x in labels_ if x not in {p.label for p in points}]
+    if not points:
+        return f"no ledger lines labelled {', '.join(map(repr, missing))}"
+    rows = ["| label | model | effort | runs | hidden | cost per kata | frontier |", "|---|---|---|---|---|---|---|"]
+    for p in sorted(points, key=lambda p: p.cost):
+        hidden = f"{p.hidden:.0%}" if p.hidden is not None else "-"
+        rows.append(f"| {p.label} | {p.model} | {p.effort} | {p.runs} | {hidden} | ${p.cost:.4f} | "
+                    f"{'*' if on_frontier(p, points) else ''} |")
+    by_label = {p.label: {k: s for k, s in aggregate(lines, p.label).items() if k != "total"} for p in points}
+    katas = sorted({k for stats in by_label.values() for k in stats})
+    rows += ["", "| kata | " + " | ".join(p.label for p in points) + " |", "|---|" + "---|" * len(points)]
+    for kata in katas:
+        cells = []
+        for p in points:
+            s = by_label[p.label].get(kata)
+            cells.append("-" if s is None else f"{f'{s.hidden:.0%}' if s.hidden is not None else '-'} · ${s.cost:.4f}")
+        rows.append(f"| {kata} | " + " | ".join(cells) + " |")
+    notes = [n for n in (api_errors(lines, p.label) for p in points) if n]  # F8
+    if missing:
+        notes.append(f"no ledger lines labelled {', '.join(map(repr, missing))}")
+    return "\n".join([*rows, *notes, "", FRONTIER_LEGEND])
 
 
 def labels(lines: Iterable[Mapping[str, Any]]) -> list[tuple[str, int, str]]:

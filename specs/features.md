@@ -418,6 +418,25 @@ The question: does a stronger or blind tester close the self/hidden gap more che
 
 **Live check:** `exotic` × {Haiku, Sonnet 5.5, Opus 5.5} × {low, medium}, 3 repeats, batched. Get the user's approval on the estimate first.
 
+**Status (2026-10-11): built and gated** (`tests/workflow/test_batch.py`, 13 tests; the batch endpoints are faked by `FakeBatches` in `tests/anthropic_fakes.py`). No live calls.
+
+- **Sweep.** `bench <set> --models a,b --effort low,medium` builds one Cell per model × effort (`cli.grid_cells`), labelled `<label>-<model>-<effort>` (the base label defaults to `<set>-<timestamp>`; a Cell with no `--effort` is `default`). Without `--models`/`--effort` the label is as before. Every model must be an Anthropic model with a price in `PRICING`, and every effort a known one: otherwise the bench exits 2 before any run, naming the model. `--max-cost` covers the whole grid. `run_bench` is now the one-Cell case of `run_grid`.
+- **Frontier.** `report --frontier A B C` gives one row per label, cheapest first: model and effort (read from the summaries' provenance), runs, hidden pass rate (the mean over katas of each kata's mean rate) and mean cost per kata run. `*` marks a label no other label beats on both. Below that is a kata × label table of hidden rate · cost. A label with no graded runs shows `-` and is never on the frontier. There is no HTML chart.
+- **Batches** (`workflow/batch.py`). A `BatchLane` stands in for the `AsyncAnthropic` client, so `BatchedWorkflowModel` is `AnthropicWorkflowModel` unchanged: it sends the same params as a single call (a gate compares the two bodies), keeps the retry-once on invalid JSON, and fails in the same way. `model.py` is not touched. The `Batcher` sends a batch once every open lane has a call waiting, or `--flush-s` (default 30 s) after the first waiting call. It polls every 15 s until `ended`, then resolves each call by `custom_id` (`run<k>-<n>`); the fake returns results in reverse order. A run's lane closes when its build ends, before grading, so the others stop waiting for it. A reply's `request_id` is `<batch id>/<custom_id>`.
+  - **Failures.** An `errored`, `expired` or `canceled` result raises `ApiFailure` (`batch_errored:<type>`, `batch_expired`) for that call only, so that run ends with `api_error` at that node (F8) and the others go on. A batch request that fails past the SDK's retries fails every call in it. On Ctrl-C, the batches in flight are cancelled on the server.
+  - **Cost.** Each call is priced by `api_call` and then halved (`batch.batch_priced`, `BATCH_DISCOUNT = 0.5`, not in `PRICING`), so the summary, the ledger and the run's Spend cap all use batch prices.
+  - `batch_params` drops `fallbacks` (and the SDK's request options), so F10's fallbacks cannot reach a batch.
+- **Concurrency.** With `--batch`, every run of the whole grid (all Cells, not one Cell at a time) goes at once, so a batch holds every waiting call. `--parallel N` limits that number; without `--batch` the default is 1, as before. Under concurrency, `--max-cost` still holds: each run starts with a Spend cap of the smaller of `max_cost_usd` and what is left after setting aside the caps of runs already going. A run that would get no cap waits for another run to end.
+- **Merge note.** This touches `cli.py`'s bench (`run_bench` → `run_grid`/`bench_one`) and `bench.py`'s report, not `model.py`. Until F10 adds `claude-sonnet-5-5` and `claude-opus-5-5` to `PRICING`, a sweep naming them exits 2 with "no pricing".
+
+**Live checks: pending the user's approval.**
+1. **`output_config.format` in a batch** (unverified). Send one Haiku request through `BatchedWorkflowModel` with any schema: one batch, about $0.0001. If it comes back `errored`, the batched path needs a different way to get JSON before the sweep.
+2. **The sweep:** `harness-workflow bench exotic --models claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5 --effort low,medium --repeat 3 --batch --label frontier` (after F10's prices and F7's `make_katas.py`), then `report --frontier frontier-claude-haiku-5-5-low ...`. That is 36 runs.
+   - **Estimate.** `baseline-f1` cost $0.0334 per repeat of 5 katas, or $0.0067 per kata run on Haiku. F3's disputed Plans cost $0.0050–0.0059 per run. Six exotic katas therefore cost about $0.040 per repeat on Haiku, or $0.12 per Cell at standard prices. Sonnet 5.5's input and output prices are 20× Haiku's and Opus 5.5's are 40×, so a Cell costs about $2.40 on Sonnet and $4.80 on Opus.
+   - For two efforts that is about $14.6 at standard prices, or **about $7.3 batched**. Allow up to about **$15**: the exotic katas are new and harder (F7 has no cost yet), batch cache hits are best effort, and effort changes thinking tokens.
+   - **Settings needed.** An Opus run would cost about $0.13 batched, which is over the default $0.10 Spend cap. Set `[workflow] max_cost_usd = 0.50`, and pass `--max-cost 20` so that all 36 runs fit under the bench's reservations at once.
+   - **Time.** Each run makes about 20–30 sequential calls, and each call costs one batch round. Plan for it overnight.
+
 ---
 
 ## F13 — Same task, four frameworks (an example, not a feature)
