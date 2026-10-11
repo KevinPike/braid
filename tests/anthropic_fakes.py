@@ -219,6 +219,76 @@ class FaultyTransport:
         )
 
 
+# --- F12: Message Batches --------------------------------------------------------------------------------------------
+
+Answer = Callable[[str, dict[str, Any]], dict[str, Any]]  # (custom_id, params) -> the result, as ``succeeded`` etc. build it
+
+
+def succeeded(text_: str, usage: dict[str, int] | None = None) -> dict[str, Any]:
+    return {"type": "succeeded", "message": {
+        "id": "msg_b", "type": "message", "role": "assistant", "model": MODEL, "content": [{"type": "text", "text": text_}],
+        "stop_reason": "end_turn", "stop_sequence": None, "stop_details": None,
+        "usage": usage or {"input_tokens": 1000, "output_tokens": 200, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+    }}
+
+
+def errored(kind: str = "invalid_request_error", message: str = "output_config.format: not supported here") -> dict[str, Any]:
+    return {"type": "errored", "error": {"type": "error", "error": {"type": kind, "message": message}, "request_id": "req_err"}}
+
+
+def expired() -> dict[str, Any]:
+    return {"type": "expired"}
+
+
+@dataclass
+class FakeBatches:
+    """The Message Batches endpoints on an ``httpx2.MockTransport``: create, retrieve (``in_progress`` for ``polls``
+    retrievals, then ``ended``), and the results as JSON Lines in reverse order, so a caller must match by ``custom_id``.
+    ``answer`` gives each request's result; ``batches`` keeps every batch's requests."""
+
+    answer: Answer
+    polls: int = 1
+    batches: list[list[dict[str, Any]]] = field(default_factory=list)
+    retrievals: dict[int, int] = field(default_factory=dict)  # per batch
+    cancelled: list[str] = field(default_factory=list)
+    on_create: Callable[[list[dict[str, Any]]], None] | None = None
+
+    def _batch(self, n: int, ended: bool) -> dict[str, Any]:
+        count = len(self.batches[n])
+        return {
+            "id": f"msgbatch_{n}", "type": "message_batch", "processing_status": "ended" if ended else "in_progress",
+            "created_at": "2026-10-11T00:00:00Z", "expires_at": "2026-10-12T00:00:00Z",
+            "ended_at": "2026-10-11T00:05:00Z" if ended else None,
+            "request_counts": {"processing": 0 if ended else count, "succeeded": count if ended else 0, "errored": 0,
+                               "canceled": 0, "expired": 0},
+            "results_url": f"https://api.anthropic.com/v1/messages/batches/msgbatch_{n}/results" if ended else None,
+        }
+
+    def _handler(self, request: httpx2.Request) -> httpx2.Response:
+        path = request.url.path
+        if request.method == "POST" and path == "/v1/messages/batches":
+            requests = json.loads(request.content)["requests"]
+            self.batches.append(requests)
+            if self.on_create is not None:
+                self.on_create(requests)
+            return httpx2.Response(200, json=self._batch(len(self.batches) - 1, ended=self.polls == 0))
+        n = int(path.split("msgbatch_")[1].split("/")[0])
+        if path.endswith("/cancel"):
+            self.cancelled.append(f"msgbatch_{n}")
+            return httpx2.Response(200, json=self._batch(n, ended=False))
+        if path.endswith("/results"):
+            lines = [{"custom_id": r["custom_id"], "result": self.answer(r["custom_id"], r["params"])} for r in self.batches[n]]
+            body = "".join(json.dumps(x) + "\n" for x in reversed(lines))
+            return httpx2.Response(200, content=body.encode(), headers={"content-type": "application/binary"})
+        self.retrievals[n] = self.retrievals.get(n, 0) + 1
+        return httpx2.Response(200, json=self._batch(n, ended=self.retrievals[n] >= self.polls))
+
+    def client(self) -> anthropic.AsyncAnthropic:
+        return anthropic.AsyncAnthropic(
+            api_key="test-key", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self._handler)), max_retries=0,
+        )
+
+
 def _message(events: list[bytes]) -> dict[str, Any]:
     """The non-streamed message equivalent of an SSE reply: its text blocks and usage."""
     content: list[dict[str, Any]] = []
