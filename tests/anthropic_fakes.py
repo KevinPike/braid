@@ -1,4 +1,6 @@
-"""A fake Anthropic Messages API for the chat agent: streamed (SSE) replies through ``httpx2.MockTransport``, no network."""
+"""A fake Anthropic Messages API for the chat agent: streamed (SSE) replies through ``httpx2.MockTransport``, no network.
+
+``FaultyTransport`` (F8) serves a script of faults and healthy replies, to both the chat agent and Workflows."""
 
 from __future__ import annotations
 
@@ -10,6 +12,7 @@ from typing import Any
 
 import anthropic
 import httpx2
+from anthropic._models import FinalRequestOptions
 
 MODEL = "claude-haiku-5-5"
 USAGE = {"input_tokens": 120, "output_tokens": 30, "cache_read_input_tokens": 1000, "cache_creation_input_tokens": 0}
@@ -108,6 +111,111 @@ class FakeApi:
     def client(self) -> anthropic.AsyncAnthropic:
         return anthropic.AsyncAnthropic(
             api_key="test-key", http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self._handler)), max_retries=0,
+        )
+
+
+class InstantRetries(anthropic.AsyncAnthropic):
+    """The real client, retrying as the SDK does but without waiting: ``waits`` keeps how long each retry would have
+    slept, so a test can see ``retry-after`` honored."""
+
+    def __init__(self, **kw: Any) -> None:
+        super().__init__(**kw)
+        self.waits: list[float] = []
+
+    def _calculate_retry_timeout(
+        self, remaining_retries: int, options: FinalRequestOptions, response_headers: httpx2.Headers | None = None,
+    ) -> float:
+        self.waits.append(super()._calculate_retry_timeout(remaining_retries, options, response_headers))
+        return 0.0
+
+
+# --- F8: fault injection --------------------------------------------------------------------------------------------
+
+Step = Callable[[httpx2.Request, int], httpx2.Response]  # (the request, its 1-based number) -> the response
+
+
+def _error(status: int, kind: str, message: str, n: int, headers: dict[str, str] | None = None) -> httpx2.Response:
+    return httpx2.Response(
+        status, json={"type": "error", "error": {"type": kind, "message": message}},
+        headers={"request-id": f"req_{n}", **(headers or {})},
+    )
+
+
+def rate_limited(retry_after: str = "7") -> Step:
+    return lambda _r, n: _error(429, "rate_limit_error", "Number of request tokens has exceeded your rate limit", n, {"retry-after": retry_after})
+
+
+def overloaded() -> Step:
+    return lambda _r, n: _error(529, "overloaded_error", "Overloaded", n)
+
+
+def server_error() -> Step:
+    return lambda _r, n: _error(500, "api_error", "Internal server error", n)
+
+
+def unauthorized() -> Step:
+    """A 401 whose message echoes the key it was sent, as a misbehaving proxy might. The SDK does not retry it."""
+    return lambda r, n: _error(401, "authentication_error", f"invalid x-api-key: {r.headers.get('x-api-key')}", n)
+
+
+def dropped() -> Step:
+    """The connection drops before any response: the SDK sees a transport error and retries it."""
+    def step(request: httpx2.Request, _n: int) -> httpx2.Response:
+        raise httpx2.RemoteProtocolError("peer closed connection without sending complete message body", request=request)
+
+    return step
+
+
+def not_json() -> Step:
+    """A 200 that says it is JSON and is not (a proxy's error page)."""
+    return lambda _r, n: httpx2.Response(
+        200, content=b"<html>502 Bad Gateway</html>", headers={"content-type": "application/json", "request-id": f"req_{n}"},
+    )
+
+
+def reply(text_: str, stop_reason: str = "end_turn", stop_details: dict[str, Any] | None = None) -> Step:
+    """A healthy non-streamed message (a Workflow call) whose content is ``text_``."""
+    body = {
+        "id": "msg_1", "type": "message", "role": "assistant", "model": MODEL,
+        "content": [{"type": "text", "text": text_}] if text_ else [], "stop_reason": stop_reason, "stop_sequence": None,
+        "stop_details": stop_details,
+        "usage": {"input_tokens": 10, "output_tokens": 5, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+    }
+    return lambda _r, n: httpx2.Response(200, json=body, headers={"request-id": f"req_{n}"})
+
+
+def streamed(*blocks: dict[str, Any], cut_after: int | None = None, reset: bool = False, **kw: Any) -> Step:
+    """A streamed message (a chat call). ``cut_after`` ends the stream after that many events, before ``message_stop``:
+    cleanly, or with a connection reset when ``reset``."""
+    events = sse_events(list(blocks), **kw)
+
+    async def body() -> AsyncIterator[bytes]:
+        for event in events[:cut_after]:
+            yield event
+        if reset:
+            raise httpx2.ReadError("connection reset by peer")
+
+    return lambda _r, n: httpx2.Response(200, headers={"content-type": "text/event-stream", "request-id": f"req_{n}"}, content=body())
+
+
+@dataclass
+class FaultyTransport:
+    """An ``httpx2.MockTransport`` that serves ``script`` in order, one step per HTTP request (an SDK retry is a request
+    too), and keeps every request body."""
+
+    script: list[Step]
+    bodies: list[dict[str, Any]] = field(default_factory=list)
+
+    def _handler(self, request: httpx2.Request) -> httpx2.Response:
+        self.bodies.append(json.loads(request.content))
+        n = len(self.bodies)
+        assert n <= len(self.script), f"the fault script ran out at request {n}"
+        return self.script[n - 1](request, n)
+
+    def client(self, *, max_retries: int = 2, api_key: str | None = "test-key") -> InstantRetries:
+        """``api_key=None`` leaves the SDK to read ``ANTHROPIC_API_KEY``, as the harness does."""
+        return InstantRetries(
+            api_key=api_key, max_retries=max_retries, http_client=httpx2.AsyncClient(transport=httpx2.MockTransport(self._handler)),
         )
 
 

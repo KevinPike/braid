@@ -16,10 +16,11 @@ from strands.models.model import Model
 from strands.plugins import Plugin
 from strands.models.ollama import OllamaModel
 from strands.types.content import Messages
-from strands.types.exceptions import ContextWindowOverflowException, ModelThrottledException
+from strands.types.exceptions import ContextWindowOverflowException
 from strands.types.streaming import StreamEvent
 from strands.types.tools import ToolSpec
 
+from harness.anthropic_api import API_FAULTS, ApiFailure
 from harness.config import Effort
 from harness.context.ledger import Ledger
 from harness.guard.ollama_client import CallMetrics, OllamaClient
@@ -119,7 +120,8 @@ class AnthropicChatModel(AnthropicModel):
     API content blocks, API stream events to Strands ``StreamEvent``s); the request itself is built and sent here, on the
     1.x client handed in. It never sends sampling parameters, caches the system prompt and the history prefix, and
     records every call's priced usage on ``meter`` and in the Ledger (in place of Ollama's ``prompt_eval_count``).
-    Cancelling the task that iterates ``stream`` closes the HTTP stream, which cancels the request.
+    Cancelling the task that iterates ``stream`` closes the HTTP stream, which cancels the request. A request that fails
+    past the SDK's retries, or a stream that ends before ``message_stop``, raises ``ApiFailure`` (F8).
     """
 
     def __init__(
@@ -188,13 +190,15 @@ class AnthropicChatModel(AnthropicModel):
                     yield self.format_chunk(payload)
                 final = await stream.get_final_message()
                 request_id = stream.request_id
+            if final.stop_reason is None:  # the stream ended before message_stop: a cut reply is not a finished turn
+                raise ApiFailure("IncompleteStream", "the stream ended before message_stop", request_id=request_id)
             done = True
-        except anthropic.RateLimitError as exc:
-            raise ModelThrottledException(str(exc)) from exc
         except anthropic.BadRequestError as exc:
             if any(m in str(exc).lower() for m in OVERFLOW_MESSAGES):
                 raise ContextWindowOverflowException(str(exc)) from exc
-            raise
+            raise ApiFailure.from_exc(exc) from exc
+        except API_FAULTS as exc:  # past the SDK's retries: the turn ends with a note (F8)
+            raise ApiFailure.from_exc(exc) from exc
         finally:
             if not done and self.meter is not None:
                 self.meter.abandon()
@@ -249,8 +253,10 @@ def build_api_agent(
     tools: list[Any] | None = None,
     hooks: list[HookProvider | HookCallback[Any]] | None = None,
 ) -> Agent:
+    # retry_strategy=None: the SDK's retries ([anthropic] max_retries) are the only ones. Strands' default would retry a
+    # throttled turn six more times, minutes apart, after the SDK had already given up (F8).
     return Agent(
-        model=model, system_prompt=system_prompt, callback_handler=None,
+        model=model, system_prompt=system_prompt, callback_handler=None, retry_strategy=None,
         conversation_manager=conversation_manager, plugins=plugins, tools=tools, hooks=hooks,
     )
 

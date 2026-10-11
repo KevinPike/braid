@@ -10,6 +10,7 @@ from typing import Protocol, TypeVar
 import anthropic
 from pydantic import BaseModel, ValidationError
 
+from harness.anthropic_api import API_FAULTS, ApiFailure
 from harness.config import Effort
 from harness.guard.ollama_client import OllamaClient
 from harness.usage import PRICING, ApiCall, Price, api_call, require_pricing
@@ -18,7 +19,8 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class WorkflowModelError(RuntimeError):
-    """The model did not return a valid reply for the schema, even after one retry."""
+    """The model did not return a valid reply for the schema, even after one retry. A failed request is not this: it
+    raises ``ApiFailure``, which no node catches, so the run stops with status ``api_error`` (F8)."""
 
 
 class WorkflowModel(Protocol):
@@ -103,13 +105,18 @@ class AnthropicWorkflowModel:
             output_config["effort"] = self.effort
         error = ""
         for _ in range(2):  # one retry, with the problem appended
-            response = await self.client.messages.create(
-                model=self.model_id,
-                max_tokens=self.max_tokens,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": prompt + error}],
-                output_config=output_config,
-            )
+            try:
+                response = await self.client.messages.create(
+                    model=self.model_id,
+                    max_tokens=self.max_tokens,
+                    system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                    messages=[{"role": "user", "content": prompt + error}],
+                    output_config=output_config,
+                )
+            except API_FAULTS as exc:  # past the SDK's retries: the run stops here, resumable (F8)
+                raise ApiFailure.from_exc(exc) from exc
+            if not isinstance(response, anthropic.types.Message):  # a 200 whose body is not JSON comes back as text
+                raise ApiFailure("UnexpectedBody", f"the reply was not a message: {str(response)[:100]!r}")
             self._record(response)
             if response.stop_reason == "refusal":
                 category = response.stop_details.category if response.stop_details else None
@@ -128,4 +135,7 @@ class AnthropicWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
-__all__ = ["PRICING", "AnthropicWorkflowModel", "ApiCall", "GuardedWorkflowModel", "Price", "WorkflowModel", "WorkflowModelError"]
+__all__ = [
+    "PRICING", "AnthropicWorkflowModel", "ApiCall", "ApiFailure", "GuardedWorkflowModel", "Price", "WorkflowModel",
+    "WorkflowModelError",
+]

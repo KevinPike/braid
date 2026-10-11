@@ -26,6 +26,7 @@ from textual.widgets import Input, Static
 from textual.worker import Worker
 
 from harness.agent import AnthropicChatModel, build_agent, build_api_agent, stream_reply
+from harness.anthropic_api import find_failure, make_client
 from harness.approval import APPLY_WORKSPACE, ApprovalGate, ApprovalRequest
 from harness.chat import AlertBanner, ApprovalPrompt, ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
@@ -165,7 +166,7 @@ class HarnessApp(App[None]):
             model = config.profile.chat_model
             if self._resume_info is not None and self._resume_info.model in PRICING:
                 model = self._resume_info.model  # a resumed API session keeps its model
-            self._anthropic = anthropic_client or anthropic.AsyncAnthropic()  # the SDK's own credential resolution
+            self._anthropic = anthropic_client or make_client(config.anthropic)  # the SDK's own credential resolution
             self.meter = UsageMeter(model, self._window(model))
         info = self._resume_info or (
             self.store.create(self.meter.state.model, self.meter.state.context_window) if self.meter is not None
@@ -918,7 +919,12 @@ class HarnessApp(App[None]):
                     chat.scroll_end(animate=False)
             except Exception as exc:  # surface backend errors in the pane, don't crash the UI
                 reply.add_class("note")
-                reply.text += f"\n[error: {exc}]"
+                failure = find_failure(exc)
+                if failure is not None:  # F8: past the SDK's retries; the turn is dropped, as Ctrl-C drops it
+                    reply.text += f"\n[API error: {failure.note()}; the turn was dropped, send it again]"
+                else:
+                    reply.text += f"\n[error: {exc}]"
+                self._messages[:] = settle(self._messages)[0]  # back to the last finished turn
             finally:
                 await reply.finish()
             if self._agent is None:  # test mode: the replier adds no messages itself

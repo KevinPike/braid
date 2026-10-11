@@ -34,6 +34,7 @@ from harness.workflow.records import Recorder, RunLog, amend_summary, write_summ
 
 CANCELLED_EXIT = 130  # 128 + SIGINT
 SPEND_CAP_EXIT = 3  # the run passed max_cost_usd and stopped; nothing was applied or saved
+API_ERROR_EXIT = 4  # an API request failed past the SDK's retries (F8); nothing was applied, the Workspace is kept
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -221,8 +222,11 @@ async def build_once(
         out.flush()
         return BuildResult(CANCELLED_EXIT, summary, workspace, rec.cost_usd, status)
     out.write(final_report(rec, clock() - started) + f"\n\nstatus: {status}; polish {rec.polish}\nsummary: {summary}\n")
+    if status == "api_error":
+        out.write(api_error_note(final["api_error"]) + f"; Workspace kept at {workspace.path}\n")
     out.flush()
-    return BuildResult(SPEND_CAP_EXIT if status == "spend_cap" else 0, summary, workspace, rec.cost_usd, status)
+    code = SPEND_CAP_EXIT if status == "spend_cap" else API_ERROR_EXIT if status == "api_error" else 0
+    return BuildResult(code, summary, workspace, rec.cost_usd, status)
 
 
 async def run_bench(
@@ -295,6 +299,13 @@ def hidden_note(summary: dict[str, Any]) -> str:
             f"{summary['mutants_killed']}/{summary['mutants_total']} mutants killed")
 
 
+def api_error_note(error: dict[str, Any]) -> str:
+    """F8: where the run stopped and why, for a human."""
+    status = f" {error['status_code']}" if error.get("status_code") else ""
+    return (f"stopped by an API error in {error['node']}: {error['error']}{status} "
+            f"(request {error.get('request_id') or 'unknown'}); nothing was applied")
+
+
 def cost_note(rec: Recorder) -> str:
     return f", ${rec.cost_usd:.4f}" if rec.cost_usd else ""
 
@@ -346,6 +357,10 @@ async def run_plan(
     finally:
         ticker.cancel()
         progress.clear()
+    if final.get("status") == "api_error":
+        out.write(f"\n{api_error_note(final['api_error'])}; no Plan saved\nrun log: {log.path}\n")
+        out.flush()
+        return API_ERROR_EXIT
     if final.get("status") == "spend_cap":
         out.write(f"\nstopped at the Spend cap (${rec.cost_usd:.4f} > ${cfg.max_cost_usd:.2f}); no Plan saved\nrun log: {log.path}\n")
         out.flush()

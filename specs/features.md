@@ -310,6 +310,19 @@ Nothing in `workflow/` catches `anthropic.APIError` today. A request that still 
 4. `max_tokens` and `refusal` keep their F1 behavior (retry once, then raise with the category).
 5. No API key appears in any error log line.
 
+**Status (2026-10-11): built and gated** (`tests/test_api_faults.py`; `FaultyTransport` and `InstantRetries` in `tests/anthropic_fakes.py`). No live calls.
+
+- **One failure type.** `harness/anthropic_api.py` has `ApiFailure` (the SDK's error type, HTTP status, `request_id`, and a message cut to 300 characters with any `sk-ant-…` redacted) and `make_client`, which both API paths now use. Whatever the SDK gives up on becomes an `ApiFailure`: its own `APIError`s, an `httpx2.TransportError` raised mid-stream (the SDK wraps transport errors only before the response starts), and a 200 whose body is not JSON (`json.loads` raises a plain `JSONDecodeError`, which the SDK neither wraps nor retries). It is not a `WorkflowModelError`, so no node mistakes it for invalid output, and the Plan loop's per-Critique catch does not swallow it.
+- **Workflows.** The node wrapper (`timed`, in both loops) logs an `api_error` line (node, error, status, `request_id`, and the usage of any call that did succeed in that node) and re-raises. A fanned-out Critique has no wrapper, so it stops the run the same way without a line of its own. `drive_graph` catches it and returns the checkpointed values with `status: "api_error"` and an `api_error` record. The failed node wrote nothing, so the Checkpoint's `next` is that node and a resume runs it again. The CLI exits 4 (`API_ERROR_EXIT`) and says where it stopped, with the Workspace kept. The TUI marks the run `failed` (not `finished`), so `/build --resume` and `/plan --resume` accept it.
+- **Chat.** A failed turn shows `[API error: <type> <status>, request <id>: …; the turn was dropped, send it again]` and is cut back with `settle`, as Ctrl-C does. Any other error in a turn is cut back the same way.
+- **Bench.** An `api_error` run gets its ledger line as usual. `aggregate` leaves it out of every mean (and its repeat out of the total), and the label and comparison tables add a line counting such runs.
+- **Config.** `[anthropic] max_retries` (default 2) and `timeout` (default 600 s, with the SDK's 5 s connect timeout kept).
+- **Bugs the faults found.**
+  1. A chat stream that ended before `message_stop` was accepted as a finished turn: `get_final_message()` returns the partial snapshot with `stop_reason: None`, which the model mapped to `end_turn`. That is now an `IncompleteStream` failure.
+  2. A mid-stream connection reset and a non-JSON 200 raised raw `httpx2`/`json` errors that nothing expected.
+  3. Strands' default retry strategy retried a 429 six more times, from 4 s up to 240 s apart, after the SDK had already given up. `build_api_agent` now passes `retry_strategy=None`, so the SDK's retries are the only ones.
+- **Tests.** Retries are instant: `InstantRetries` overrides the SDK's `_calculate_retry_timeout` to return 0 and records what it would have waited, so the `retry-after: 7` test checks the real value.
+
 ---
 
 ## F9 — Trace: Route records and thinking summaries

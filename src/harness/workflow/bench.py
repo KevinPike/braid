@@ -295,7 +295,7 @@ def aggregate(lines: Iterable[Mapping[str, Any]], label: str) -> dict[str, Stats
     by_kata: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_repeat: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for line in lines:
-        if line.get("label") != label:
+        if line.get("label") != label or line["summary"].get("status") == API_ERROR:
             continue
         key = line.get("pair", line["kata"])
         summary = {**line["summary"], "kata": key}
@@ -306,6 +306,15 @@ def aggregate(lines: Iterable[Mapping[str, Any]], label: str) -> dict[str, Stats
     if total is not None:
         out["total"] = total
     return out
+
+
+API_ERROR = "api_error"  # F8: a run an API failure stopped says nothing about the model, so it is left out of the means
+
+
+def api_errors(lines: Iterable[Mapping[str, Any]], label: str) -> str:
+    """The note under a table: how many of ``label``'s runs ended with ``api_error``, or nothing."""
+    n = sum(1 for x in lines if x.get("label") == label and x["summary"].get("status") == API_ERROR)
+    return f"{label}: {n} run(s) ended with api_error, left out of the means" if n else ""
 
 
 def verdict(a: Stats, b: Stats) -> str:
@@ -351,14 +360,15 @@ def label_table(lines: Sequence[Mapping[str, Any]], label: str) -> str:
     if not stats:
         return f"no ledger lines labelled {label!r}"
     n = max(s.n for s in stats.values())
+    notes = [note for note in (api_errors(lines, label),) if note]  # F8
     if not _graded(stats):
         rows = [f"label {label}: {n} repeat(s)", "", "| kata | runs | result |", "|---|---|---|"]
         rows += [f"| {kata} | {s.n} | {_cell(s)} |" for kata, s in stats.items()]
-        return "\n".join([*rows, "", LEGEND])
+        return "\n".join([*rows, *notes, "", LEGEND])
     rows = [f"label {label}: {n} repeat(s)", "", "| kata | runs | result | hidden | self/hidden gap | mutants killed |",
             "|---|---|---|---|---|---|"]
     rows += [f"| {kata} | {s.n} | {_cell(s)} | {' | '.join(_hidden(s))} |" for kata, s in stats.items()]
-    return "\n".join([*rows, "", LEGEND, HIDDEN_LEGEND])
+    return "\n".join([*rows, *notes, "", LEGEND, HIDDEN_LEGEND])
 
 
 def compare_table(lines: Sequence[Mapping[str, Any]], label_a: str, label_b: str) -> str:
@@ -377,6 +387,7 @@ def compare_table(lines: Sequence[Mapping[str, Any]], label_a: str, label_b: str
         else:
             row = f"| {kata} | {_cell(sa)} | {_cell(sb)} | {verdict(sa, sb)} |"
         rows.append(row + (f" {' · '.join(_hidden(sa))} | {' · '.join(_hidden(sb))} |" if graded else ""))
+    rows += [note for note in (api_errors(lines, label_a), api_errors(lines, label_b)) if note]  # F8
     return "\n".join([*rows, "", LEGEND, *([HIDDEN_LEGEND] if graded else [])])
 
 
