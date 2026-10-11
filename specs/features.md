@@ -246,7 +246,170 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 - **First skills:** `changelog` (git log → draft entry → review → write `CHANGELOG.md`) and `regex` (examples → model regex → run against examples → retry).
 - **Prototype first** in `examples/graphs/yaml_graph.py` with a scripted model, to check that the format reads well, before it goes into `workflow/`.
 
-**Gates:** each load-time check rejects a bad file with a message naming the node; a valid file compiles and runs to its first interrupt with a scripted model; a condition on a model field is rejected at load time.
+**Gates:** each load-time check rejects a bad file with a message naming the node; a valid file compiles and runs to its first interrupt with a scripted model; a condition on a model field is rejected at load time unless the edge declares `basis: model` and a bound (ADR 0008).
+
+---
+
+# Features after F6: multi-agent Workflows and evals
+
+Planned 2026-10-11. On the API, separate roles, separate models per role and larger repeat counts cost cents. On the frozen Ollama path, each meant a model swap and minutes per call. ADR 0008 amends ADR 0004: a model's claim may route a Workflow when the route is traced and bounded.
+
+**Order:** F7 → F8 → F9 → F10 → F11 → F12 → F13. F7 comes first because every later feature is measured on katas that can't have been memorized, graded by hidden tests. F9 comes before F10 because routing on a claim requires the trace. F7–F9 don't depend on F4–F6; whether they go ahead of F4–F6 is the user's call.
+
+**Context separation today.** Every model call is already a single-turn request with no conversation history: `WorkflowModel.complete(system, prompt, schema)`. What the roles share is the **system prompt** (`prompts.SYSTEM` for both `write_test` and `write_impl`), the **model**, and the **view**: `context()` gives both roles the full contents of every Plan file and every edited file, so the test writer sees the implementation (white-box). F11 separates role, model and view.
+
+---
+
+## F7 — Exotic katas, graded by hidden tests
+
+The five katas are classics that are surely in training data, and the only grade is the model's own tests going Green. An Opus subagent wrote six invented katas under `bench/exotic/` (2 easy, 2 medium, 2 hard), each with `GOAL.md`, a reference implementation, a **hidden test suite**, five mutants that each fail at least one hidden test, and a Plan with Invariants. `bench/exotic/verify.py` checks all of this.
+
+- **Repos:** `make_katas.py` also creates the exotic kata repos, from each kata's `GOAL.md` and `summary.txt`. Hidden tests and reference code are never copied into a kata repo or a Workspace.
+- **Manifest:** a set `exotic` in `bench/katas.toml`. A pair may carry `hidden = "exotic/<kata>/hidden"`.
+- **Grading:** after `finish` and before the Workspace is removed, copy the final non-test files and the hidden tests into a scratch copy, then run pytest there in the Sandbox. The summary and ledger get `hidden_passed` and `hidden_total`. Grading is code, not a model.
+- **Test strength:** run the model-written tests against each mutant, giving `mutants_killed` out of 5. This measures the tests, not the code.
+- **Report:** columns for hidden pass rate, the **self/hidden gap** (Green on its own tests but failing hidden ones) and mutants killed.
+- **Canary:** every hidden file carries `# braid-hidden-canary: <id>`.
+
+**Gates** (`tests/workflow/test_hidden_grade.py`, fakes):
+1. `verify.py` passes: the reference passes every hidden test, each mutant fails one or more, every Invariant holds on every hidden example, and every `plan.json` loads.
+2. No prompt in any run log contains a hidden canary (a scripted run on an exotic kata).
+3. Grading runs in the Sandbox, and the project's own tests directory is not changed by it.
+4. The summary and ledger carry `hidden_passed`, `hidden_total` and `mutants_killed`, and older ledger lines still load.
+
+**Live check:** `exotic` on `claude-haiku-5-5`, 3 repeats, labelled `baseline-exotic`. Report the self/hidden gap next to `baseline-f1`.
+
+---
+
+## F8 — Fault injection for the API path
+
+Nothing in `workflow/` catches `anthropic.APIError` today. A request that still fails after the SDK's own retries escapes the node. The SDK retries 408, 409, 429, 5xx (including 529 overloaded) and connection errors, twice by default. Test the harness's behavior past that point with fakes, at no cost.
+
+- **`FaultyTransport`** in `tests/anthropic_fakes.py`: an `httpx2.MockTransport` that serves a script of responses. These include 429 with `retry-after`, 529, 500, a dropped connection, a stream cut off before `message_stop`, a body that isn't JSON, `stop_reason: max_tokens`, and `refusal`.
+- **Workflow policy:** an API error that survives the SDK's retries ends the run with status `api_error` at that node. The Checkpoint is kept so `/runs` can resume the run, nothing is applied, and the error type and `request_id` are logged. Failed requests have no `usage`, so they add no cost.
+- **Chat policy:** the turn ends with a visible note, and the history is cut back to the last finished turn (as with Ctrl-C).
+- **Bench:** an `api_error` run gets a ledger line, is counted in the report, and is left out of the Green means.
+- **Config:** `[anthropic] max_retries` and `timeout`, passed to the client.
+
+**Gates** (`tests/test_api_faults.py`):
+1. A 429 or 529 followed by success completes, and the request count shows the retries.
+2. Errors past `max_retries` end the run with `api_error`, a Checkpoint and no apply. Resuming from it with a healthy transport finishes the run.
+3. A stream cut mid-turn in chat leaves the session consistent, and the next turn works.
+4. `max_tokens` and `refusal` keep their F1 behavior (retry once, then raise with the category).
+5. No API key appears in any error log line.
+
+---
+
+## F9 — Trace: Route records and thinking summaries
+
+Two things a learner wants to see after a run: why the graph went where it went, and what the model was thinking.
+
+- **Route records** (ADR 0008): `gate()` wraps every conditional edge and writes `{node: "route", from, to, basis, field, value}`. For a model basis it adds `model`, `request_id`, `reason` and `thinking`. The summary gets `routes: {code: n, model: n, human: n}`.
+- **Thinking display:** `thinking.display` is `omitted` by default on Haiku 5.5, Sonnet 5.5 and Opus 5.5, so the text comes back empty. `[anthropic] thinking_display = "summarized" | "omitted"` defaults to `"summarized"`. Display controls visibility only: thinking is billed the same either way.
+  - `AnthropicWorkflowModel` keeps the summary instead of dropping it, and the run log stores it on each model node.
+  - The chat agent shows it in the call Inspector.
+  - Compaction still strips thinking blocks (F1b).
+- **RunInspector:** shows Route records in line with the nodes, and each model node's thinking summary under its reply.
+
+**Gates:**
+1. With `"summarized"`, the request body carries `thinking: {type: "adaptive", display: "summarized"}`. With `"omitted"`, it carries no `display`.
+2. A faked thinking summary reaches the run log and the RunInspector text.
+3. Every conditional edge in a scripted run writes exactly one Route record, and the counts in the summary match the log.
+4. No request carries sampling parameters (F1's gate still holds).
+
+---
+
+## F10 — The Arbiter: a stronger model settles uncovered Disputes
+
+The F3 open question. When `check_dispute` doesn't uphold a Dispute (no Invariant is violated), and `[workflow] arbiter` names a model, an `arbitrate` node asks that model for a ruling.
+
+- **Input:** the goal, the Plan with its Invariants, the Behavior, the disputed test's source, the Dispute's reason and the last pytest output. Not the implementation: the question is whether the test matches the goal.
+- **Reply:** `Ruling {verdict: "test_wrong" | "test_right" | "unclear", reason, proposed_invariant: Invariant | null}`.
+  - `test_wrong` takes the same path as an upheld Dispute: back to the `write_test` of the Behavior that owns the test, with the ruling as feedback.
+  - `test_right` puts the ruling in the implementer's next prompt.
+  - `unclear` goes to Stuck and shows the ruling.
+- **Bound:** `max_arbitrations` per Behavior (default 1). Past it, the code route applies (the Dispute is not upheld).
+- **Proposed Invariant:** recorded in the summary and shown at Stuck or Sign-off for the human to add to the Plan. It is never added automatically.
+- **Models and cost:** add `claude-sonnet-5-5` and `claude-opus-5-5` to `PRICING`. `Price` needs an explicit cache-read price, because Opus 5.5's ($0.20) is not 0.1× its input price; check the prices at build time. The arbiter's calls count toward the Spend cap and are reported per role.
+- **Refusals:** Opus and Sonnet 5.5 requests opt in to server-side fallbacks (`fallbacks: "default"` with its beta header). The model that actually served the request is recorded.
+- **Stats:** `arbitrations`, `rulings_test_wrong` and `rulings_test_right`.
+
+**Gates:**
+1. A scripted `test_wrong` ruling sends the work to the right `write_test`, and the corrected test reaches Green.
+2. `test_right` puts the ruling in the next `write_impl` prompt.
+3. The bound holds: a second Dispute in the same Behavior takes the code route.
+4. Every arbitration writes a model-basis Route record with `request_id` and reason.
+5. The arbiter's prompt contains no implementation file.
+6. With no `arbiter` set, the graph is unchanged (the F3 gates still pass).
+
+**Live check:**
+- `disputed-control` (no Invariants) with the arbiter on Sonnet 5.5, then Opus 5.5, against the F3 control. Does it rescue the six Stucks?
+- `claude-plans`, where the tests are right, for the false-ruling rate.
+- `exotic`, against `baseline-exotic`.
+
+---
+
+## F11 — Roles: separate context, model and view per role (adversarial TDD)
+
+The test writer and the implementer become separate roles. Each has its own system prompt, model, effort and **view** (what context it gets).
+
+- **Config:** `[workflow.roles.tester]`, `[workflow.roles.implementer]` and `[workflow.roles.arbiter]` (F10), each with `model`, `effort` and `view`. Unset fields fall back to `[workflow]`.
+- **Views:**
+  - `full`: today's context.
+  - `interface`: the Plan, the current Behavior, earlier tests, and the implementation's *public interface* only. The interface is extracted with `ast`: signatures, docstrings and type hints, with no function bodies. This is the black-box tester.
+  - The implementer always sees the tests (it must make them pass) but never the tester's rationale.
+- **Prompts:** a tester system prompt about finding failure modes the goal implies, and an implementer prompt as today. Each role gets its own cache prefix.
+- **Records:** `execution` names the roles' models and views. Cost and calls are recorded per role.
+- **Prototype first** in `examples/graphs/roles_proto.py` with a scripted model, then port.
+
+**Gates:**
+1. With `view = "interface"`, no tester prompt contains a function body from the implementation (a canary body in a fake Workspace).
+2. Each role's requests go to its own model (counted per model on the fake transport).
+3. The summary carries cost and calls per role.
+4. With no roles configured, prompts are byte-identical to today's (no regression to the cache prefix).
+
+**Live check** (on `exotic`, 3 repeats each; the measures are hidden pass rate, self/hidden gap and mutants killed):
+- (a) Haiku in both roles, `full` against `interface`.
+- (b) Sonnet or Opus tester with a Haiku implementer.
+- (c) Haiku tester with a Sonnet implementer.
+
+The question: does a stronger or blind tester close the self/hidden gap more cheaply than a stronger implementer?
+
+---
+
+## F12 — Model frontier and Batches
+
+- **Sweeps:** `bench <set> --models a,b,c --effort low,medium,high` runs the grid and labels each cell. `report --frontier <labels>` prints hidden pass rate against cost per kata. An HTML chart is optional.
+- **Batches** (50% off): a Workflow's calls are sequential, so a batch per call would add hours to every node. Instead, `BatchedWorkflowModel` gathers the pending `complete()` calls from N concurrent bench runs, submits them as one batch once every active run is waiting (or after `flush_s`), and resolves each call by `custom_id`.
+  - It fits a large `--repeat` run overnight. Each run's Spend cap uses batch prices.
+  - Server-side fallbacks are rejected on Batches, so batched arbiter calls go without them.
+  - Before building, check with one live request that `output_config.format` works in a batch.
+
+**Gates:**
+1. N scripted runs progress in lockstep through one fake batch endpoint, with results matched by `custom_id` in any order.
+2. An `errored` or `expired` batch result follows F8's `api_error` path for that run only.
+3. Cost is recorded at batch prices.
+4. The sweep writes one label per cell, and the frontier report reads them.
+
+**Live check:** `exotic` × {Haiku, Sonnet 5.5, Opus 5.5} × {low, medium}, 3 repeats, batched. Get the user's approval on the estimate first.
+
+---
+
+## F13 — Same task, four frameworks (an example, not a feature)
+
+In `examples/frameworks/`, one exotic kata runs through a test writer and an implementer in four frameworks:
+
+1. braid's LangGraph Workflow (F11 roles).
+2. A Strands `Swarm` with handoffs.
+3. The Claude Agent SDK with subagents.
+4. CrewAI, run with `uv run --with crewai` so it never becomes a project dependency.
+
+Each is graded by F7's hidden tests and reports its own token usage.
+
+- **Write-up:** a table of hidden pass rate, cost, calls and lines of glue code, plus what each framework made easy or hard: explicit routes against emergent handoffs, and where the trace lives.
+- **Isolation:** frameworks 2–4 run their own tool loops, so model-written code runs outside braid's Sandbox. They run in a temporary copy of the kata with the API key kept out of tool environments where the framework allows it. The README says so. This is outside ADR 0005, which covers the harness. Nothing from here goes into `src/`.
+
+**Gate:** only the grading adapter (each runner's output directory → hidden grade) gets a test.
 
 ---
 
@@ -254,5 +417,6 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 
 - F1: does Haiku's adaptive thinking need `effort: low` for the katas, or is the default `medium` worth its cost? Measure both on one kata.
 - F1: should the Plan loop default to Haiku once F1 lands, since local Plans are weak? That decision belongs to the user after the live check.
-- F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? That would route on a model's claim, so it needs an ADR 0004 amendment. Another option is an arbiter on a stronger model (a crew). Decide after the F3 replays.
+- F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? **Decided 2026-10-11:** routing on a model's claim is allowed when it is traced and bounded (ADR 0008). F10 tries an Arbiter first; the Dispute alone can be a bench variant.
+- F7+: should F7–F9 (no dependency on F4–F6) go ahead of F4–F6?
 - Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F4's mixed-edit handling covers e4b more cheaply.

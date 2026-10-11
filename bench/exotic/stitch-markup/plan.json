@@ -1,0 +1,56 @@
+{
+  "goal": "Implement render(src) in stitch_markup.py that renders Stitch markup: *shout* uppercases, ~mirror~ reverses and ^lead^ uppercases the first character, spans nest (a marker closes only the innermost span of the same marker), backslash escapes the markers and itself, and bad escapes or unclosed spans raise ValueError.",
+  "behaviors": [
+    "render(\"abc\") returns \"abc\" and render(\"*yo*\") returns \"YO\" (text outside spans is copied; a shout span is uppercased).",
+    "render(\"~stop~\") returns \"pots\" (a mirror span is reversed).",
+    "render(\"^moon^\") returns \"Moon\" and render(\"^mOON^\") returns \"MOON\" (a lead span uppercases only its first character).",
+    "render(\"~x*yz*~\") returns \"ZYx\" and render(\"*m*n*o*\") returns \"MnO\" (inner spans render first; a marker closes the innermost span it opened).",
+    "render(\"\\\\~x\\\\~\") returns \"~x~\" and render(\"*q\\\\^*\") returns \"Q^\" (a backslash makes the next marker literal text, still transformed by its span).",
+    "render(\"~open\"), render(\"\\\\q\") and render(\"*x~y*\") each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "stitch_markup.py exists at the repo root as the single flat module.",
+      "probe": "test -f stitch_markup.py",
+      "evidence": "stitch_markup.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "stitch_markup.py",
+    "tests/test_stitch_markup.py"
+  ],
+  "demo": "python -c 'from stitch_markup import render; print(render(\"say *hi* ~olleh~\")); print(render(\"*a~bc~*\"))'",
+  "out_of_scope": [
+    "HTML or terminal output",
+    "Unicode-aware reversal of combining characters"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "rendering never makes ASCII text longer",
+      "fn": "render",
+      "check": "len(result) <= len(args[0])"
+    },
+    {
+      "text": "a marker character reaches the output only when the source escapes something",
+      "fn": "render",
+      "check": "not any(m in result for m in '*~^') or '\\\\' in args[0]"
+    }
+  ]
+}

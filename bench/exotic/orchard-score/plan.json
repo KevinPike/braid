@@ -1,0 +1,56 @@
+{
+  "goal": "Implement score(grid) in orchard_score.py that scores a Bramble orchard grid: apples 1, pears 3 (1 when next to another pear), fruit next to a wasp spoiled to 0, a 2-point bonus for each row with no empty tile and no wasp, and ValueError for malformed grids.",
+  "behaviors": [
+    "score([\"A.A\"]) returns 2 (each apple scores 1).",
+    "score([\"P..\"]) returns 3 and score([\"PP.\"]) returns 2 (a pear scores 3, or 1 when a pear is its edge neighbour).",
+    "score([\"AAAA\"]) returns 6 (a row with no \".\" and no \"W\" scores 2 extra).",
+    "score([\"A.\", \"W.\"]) returns 0 and score([\"P.\", \"PW\"]) returns 1 (a wasp spoils its edge neighbours to 0, and a spoiled pear still crowds its neighbours).",
+    "score([\"W.\", \"AA\"]) returns 3 (the row bonus holds even when fruit in the row is spoiled by a wasp in another row).",
+    "score([\"AA\", \"AAA\"]) and score([\"AZ\"]) each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "orchard_score.py exists at the repo root as the single flat module.",
+      "probe": "test -f orchard_score.py",
+      "evidence": "orchard_score.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "orchard_score.py",
+    "tests/test_orchard_score.py"
+  ],
+  "demo": "python -c 'from orchard_score import score; print(score([\"AP.\", \"PW.\"])); print(score([\"APA\", \"PPA\"]))'",
+  "out_of_scope": [
+    "Rendering the grid",
+    "Game rules other than end-of-game scoring"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "the score is between 0 and every fruit at full value plus every row bonus",
+      "fn": "score",
+      "check": "0 <= result <= sum(r.count('A') + 3 * r.count('P') for r in args[0]) + 2 * len(args[0])"
+    },
+    {
+      "text": "a grid with no fruit scores 0",
+      "fn": "score",
+      "check": "any(c in 'AP' for r in args[0] for c in r) or result == 0"
+    }
+  ]
+}

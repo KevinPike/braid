@@ -1,0 +1,56 @@
+{
+  "goal": "Implement distribute(requests, stock) in ration_queue.py that shares ration stock among queued requests in rounds (2 units per commoner, 3 per '*' elder), serving greedy commoners (amount more than half the stock) only after everyone else, and raising ValueError for bad input.",
+  "behaviors": [
+    "distribute([(\"ana\", 1)], 3) returns {\"ana\": 1} (a request never receives more than its amount).",
+    "distribute([(\"ana\", 3), (\"bo\", 3), (\"cy\", 3)], 7) returns {\"ana\": 3, \"bo\": 2, \"cy\": 2} (rounds of 2 units each in queue order, capped by the stock left).",
+    "distribute([(\"*ma\", 6), (\"jo\", 2)], 6) returns {\"*ma\": 4, \"jo\": 2} (a name starting with * is an elder and gets 3 units per round).",
+    "distribute([(\"hog\", 7), (\"jo\", 2)], 8) returns {\"hog\": 6, \"jo\": 2} (a commoner wanting more than half the stock is greedy and served only after the rest).",
+    "distribute([(\"*ma\", 9), (\"hog\", 7)], 8) returns {\"*ma\": 8, \"hog\": 0} (elders are never greedy).",
+    "distribute([(\"jo\", 1), (\"jo\", 1)], 3) and distribute([(\"jo\", 1)], -2) each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "ration_queue.py exists at the repo root as the single flat module.",
+      "probe": "test -f ration_queue.py",
+      "evidence": "ration_queue.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "ration_queue.py",
+    "tests/test_ration_queue.py"
+  ],
+  "demo": "python -c 'from ration_queue import distribute; print(distribute([(\"ana\", 3), (\"*bo\", 4)], 10)); print(distribute([(\"ana\", 9), (\"cy\", 4), (\"*bo\", 5)], 10))'",
+  "out_of_scope": [
+    "Carrying unmet requests over to a later distribution",
+    "Type checking of arguments"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "all stock is handed out until every request is met",
+      "fn": "distribute",
+      "check": "sum(result.values()) == min(args[1], sum(a for _, a in args[0]))"
+    },
+    {
+      "text": "every requested name gets between 0 and its amount, and no other name appears",
+      "fn": "distribute",
+      "check": "set(result) == {n for n, _ in args[0]} and all(0 <= result[n] <= a for n, a in args[0])"
+    }
+  ]
+}

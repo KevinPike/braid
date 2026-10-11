@@ -149,8 +149,28 @@ A rule from the **Plan** written as a Python expression over one call (`args`, `
 _Avoid_: Property, constraint
 
 **Dispute**:
-An implementer's claim that a test is wrong; it never routes by itself, it only triggers an **Invariant** check on that test.
+An implementer's claim that a test is wrong. It triggers an **Invariant** check on that test, and, when no Invariant upholds it and an **Arbiter** is configured, an arbitration.
 _Avoid_: Objection, challenge
+
+**Arbiter**:
+A stronger model that rules on a **Dispute** no **Invariant** upholds: test wrong, test right or unclear. Its ruling may route the run, but only within a bound and with a **Route record** (ADR 0008).
+_Avoid_: Judge, referee
+
+**Route record**:
+The run-log line every conditional edge writes: from, to, and the basis (code, model or human), with the deciding field and value. For a model basis it also has the model, request id, reason and thinking summary.
+_Avoid_: Transition log, decision (that is the Decision log)
+
+**Role**:
+A part of the **Execution loop** with its own system prompt, model, effort and view: tester, implementer or **Arbiter**.
+_Avoid_: Agent, persona
+
+**View**:
+What a **Role** is shown: `full` (the files as they are), or `interface` (public signatures and docstrings, no function bodies) for a black-box tester.
+_Avoid_: Context (that is the **Context window**), scope
+
+**Hidden tests**:
+A kata's held-out test suite, never in any prompt, run by code after a run finishes to grade the result. The **self/hidden gap** is how many runs went Green on their own tests but fail the hidden ones.
+_Avoid_: Holdout set, private tests
 
 **Spend cap**:
 The most an API-backed **Workflow** run may cost (`max_cost_usd`); passing it stops the run at the next node boundary with status `spend_cap`, and nothing is applied.

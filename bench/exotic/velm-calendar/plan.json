@@ -1,0 +1,56 @@
+{
+  "goal": "Implement velm_date(day) in velm_calendar.py that converts a day count (day 1 = 1-01-01) into a Velm calendar date of 13 months of 28 days, with a Hollow day ending each long year, and raises ValueError for day below 1.",
+  "behaviors": [
+    "velm_date(5) returns \"1-01-05\" (day 1 is the first day of year 1; month and day are two digits).",
+    "velm_date(30) returns \"1-02-02\" and velm_date(363) returns \"1-13-27\" (months have 28 days, 13 per year).",
+    "velm_date(730) returns \"3-01-02\" (an ordinary year has 364 days).",
+    "velm_date(1821) returns \"5-HOLLOW\" and velm_date(2000) returns \"6-07-11\" (a year divisible by 5 is long and ends with Hollow).",
+    "velm_date(32775) returns \"90-13-28\" and velm_date(163877) returns \"450-13-28\", while velm_date(163878) returns \"450-HOLLOW\" (a year divisible by 30 is not long unless it is divisible by 150).",
+    "velm_date(-7) raises ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "velm_calendar.py exists at the repo root as the single flat module.",
+      "probe": "test -f velm_calendar.py",
+      "evidence": "velm_calendar.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "velm_calendar.py",
+    "tests/test_velm_calendar.py"
+  ],
+  "demo": "python -c 'from velm_calendar import velm_date; print(velm_date(365)); print(velm_date(1821))'",
+  "out_of_scope": [
+    "Converting dates back to day counts",
+    "Weekdays or named months"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "a date is Hollow or has a month from 1 to 13 and a day from 1 to 28",
+      "fn": "velm_date",
+      "check": "result.endswith('-HOLLOW') or (1 <= int(result.split('-')[1]) <= 13 and 1 <= int(result.split('-')[2]) <= 28)"
+    },
+    {
+      "text": "every year has at least 364 days, so the year is at most (day - 1) // 364 + 1",
+      "fn": "velm_date",
+      "check": "int(result.split('-')[0]) <= (args[0] - 1) // 364 + 1"
+    }
+  ]
+}

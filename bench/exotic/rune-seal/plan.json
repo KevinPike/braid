@@ -1,0 +1,61 @@
+{
+  "goal": "Implement seal(code) and is_sealed(text) in rune_seal.py: seal normalises a rune code and appends '-' and a check character computed with cycling weights 1, 3, 7, an echo rule and the code length modulo 28; is_sealed tells whether a text ends in its correct check character.",
+  "behaviors": [
+    "seal(\"5\") returns \"5-6\" (the check value is the weighted sum plus the number of characters, modulo 28).",
+    "seal(\"56\") returns \"56-W\" and seal(\"567\") returns \"567-M\" (weights cycle 1, 3, 7 from the left; values above 9 map to letters of the alphabet).",
+    "seal(\"55\") returns \"55-7\" (a character equal to the one before it contributes nothing).",
+    "seal(\"c-d e\") returns \"CDE-1\" (lowercase letters are uppercased, hyphens and spaces removed).",
+    "seal(\"O\") and seal(\"\") each raise ValueError.",
+    "is_sealed(\"56-W\") returns True, while is_sealed(\"56-X\") and is_sealed(\"5\") return False."
+  ],
+  "assumptions": [
+    {
+      "text": "rune_seal.py exists at the repo root as the single flat module.",
+      "probe": "test -f rune_seal.py",
+      "evidence": "rune_seal.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "rune_seal.py",
+    "tests/test_rune_seal.py"
+  ],
+  "demo": "python -c 'from rune_seal import seal, is_sealed; print(seal(\"ac 77\")); print(is_sealed(\"ac77d\"))'",
+  "out_of_scope": [
+    "Correcting a wrong check character",
+    "Unicode case folding beyond ASCII a-z"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "a sealed code is the normal form, a hyphen and one check character",
+      "fn": "seal",
+      "check": "result[:-2] == args[0].upper().replace('-', '').replace(' ', '') and result[-2] == '-'"
+    },
+    {
+      "text": "the check character is in the rune alphabet",
+      "fn": "seal",
+      "check": "result[-1] in '0123456789ACDEFHJKLMNPRTVWXY'"
+    },
+    {
+      "text": "is_sealed returns a bool",
+      "fn": "is_sealed",
+      "check": "isinstance(result, bool)"
+    }
+  ]
+}
