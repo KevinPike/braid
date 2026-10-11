@@ -134,6 +134,15 @@ class WorkflowConfig(BaseModel):
     critique_prompts: dict[str, str] = {}  # angle -> system prompt, for a new angle or to replace a built-in one
 
 
+class AnthropicConfig(BaseModel):
+    """The Anthropic client, for the chat agent and Workflows alike (F8). The SDK retries 408, 409, 429, 5xx and
+    connection errors with backoff and honors ``retry-after``; a request that still fails ends the Workflow run with
+    status ``api_error`` (resumable), or the chat turn with a note."""
+
+    max_retries: int = 2  # the SDK's default
+    timeout: float = 600.0  # seconds per request (connecting has its own 5 s)
+
+
 class PathsConfig(BaseModel):
     data_dir: Path = Path("~/.braid")
 
@@ -185,6 +194,7 @@ class HarnessConfig(BaseModel):
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
     workflow: WorkflowConfig = WorkflowConfig()
+    anthropic: AnthropicConfig = AnthropicConfig()
     paths: PathsConfig = PathsConfig()
 
 

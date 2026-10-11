@@ -131,6 +131,8 @@ def describe(record: dict[str, Any]) -> str:
         result = f"{record['route']}: {record['answer'][:50]}"
     elif node == "spend_cap":
         result = f"✗ Spend cap: ${record['spent']:.4f} passed ${record['cap']:.2f}; stopped, nothing applied"
+    elif node == "api_error":
+        result = f"✗ API error in {record['at']}: {record['error']} ({record.get('request_id') or 'no request id'}); stopped, nothing applied"
     elif node == "finalize" and "path" in record:
         result = f"{record['outcome']}: saved {record['path']}"
     text = f"  {node:<17} {result}  {record.get('node_seconds', 0.0):.1f}s"

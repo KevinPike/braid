@@ -37,7 +37,7 @@ from harness.inspector import RunInspector
 from harness.sandbox import RunResult, Sandbox, SandboxPolicy, SeatbeltSandbox, Workspace
 from harness.status import StatusBar
 from harness.workflow.backend import choose, make_model
-from harness.workflow.cli import cost_note, plan_id_for, show
+from harness.workflow.cli import api_error_note, cost_note, plan_id_for, show
 from harness.workflow.execute import build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel
 from harness.workflow.plan import Plan
@@ -474,6 +474,11 @@ class WorkflowPane:
                 )
             self._drop_live()
             total = self.elapsed()
+            if final.get("status") == "api_error":  # F8: resumable from the Checkpoint before the failed node
+                self.store.update(info.run_id, state="failed", outcome=f"api_error: {final['api_error']['error']}")
+                self._line(f"{info.kind} {info.run_id} {api_error_note(final['api_error'])}.\n"
+                           f"Resume from its last checkpoint: /{info.kind} --resume {info.run_id}")
+                return
             text, outcome = ready.finish(final, total)
             self.last_total = total
             self.last_report = text

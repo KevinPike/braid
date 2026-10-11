@@ -23,7 +23,7 @@ from pydantic import BaseModel, Field
 
 from harness.config import WorkflowConfig
 from harness.workflow import prompts
-from harness.workflow.model import ApiCall, WorkflowModel, WorkflowModelError
+from harness.workflow.model import ApiCall, ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.invariants import Invariant
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
@@ -75,6 +75,7 @@ class PlanState(TypedDict, total=False):
     plan_path: str
     markdown: str
     status: str
+    api_error: dict[str, Any]  # F8: set by drive_graph on a status "api_error" result, never checkpointed
     recorder: dict[str, Any]  # Recorder.dump() after each node
 
 
@@ -305,8 +306,12 @@ class _PlanLoop:
 
     def timed(self, node: Callable[[PlanState], Any]) -> _NodeFn:
         async def run(state: PlanState) -> dict[str, Any]:
-            result = node(state)
-            update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            try:
+                result = node(state)
+                update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            except ApiFailure as exc:  # F8: logged here, then ``drive_graph`` ends the run with status api_error
+                self.log("api_error", time.monotonic(), state.get("round", 0), at=node.__name__, **exc.record())
+                raise
             return {**update, "recorder": self.rec.dump()}
 
         return run

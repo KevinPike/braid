@@ -12,6 +12,11 @@ num_ctx = 32768               # Ollama only
 keep_alive = "30m"            # Ollama only
 system_prompt = "You are a concise, helpful assistant."
 
+[anthropic]
+max_retries = 2               # the SDK retries 408/409/429/5xx (529 included) and dropped connections, honoring retry-after;
+                              # past that a Workflow run stops with status api_error (resumable), a chat turn with a note
+timeout = 600.0               # seconds per request
+
 [paths]
 data_dir = "~/.braid"
 

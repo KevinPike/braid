@@ -106,9 +106,10 @@ def test_make_model_builds_the_anthropic_client_only_for_that_backend(monkeypatc
     built: list[str] = []
     real = anthropic.AsyncAnthropic
 
-    def client() -> anthropic.AsyncAnthropic:
+    def client(**kw: Any) -> anthropic.AsyncAnthropic:
         built.append("client")
-        return real(api_key="k")
+        assert "api_key" not in kw and kw["max_retries"] == 2  # [anthropic] max_retries; the key is the SDK's to find
+        return real(api_key="k", **kw)
 
     monkeypatch.setattr(anthropic, "AsyncAnthropic", client)
     config = HarnessConfig(workflow=WorkflowConfig(effort="low"))

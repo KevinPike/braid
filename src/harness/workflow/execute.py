@@ -28,7 +28,7 @@ from harness.sandbox import RunResult, Sandbox, Workspace
 from harness.tools.builtin import resolve_inside
 from harness.workflow import invariants as inv
 from harness.workflow import prompts
-from harness.workflow.model import WorkflowModel, WorkflowModelError
+from harness.workflow.model import ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter, tail
 
@@ -96,6 +96,7 @@ class ExecState(TypedDict, total=False):
     dispute_note: str  # a Dispute not upheld, for the next write_impl prompt
     revisit: dict[str, int] | None  # {"idx": earlier Behavior whose test is being fixed, "back": the one to return to}
     status: str
+    api_error: dict[str, Any]  # F8: set by drive_graph on a status "api_error" result, never checkpointed
     recorder: dict[str, Any]  # Recorder.dump() after each node: the per-Behavior stats and elapsed time survive a resume
 
 
@@ -642,8 +643,12 @@ class _Loop:
         """Stamp the node's start, so its log line carries the node's wall time (``node_seconds``)."""
         async def run(state: ExecState) -> dict[str, Any]:
             self.node_started = time.monotonic()
-            result = node(state)
-            update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            try:
+                result = node(state)
+                update = cast(dict[str, Any], await result if inspect.isawaitable(result) else result)
+            except ApiFailure as exc:  # F8: logged here, then ``drive_graph`` ends the run with status api_error
+                self.log("api_error", state, at=node.__name__, **exc.record())
+                raise
             return {**update, "recorder": self.rec.dump()}
 
         return run
@@ -707,7 +712,10 @@ async def drive_graph[S](
 
     ``checkpointer`` keeps the run's state per ``thread_id`` (default: in memory). ``resume=True`` ignores ``state`` and
     continues the thread from its last checkpoint: a node that was cut off runs again, a pending interrupt is asked
-    again, and nothing that finished is repeated. ``on_resume`` gets the checkpointed values first."""
+    again, and nothing that finished is repeated. ``on_resume`` gets the checkpointed values first.
+
+    An API request that fails past the SDK's retries (``ApiFailure``, F8) ends the run with status ``api_error`` and an
+    ``api_error`` record naming the node. The failed node wrote nothing to the checkpoint, so a resume runs it again."""
     compiled = graph.compile(checkpointer=checkpointer or InMemorySaver())
     config: Any = {"configurable": {"thread_id": thread_id}, "recursion_limit": 500}
     run_input: Any = state
@@ -720,19 +728,26 @@ async def drive_graph[S](
         if not snapshot.next:
             return cast(S, snapshot.values)
         run_input = None
+    running = ""
     while True:
         pending: dict[str, Any] | None = None
         events = cast(AsyncIterator[tuple[str, Any]], compiled.astream(run_input, config, stream_mode=["updates", "tasks"]))
-        async for mode, data in events:
-            if mode == "tasks":
-                if on_start and "input" in data:  # a task starting (its result event has no "input")
-                    on_start(data["name"])
-                continue
-            for node, value in data.items():
-                if node == "__interrupt__":
-                    pending = value[0].value
-                elif on_update:
-                    on_update(node, value or {})
+        try:
+            async for mode, data in events:
+                if mode == "tasks":
+                    if "input" in data:  # a task starting (its result event has no "input")
+                        running = data["name"]
+                        if on_start:
+                            on_start(running)
+                    continue
+                for node, value in data.items():
+                    if node == "__interrupt__":
+                        pending = value[0].value
+                    elif on_update:
+                        on_update(node, value or {})
+        except ApiFailure as exc:
+            values = (await compiled.aget_state(config)).values
+            return cast(S, {**values, "status": "api_error", "api_error": {"node": running, **exc.record()}})
         if pending is None:
             return cast(S, (await compiled.aget_state(config)).values)
         answer = ask(pending)

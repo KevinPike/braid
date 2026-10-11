@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import anthropic
-
+from harness.anthropic_api import make_client
 from harness.config import API_PREFIX, HarnessConfig
 from harness.config import Backend as BackendName
 from harness.guard.ollama_client import OllamaClient
@@ -32,10 +31,11 @@ def choose(config: HarnessConfig, *, model: str | None = None, backend: BackendN
 
 def make_model(config: HarnessConfig, choice: Choice, ollama: OllamaClient | None) -> WorkflowModel | None:
     """The WorkflowModel for ``choice``; None when it needs an Ollama client and there is none. The Anthropic client is
-    built only for the anthropic backend, with the SDK's own credential resolution (a key is never passed in)."""
+    built only for the anthropic backend, with the SDK's own credential resolution (a key is never passed in) and
+    ``[anthropic] max_retries`` and ``timeout``."""
     wf = config.workflow
     if choice.backend == "anthropic":
-        return AnthropicWorkflowModel(anthropic.AsyncAnthropic(), choice.model_id, effort=wf.effort)
+        return AnthropicWorkflowModel(make_client(config.anthropic), choice.model_id, effort=wf.effort)
     if ollama is None:
         return None
     return GuardedWorkflowModel(ollama, choice.model_id, think=wf.think, num_predict=wf.num_predict)
