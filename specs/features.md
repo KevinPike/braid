@@ -279,6 +279,18 @@ The five katas are classics that are surely in training data, and the only grade
 
 **Live check:** `exotic` on `claude-haiku-5-5`, 3 repeats, labelled `baseline-exotic`. Report the self/hidden gap next to `baseline-f1`.
 
+**Status (2026-10-11): built and gated** (`tests/workflow/test_hidden_grade.py`, 11 tests).
+
+- **Repos.** `make_katas.py` reads only `GOAL.md` and `summary.txt` from each `bench/exotic/<kata>/` (`exotic_katas()`) and writes GOAL.md as is (it already has its heading). `make(..., sync=False)` skips `uv sync`, for tests.
+- **Manifest.** `[sets.exotic]` holds the six katas with their own `plan.json` and `hidden = "exotic/<kata>/hidden"`. A `Pair` carries `hidden`; the mutants and reference are found beside it.
+- **Grading** (`bench.grade`, called by `run_bench` after the run and before the Workspace is removed; a cancelled run is not graded). Each pytest run gets a fresh scratch copy in the system temp dir, outside the Workspace and the project, with the Workspace's `.venv` linked in so the run's own `test_command` works. The Sandbox may write only in the scratch copy, and the copy is removed afterwards. The grade is added to the summary file (`records.amend_summary`) and the ledger line, and printed on the bench line. Where the spec was silent:
+  - A test file is anything under `tests/` or `test/`, `test_*.py`, `*_test.py` or `conftest.py`; every other final file goes in with the hidden suite.
+  - `hidden_total` is what the hidden suite collects against the reference, in its own scratch copy. Code that does not import scores 0/46, not 0/0.
+  - A mutant replaces `<module>.py` among all the final files, tests included. It is killed when the model-written tests exit 1 on it (as in verify.py). A suite that fails on the run's own code kills none. `mutants_total` is recorded too.
+- **Report.** When a label has graded runs, `report <label>` adds three columns: hidden pass rate, self/hidden gap and mutants killed. `--compare` adds one "hidden · gap · mutants" column per label. The gap follows CONTEXT.md: the count of graded runs Green on every Behavior that still fail a hidden test, shown as "1/3 runs". The total row counts the gap kata by kata, and it is graded only for repeats in which every kata was graded. Tables for older labels are unchanged, and older ledger lines load.
+- **Seatbelt.** A manual offline probe graded a Workspace with a real `.venv` under `SeatbeltSandbox` with the default `.venv/bin/python` test command: 22/46 hidden, 1/5 mutants, the same as the tests' `LocalSandbox`.
+- **Live check: pending user approval.** First run `make_katas.py`, which creates the exotic repos with `uv sync`; then `harness-workflow bench exotic --model claude-haiku-5-5 --repeat 3 --label baseline-exotic`.
+
 ---
 
 ## F8 — Fault injection for the API path

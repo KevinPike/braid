@@ -1,6 +1,7 @@
 # F2 benchmark manifest: named sets of (kata, Plan) pairs for `harness-workflow bench <set>`.
 # Plans live here, so a run can be repeated from them; kata repos are referenced by path (make them with
-# examples/graphs/make_katas.py). A pair may set `project` to override practice_dir/<kata>.
+# examples/graphs/make_katas.py). A pair may set `project` to override practice_dir/<kata>, and `hidden` to a Hidden
+# test suite (F7) that grades the run's final code after it ends.
 
 practice_dir = "~/projects/braid-practice"
 
@@ -39,4 +40,16 @@ pairs = [
   { kata = "word-wrap", name = "word-wrap/claude", plan = "plans/claude/word-wrap.json" },
   { kata = "bowling", name = "bowling/local", plan = "plans/local/bowling.json" },
   { kata = "word-wrap", name = "word-wrap/local", plan = "plans/local/word-wrap.json" },
+]
+
+[sets.exotic]
+description = """F7: six invented katas (2 easy, 2 medium, 2 hard) with their Plans, graded after each run by Hidden tests
+the model never sees, and by how many mutants its own tests kill."""
+pairs = [
+  { kata = "ferry-fare", plan = "exotic/ferry-fare/plan.json", hidden = "exotic/ferry-fare/hidden" },
+  { kata = "velm-calendar", plan = "exotic/velm-calendar/plan.json", hidden = "exotic/velm-calendar/hidden" },
+  { kata = "rune-seal", plan = "exotic/rune-seal/plan.json", hidden = "exotic/rune-seal/hidden" },
+  { kata = "orchard-score", plan = "exotic/orchard-score/plan.json", hidden = "exotic/orchard-score/hidden" },
+  { kata = "ration-queue", plan = "exotic/ration-queue/plan.json", hidden = "exotic/ration-queue/hidden" },
+  { kata = "stitch-markup", plan = "exotic/stitch-markup/plan.json", hidden = "exotic/stitch-markup/hidden" },
 ]

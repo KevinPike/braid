@@ -174,3 +174,11 @@ def write_summary(
         **(provenance or {}),
     }, indent=2) + "\n")
     return path
+
+
+def amend_summary(path: Path, fields: Mapping[str, Any]) -> dict[str, Any]:
+    """Add ``fields`` to a written summary and return it: F7's hidden-test grade (``hidden_passed``, ``hidden_total``,
+    ``mutants_killed``, ``mutants_total``), which is known only after the run. Summaries without them still load."""
+    summary: dict[str, Any] = {**json.loads(path.read_text()), **fields}
+    path.write_text(json.dumps(summary, indent=2) + "\n")
+    return summary

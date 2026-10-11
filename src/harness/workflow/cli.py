@@ -29,7 +29,7 @@ from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
 from harness.workflow.progress import PLAN_NODES, Progress, describe, final_report
-from harness.workflow.records import Recorder, RunLog, write_summary
+from harness.workflow.records import Recorder, RunLog, amend_summary, write_summary
 
 
 CANCELLED_EXIT = 130  # 128 + SIGINT
@@ -57,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-hints", action="store_true", help="baseline: Stuck skips the Behavior, clarify waives, Sign-off says yes")
     b.add_argument("--unload", action="store_true", help="unload the model at the end")
     n = sub.add_parser("bench", help="run a manifest set of (kata, Plan) pairs N times, --no-hints, into the ledger")
-    n.add_argument("set", help="a set in the manifest (bench/katas.toml): claude-plans, local-plans, ...")
+    n.add_argument("set", help="a set in the manifest (bench/katas.toml): claude-plans, local-plans, exotic, ...")
     n.add_argument("--model", help="model id (default: the backend's model from config)")
     n.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
     n.add_argument("--repeat", type=int, default=1, help="runs per pair (default 1)")
@@ -232,7 +232,8 @@ async def run_bench(
 ) -> int:
     """Every pair ``repeat`` times, ``--no-hints`` and answering ``no`` at finish, one ledger line per run; each Workspace
     is removed afterwards. Each run's Spend cap is the smaller of ``max_cost_usd`` and what is left of ``max_cost``; once
-    the bench has spent ``max_cost`` it stops cleanly (exit 3), keeping the lines already written."""
+    the bench has spent ``max_cost`` it stops cleanly (exit 3), keeping the lines already written. A pair with Hidden
+    tests (F7) is graded before its Workspace is removed, and the grade goes into its summary and ledger line."""
     spent = 0.0
     runs = len(bench_set.pairs) * repeat
     out.write(f"bench {bench_set.name} on {choice.model_id}: {len(bench_set.pairs)} pairs x {repeat} = {runs} runs, "
@@ -261,6 +262,12 @@ async def run_bench(
                     err.write(f"{pair.key} r{n}: the run did not start\n{log_out.getvalue()}")
                     continue
                 summary = json.loads(result.summary.read_text())
+                if pair.hidden is not None and result.code != CANCELLED_EXIT:
+                    graded = await bench.grade(
+                        result.workspace, pair.hidden, pair.module, sandbox=sandbox,
+                        test_command=run_config.workflow.test_command, timeout_s=run_config.workflow.command_timeout_s,
+                    )
+                    summary = amend_summary(result.summary, graded.fields())
                 bench.append_ledger(ledger, bench.ledger_line(label=label, set_name=bench_set.name, repeat=n, pair=pair, summary=summary))
             finally:
                 await result.workspace.remove()
@@ -269,7 +276,7 @@ async def run_bench(
             t = summary["totals"]
             out.write(f"{pair.key} r{n}/{repeat}: {t['green']}/{summary['planned']} Green · {t['attempts']}a · "
                       f"{t.get('satisfied', 0)}s · {summary.get('stuck', 0)} stuck · {(clock() - started) / 60:.1f}m · "
-                      f"${result.cost_usd:.4f} · {result.status}\n")
+                      f"${result.cost_usd:.4f} · {result.status}{hidden_note(summary)}\n")
             out.flush()
             if result.code == CANCELLED_EXIT:
                 return CANCELLED_EXIT
@@ -279,6 +286,13 @@ async def run_bench(
     out.write(f"bench done: {done} runs, ${spent:.4f}\n")
     return 0
 
+
+def hidden_note(summary: dict[str, Any]) -> str:
+    """F7: the hidden-test grade on a bench line, when the run was graded."""
+    if "hidden_total" not in summary:
+        return ""
+    return (f" · hidden {summary['hidden_passed']}/{summary['hidden_total']} · "
+            f"{summary['mutants_killed']}/{summary['mutants_total']} mutants killed")
 
 
 def cost_note(rec: Recorder) -> str:
