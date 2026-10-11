@@ -179,6 +179,29 @@ The F1 live check: all four Haiku Stucks were tests whose expected value contrad
 5. A Behavior that ends Stuck after disputes shows the dispute reason in the Stuck interrupt.
 6. An invariant expression that raises counts as "unchecked", not as a violation, and is reported.
 
+**Status (2026-10-10): built and gated** (3a271b4, 62527a3; `tests/workflow/test_invariants.py`, the F3 section of `tests/workflow/test_execute.py`).
+
+- **Extractor** (`workflow/invariants.py`). It handles the shapes in spec, plus one deliberate extension. Three of the four disputed tests had values that `ast.literal_eval` rejects: `3 + 7 + ...`, `[3, 4] + [0] * 18`, and `rolls = [...]` followed by `assert score(rolls) == 17`. So the evaluator also folds `+ - *` over values it already knows, and follows straight-line `name = <value>` assignments in the test. This is still exact; calls, attributes and comprehensions are skipped and counted. A single parametrize argname takes each row whole, as pytest does. `Invariant` gained an optional `fn`, which limits a rule to calls of that function.
+- **Checking.** The checker script and its JSON input go into the Workspace's `.tmp/`. It runs in the Sandbox with the test command's Python and `-I`, under a restricted builtins table, and reads values back from `repr` with `ast.literal_eval`. If the checker prints no result, that is an error, never a pass.
+- **Graph.** `check_invariants` runs after a `red` verdict, and on a corrected earlier test. `write_impl` replies `ImplEdits`: edits may be empty when there is a `dispute`. `check_dispute` matches the disputed test by function name, else by file. An upheld Dispute on an earlier Behavior's test sets `revisit`: that Behavior's `write_test` rewrites the test without restoring the snapshot, then `check_invariants` runs, then `resume_behavior` returns to the disputing Behavior's `run_green`. A Dispute that is not upheld still runs the suite, so the next prompt has its output as well as the note. Stats gain `disputes` and `disputes_upheld`. Stuck shows the last Dispute in the CLI and the TUI.
+- **Switches** (`[workflow]`, recorded in the summary's `execution`): `show_invariants` (the rules appear in the models' context) and `check_tests_at_red`. With the Red check on, an upheld Dispute is reachable only when the Red check was bypassed, so the bench flags `--no-red-check` and `--hide-rules` exist to measure each mechanism on its own. The gates for upheld Disputes run with the Red check off.
+- **Order of work.** The prototype (`examples/graphs/invariants_proto.py`, no model) showed that hand-written Invariants reject a test in **all four** disputed Behaviors, and no correct example beside them. I ported it before the replays rather than after; the replays below are the evidence that a corrected test reaches Green.
+- **Open question decided by the data, not here:** whether to send a Dispute that no Invariant covers back to `write_test` anyway. In the control, Haiku's Dispute was correct every time a Behavior went Stuck (6/6). That argues for the ADR 0004 amendment, or for an arbiter, but it is the user's call.
+
+**Replays** (`claude-haiku-5-5`, 3 repeats, `--no-hints`; the `disputed` set's three Plans, which cover the four F1 Behaviors):
+
+| label | what differs | Green | Stuck | attempts | cost / repeat |
+|---|---|---|---|---|---|
+| `f3-control` | the same Plans with no Invariants | 14.0/16 [13–15] | 2.0 | 12.3 | $0.0178 |
+| `f3-dispute-only` | Invariants, rules shown, `--no-red-check` | 15.3/16 [15–16] | 0.7 | 8.0 | $0.0163 |
+| `f3-disputed` | Invariants, rules shown, Red check on (the default) | **16.0/16 [16–16]** | **0** | 6.7 | $0.0150 |
+
+- **`f3-disputed` against the control: +2.0, better** (the ranges do not overlap). Bowling went from 4.7 to 6.0 and word-wrap/claude from 5.3 to 6.0, with half the attempts and less cost. Two of the exact F1 bad tests came back and were rejected at Red before implementation saw them: the first-frame strike `== 17` and word-wrap `"ij yo"`. Both were rewritten and reached Green. In the other seven runs Haiku wrote tests that kept the rules on its first try, which suggests that showing the rules matters as much as checking them.
+- **Dispute-only:** the word-wrap B5 Dispute was upheld 3/3, and each time the corrected test reached Green. The two bowling Stucks were bad tests that the hand-written Invariants do not cover: a strike in a middle frame (the rule covers only the first frame), and `13` where `16` is right (above the pin total, so `result >= sum` holds). Stuck showed Haiku's correct reason both times.
+- **Control:** six Stucks in nine runs, all with a correct Dispute that nothing could uphold, just as in F1.
+- **No regression on Plans without Invariants.** F3 adds the Dispute instruction to every `write_impl` prompt. On the F3 harness, `f3-claude-plans` (3 repeats) is **the same** as `baseline-f1` on every kata: 29.7/30 [29–30], 19.7 attempts, $0.0327 against $0.0334 per repeat. Its one miss is still word-wrap B5, because `claude-plans` has no Invariants. Next: add Invariants to the `claude-plans` Plans and rebaseline.
+- **Live spend for F1b–F3:** about $0.35 in total. That is the bench ledger's $0.3456 over 51 runs, plus the F1b probe and chat check ($0.0009).
+
 ## F4 — Mixed edits and Plan checks
 
 **Mixed edits** (still needed for Polish and the split graph). When a reply mixes allowed and refused files, write the allowed files, **still run the check**, and put the refusal in the next prompt. Gate: a `write_impl` reply with the implementation plus a test file runs `run_green` on the implementation and does not use up a second attempt for the refusal alone.
