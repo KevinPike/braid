@@ -16,6 +16,7 @@ from harness.sandbox import LocalSandbox, Workspace
 from harness.workflow.execute import Dispute, Edits, ExecState, FileEdit, ImplEdits, build_execution_graph, drive_graph, initial_state
 from harness.workflow.cli import show
 from harness.workflow.invariants import Invariant
+from harness.workflow.model import WorkflowModel
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
 
@@ -78,7 +79,7 @@ def tree(root: Path) -> dict[str, str]:
 async def run_loop(
     fixture_repo: Path, fixture_venv: Path, tmp_path: Path, model: ScriptedModel, answers: list[str], *,
     behaviors: list[str] | None = None, assumptions: list[Assumption] | None = None, hints: bool = True,
-    settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None,
+    settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None, arbiter: WorkflowModel | None = None,
 ) -> Run:
     ws = await Workspace.create(fixture_repo, tmp_path / "workspaces", "run1")
     (ws.path / ".venv").symlink_to(fixture_venv)
@@ -89,7 +90,9 @@ async def run_loop(
     )
     rec = Recorder()
     log = RunLog(tmp_path / "runs" / "run1.jsonl")
-    graph = build_execution_graph(model, LocalSandbox(), ws, settings or WorkflowConfig(), hints=hints, recorder=rec, log=log)
+    graph = build_execution_graph(
+        model, LocalSandbox(), ws, settings or WorkflowConfig(), hints=hints, recorder=rec, log=log, arbiter=arbiter,
+    )
     payloads: list[dict[str, Any]] = []
 
     def ask(payload: dict[str, Any]) -> str:

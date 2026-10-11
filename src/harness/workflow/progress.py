@@ -106,6 +106,10 @@ def describe(record: dict[str, Any]) -> str:
         result = "✗ edit refused, nothing to run" if code is None else ("✓ all tests pass" if code == 0 else f"✗ failed (exit {code})")
     elif node == "stuck":
         result = f"answer: {record['answer'][:50]}"
+    elif node == "arbitrate":  # F10
+        reply = record.get("reply")
+        result = (f"ruled {reply['verdict']} ({record.get('served_by')})" if reply
+                  else f"✗ no valid ruling: {record.get('model_error', '')[:50]}")
     elif node == "next_behavior":
         result = "✓ satisfied" if record["satisfied"] else "✓ green"
     elif node == "verify_polish":
@@ -163,6 +167,10 @@ def final_report(rec: Recorder, total_s: float) -> str:
     if api:
         head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
                  f"{rec.cache_read_input_tokens} cache-read tokens")
+        if "arbiter" in rec.roles:  # F10: the Arbiter's model costs more, so show where the money went
+            head += "\nby role: " + ", ".join(
+                f"{role} ${t['cost_usd']:.4f} ({int(t['calls'])} calls)" for role, t in sorted(rec.roles.items())
+            )
     lines = [head, ""]
     lines.append(f"{'Behavior':<{width}}  {'result':<9}  {'attempts':>8}  {'seconds':>7}" + (f"  {'cost':>8}" if api else ""))
     lines += [f"{b:<{width}}  {o:<9}  {a:>8}  {sec:>7}" + (f"  {cost:>8}" if api else "") for b, o, a, sec, cost in rows]

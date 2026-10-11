@@ -83,6 +83,35 @@ def write_impl(ctx: str, behavior: str, hint: str, last_run: str, dispute_note: 
     return prompt
 
 
+ARBITER_SYSTEM = (
+    "You settle a Dispute in test-first development. An implementer says a test's expected value is wrong. You see the "
+    "goal, the Plan, the test and the implementer's reason, never the implementation: judge only whether the test matches "
+    "what the goal asks for. Reply with JSON only: {\"verdict\": \"test_wrong\" | \"test_right\" | \"unclear\", "
+    "\"reason\": one to three sentences citing the goal, \"proposed_invariant\": {\"text\", \"check\", \"fn\"} or null}. "
+    "Say test_wrong or test_right only when the goal decides it; otherwise unclear. A proposed invariant is a rule from "
+    "the goal that would have caught a wrong expected value: a Python expression over one call of the function `fn`, with "
+    "`args`, `kwargs` and `result` bound. Propose one only when the goal states such a rule; a human decides whether to "
+    "add it."
+)
+
+
+def arbitrate(plan: Plan, idx: int, test_path: str, test_source: str, reason: str, last_run: str) -> str:
+    """The Arbiter's prompt (F10): the goal, the Plan with its Invariants, the Behaviors so far, the disputed test file,
+    the Dispute's reason and the last pytest output. No implementation file: the question is the test against the goal."""
+    rules = show_rules(plan.invariants) if plan.invariants else "(none)"
+    notes = "".join(f"- {n}\n" for n in plan.notes)
+    behaviors = "\n".join(f"{i + 1}. {b}" for i, b in enumerate(plan.behaviors[: idx + 1]))
+    return (
+        f"Goal: {plan.goal}\nOut of scope: {'; '.join(plan.out_of_scope) or 'nothing listed'}\n"
+        f"{'Notes:' + chr(10) + notes if notes else ''}"
+        f"The Plan's rules (Invariants) for expected values:\n{rules}\n\n"
+        f"Behaviors so far, in order (the current one is last):\n{behaviors}\n\n"
+        f"The disputed test, in {test_path}:\n{trimmed(test_source)}\n\n"
+        f"The implementer's reason: {reason}\n\nLast pytest output (tail):\n{last_run or '(none)'}\n\n"
+        "No Invariant upheld this Dispute. Is the test's expected value wrong for this goal?"
+    )
+
+
 def polish(ctx: str, feedback: str) -> str:
     prompt = (
         f"{ctx}\n\nTask: polish the implementation. Change structure and names (clearer names, type hints, a short "
