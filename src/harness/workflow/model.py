@@ -5,13 +5,13 @@ Ollama goes through the guard client (ADR 0004); Claude goes through the Anthrop
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar
 
 import anthropic
 from pydantic import BaseModel, ValidationError
 
-from harness.anthropic_api import API_FAULTS, ApiFailure
-from harness.config import Effort
+from harness.anthropic_api import API_FAULTS, ApiFailure, thinking_param, thinking_text
+from harness.config import Effort, ThinkingDisplay
 from harness.guard.ollama_client import OllamaClient
 from harness.usage import PRICING, ApiCall, Price, api_call, require_pricing
 
@@ -72,16 +72,21 @@ class GuardedWorkflowModel:
 
 
 class AnthropicWorkflowModel:
-    """Asks the Anthropic API for JSON in ``schema``'s shape (ADR 0006). Never sends sampling parameters."""
+    """Asks the Anthropic API for JSON in ``schema``'s shape (ADR 0006). Never sends sampling parameters.
+
+    Each request's thinking summary (F9, ``thinking_display``) is kept on its ``ApiCall`` in ``calls``, so a node's run
+    log line carries it the way it carries the node's usage."""
 
     def __init__(
         self, client: anthropic.AsyncAnthropic, model_id: str, *, max_tokens: int = 16000, effort: Effort | None = None,
+        thinking_display: ThinkingDisplay = "summarized",
     ) -> None:
         require_pricing(model_id)
         self.client = client
         self.model_id = model_id
         self.max_tokens = max_tokens
         self.effort = effort
+        self.thinking = thinking_param(thinking_display)
         self.calls: list[ApiCall] = []
 
     @property
@@ -92,7 +97,7 @@ class AnthropicWorkflowModel:
         u = response.usage
         self.calls.append(api_call(
             self.model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
-            response._request_id,
+            response._request_id, thinking=thinking_text(response.content),
         ))
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
@@ -103,6 +108,7 @@ class AnthropicWorkflowModel:
         }
         if self.effort is not None:
             output_config["effort"] = self.effort
+        extra: dict[str, Any] = {"thinking": self.thinking} if self.thinking else {}
         error = ""
         for _ in range(2):  # one retry, with the problem appended
             try:
@@ -112,6 +118,7 @@ class AnthropicWorkflowModel:
                     system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": prompt + error}],
                     output_config=output_config,
+                    **extra,
                 )
             except API_FAULTS as exc:  # past the SDK's retries: the run stops here, resumable (F8)
                 raise ApiFailure.from_exc(exc) from exc

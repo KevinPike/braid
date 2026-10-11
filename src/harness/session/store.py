@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS calls (
     estimate INTEGER,
     prompt_eval_count INTEGER,
     eval_count INTEGER,
+    thinking TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, n)
 );
 """
@@ -118,6 +119,7 @@ class CallEntry:
     estimate: int | None = None  # None for calls the ledger did not estimate (summarizer)
     prompt_eval_count: int | None = None
     eval_count: int | None = None
+    thinking: str = ""  # Claude (F9): the reply's thinking summary; empty when omitted, or on Ollama
 
     @property
     def error(self) -> float | None:
@@ -151,6 +153,9 @@ class SessionStore:
             path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path))
         self._db.executescript(_SCHEMA)
+        if "thinking" not in {r[1] for r in self._db.execute("PRAGMA table_info(calls)")}:  # a store from before F9
+            with self._db:
+                self._db.execute("ALTER TABLE calls ADD COLUMN thinking TEXT NOT NULL DEFAULT ''")
         self._now = now
 
     # --- sessions ---------------------------------------------------------------------------
@@ -276,17 +281,20 @@ class SessionStore:
             )
         return int(n)
 
-    def complete_call(self, session_id: str, n: int, prompt_eval_count: int, eval_count: int) -> None:
+    def complete_call(self, session_id: str, n: int, prompt_eval_count: int, eval_count: int, thinking: str = "") -> None:
+        """The measured counts, and (Claude, F9) the reply's thinking summary."""
         with self._db:
-            self._db.execute("UPDATE calls SET prompt_eval_count = ?, eval_count = ? WHERE session_id = ? AND n = ?",
-                             (prompt_eval_count, eval_count, session_id, n))
+            self._db.execute(
+                "UPDATE calls SET prompt_eval_count = ?, eval_count = ?, thinking = ? WHERE session_id = ? AND n = ?",
+                (prompt_eval_count, eval_count, thinking, session_id, n),
+            )
 
     def calls(self, session_id: str) -> list[CallEntry]:
         rows = self._db.execute(
-            "SELECT session_id, n, at, model, num_ctx, payload, estimate, prompt_eval_count, eval_count"
+            "SELECT session_id, n, at, model, num_ctx, payload, estimate, prompt_eval_count, eval_count, thinking"
             " FROM calls WHERE session_id = ? ORDER BY n", (session_id,)
         ).fetchall()
-        return [CallEntry(r[0], r[1], datetime.fromisoformat(r[2]), r[3], r[4], json.loads(r[5]), r[6], r[7], r[8])
+        return [CallEntry(r[0], r[1], datetime.fromisoformat(r[2]), r[3], r[4], json.loads(r[5]), r[6], r[7], r[8], r[9])
                 for r in rows]
 
     # --- fork -------------------------------------------------------------------------------

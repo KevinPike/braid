@@ -2,7 +2,7 @@
 
 Models write, code checks: citations are checked by the harness (``research.py``), an Assumption without a Probe or a
 verified citation is bounced, and a human decides when the Plan is done. Node names and routing follow
-``examples/graphs/plan_graph.py``.
+``examples/graphs/plan_graph.py``. Every conditional edge writes a Route record (F9, ADR 0008), as in the Execution loop.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ import operator
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
+from typing import Annotated, Any, Protocol, TypedDict, TypeVar, cast
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Send, interrupt
@@ -26,7 +26,7 @@ from harness.workflow import prompts
 from harness.workflow.model import ApiCall, ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.invariants import Invariant
 from harness.workflow.plan import Assumption, Plan
-from harness.workflow.records import Recorder, RunLog
+from harness.workflow.records import Recorder, Route, RunLog
 from harness.workflow.research import check_citation, research, summarize
 
 T = TypeVar("T", bound=BaseModel)
@@ -215,11 +215,12 @@ class _PlanLoop:
         return {"round": round_, "draft": draft.model_dump(), "draft_questions": questions}
 
     # --- critique, fanned out ------------------------------------------------------------------------------
-    def fan_out(self, state: PlanState) -> list[Send] | Literal["synthesize"]:
+    def fan_out(self, state: PlanState) -> Route:
         angles = self.cfg.critique_angles
         if not angles:
-            return "synthesize"
-        return [Send("critique", CritiqueTask(round=state["round"], angle=a, goal=state["goal"], draft=state["draft"])) for a in angles]
+            return Route("synthesize", "critique_angles", [])
+        sends = [Send("critique", CritiqueTask(round=state["round"], angle=a, goal=state["goal"], draft=state["draft"])) for a in angles]
+        return Route("critique", "critique_angles", angles, sends=tuple(sends))
 
     async def critique(self, state: CritiqueTask) -> dict[str, Any]:  # "state" is the task Send handed over
         task = state
@@ -266,11 +267,13 @@ class _PlanLoop:
         self.log("human_review", started, state["round"], answer=answer, route=route)
         return {"feedback": [answer]}
 
-    def after_review(self, state: PlanState) -> Literal["research", "draft", "finalize"]:
+    def after_review(self, state: PlanState) -> Route:
         answer = state["feedback"][-1]
-        if is_approval(answer) or state["round"] >= self.cfg.max_rounds:
-            return "finalize"
-        return "research" if research_text(answer) is not None else "draft"
+        if is_approval(answer):
+            return Route("finalize", "answer", answer, "human")
+        if state["round"] >= self.cfg.max_rounds:  # the round limit overrides the human's request for another round
+            return Route("finalize", "round", state["round"])
+        return Route("research" if research_text(answer) is not None else "draft", "answer", answer, "human")
 
     # --- finalize ------------------------------------------------------------------------------------------
     async def finalize(self, state: PlanState) -> dict[str, Any]:
@@ -294,13 +297,18 @@ class _PlanLoop:
         self.log("spend_cap", time.monotonic(), state.get("round", 0), spent=round(self.rec.cost_usd, 6), cap=self.cfg.max_cost_usd)
         return {"status": "spend_cap"}
 
-    def gate(self, route: Callable[[PlanState], Any], *, let: str = "") -> Callable[[PlanState], Any]:
+    def gate(self, source: str, route: Callable[[PlanState], Route], *, let: str = "") -> Callable[[PlanState], Any]:
         """``route``, unless the Spend cap has been passed. ``let`` is a destination that still runs: finalize makes no
-        model call, so a Plan the human has already approved is saved."""
+        model call, so a Plan the human has already approved is saved. Either way the edge writes one Route record."""
         @functools.wraps(route)
         def gated(state: PlanState) -> Any:
-            where = route(state)
-            return where if where == let or self.rec.cost_usd <= self.cfg.max_cost_usd else "spend_cap"
+            taken = route(state)
+            if taken.to != let and self.rec.cost_usd > self.cfg.max_cost_usd:
+                taken = Route("spend_cap", "cost_usd", round(self.rec.cost_usd, 6))
+            self.rec.add_route(taken)
+            if self.runlog:
+                self.runlog.route(source, taken, round=state.get("round", 0))
+            return list(taken.sends) or taken.to
 
         return gated
 
@@ -322,15 +330,17 @@ class _PlanLoop:
             g.add_node(name, self.timed(getattr(self, name)))
         g.add_node("critique", self.critique, input_schema=CritiqueTask)  # its input is the Send payload, not the state
 
-        def then(name: str) -> Callable[[PlanState], str]:
-            return lambda _state: name
+        def then(name: str) -> Callable[[PlanState], Route]:  # a fixed edge that still honors the Spend cap
+            return lambda _state: Route(name)
 
         g.add_edge(START, "research")
-        g.add_conditional_edges("research", self.gate(then("draft")), ["draft", "spend_cap"])
-        g.add_conditional_edges("draft", self.gate(self.fan_out), ["critique", "synthesize", "spend_cap"])
+        g.add_conditional_edges("research", self.gate("research", then("draft")), ["draft", "spend_cap"])
+        g.add_conditional_edges("draft", self.gate("draft", self.fan_out), ["critique", "synthesize", "spend_cap"])
         g.add_edge("critique", "synthesize")
-        g.add_conditional_edges("synthesize", self.gate(then("human_review")), ["human_review", "spend_cap"])
-        g.add_conditional_edges("human_review", self.gate(self.after_review, let="finalize"), ["research", "draft", "finalize", "spend_cap"])
+        g.add_conditional_edges("synthesize", self.gate("synthesize", then("human_review")), ["human_review", "spend_cap"])
+        g.add_conditional_edges(
+            "human_review", self.gate("human_review", self.after_review, let="finalize"), ["research", "draft", "finalize", "spend_cap"],
+        )
         g.add_edge("spend_cap", END)
         g.add_edge("finalize", END)
         return g

@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, field_validator
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+ThinkingDisplay = Literal["summarized", "omitted"]
 
 
 class OllamaConfig(BaseModel):
@@ -141,6 +142,9 @@ class AnthropicConfig(BaseModel):
 
     max_retries: int = 2  # the SDK's default
     timeout: float = 600.0  # seconds per request (connecting has its own 5 s)
+    # F9: the 5.5 models think adaptively and send the thinking back empty ("omitted") unless asked for a summary.
+    # Visibility only: thinking is billed the same either way.
+    thinking_display: ThinkingDisplay = "summarized"
 
 
 class PathsConfig(BaseModel):

@@ -28,6 +28,12 @@ def describe(call: CallEntry) -> str:
             f"estimate {est}; ollama prompt_eval_count {got}{err}{evals}")
 
 
+def call_text(call: CallEntry) -> str:
+    """The payload pane: the reply's thinking summary first (Claude, F9), then the request body as sent."""
+    body = json.dumps(call.payload, indent=2, ensure_ascii=False)
+    return f"--- thinking summary ---\n{call.thinking}\n\n--- request ---\n{body}" if call.thinking else body
+
+
 class Inspector(ModalScreen[None]):
     DEFAULT_CSS = """
     Inspector { align: center middle; }
@@ -69,18 +75,40 @@ class Inspector(ModalScreen[None]):
 
     def _show(self, call: CallEntry) -> None:
         self.query_one("#inspector-header", Static).update(describe(call))
-        self.query_one("#inspector-payload", Static).update(json.dumps(call.payload, indent=2, ensure_ascii=False))
+        self.query_one("#inspector-payload", Static).update(call_text(call))
 
     def action_close(self) -> None:
         self.dismiss(None)
 
 
 _RUN_HEAD = ("ts", "behavior", "attempt", "round", "angle", "node_seconds", "model_seconds")
-_RUN_TEXT = ("prompt", "prompts", "reply", "written", "refused", "exit_code", "timed_out", "output_tail", "answer", "reason", "verdict")
+_RUN_TEXT = (
+    "prompt", "prompts", "reply", "thinking", "written", "refused", "exit_code", "timed_out", "output_tail", "answer",
+    "reason", "verdict",
+)
+_TITLES = {"thinking": "thinking summary"}
+_ROUTE_CLAIM = ("model", "request_id", "reason", "thinking")  # a model-basis Route record's extra fields (ADR 0008)
+
+
+def route_line(record: dict[str, object]) -> str:
+    """A Route record in one line: where the edge went, on what basis, and the field and value that decided it."""
+    why = f"{record.get('field')}={json.dumps(record.get('value'), ensure_ascii=False, default=str)}" if record.get("field") else "fixed edge"
+    return f"→ {record.get('to')}  {record.get('basis')}: {why}"
+
+
+def describe_route(record: dict[str, object]) -> str:
+    lines = [f"route  {record.get('from')} {route_line(record)}"]
+    for key in _ROUTE_CLAIM:
+        if record.get(key):
+            lines.append(f"\n--- {_TITLES.get(key, key)} ---\n{record[key]}")
+    return "\n".join(lines)
 
 
 def describe_node(record: dict[str, object]) -> str:
-    """A node's log record as the run inspector shows it: the numbers, then what was sent and what came back."""
+    """A node's log record as the run inspector shows it: the numbers, then what was sent and what came back (and,
+    under the reply, the model's thinking summary). A Route record shows its edge and the claim behind it, if any."""
+    if record.get("node") == "route":
+        return describe_route(record)
     head = [f"{k} {record[k]}" for k in _RUN_HEAD if record.get(k) is not None]
     lines = [f"{record.get('node', '?')}  " + " · ".join(head)]
     shown = set(_RUN_HEAD) | set(_RUN_TEXT) | {"node"}
@@ -90,15 +118,23 @@ def describe_node(record: dict[str, object]) -> str:
             continue
         if key == "reply" or isinstance(value, (list, dict)):
             value = json.dumps(value, indent=2, ensure_ascii=False)
-        lines.append(f"\n--- {key} ---\n{value}")
+        lines.append(f"\n--- {_TITLES.get(key, key)} ---\n{value}")
     rest = {k: v for k, v in record.items() if k not in shown and v not in (None, [], "")}
     if rest:
         lines.append("\n--- other ---\n" + json.dumps(rest, indent=2, ensure_ascii=False, default=str))
     return "\n".join(lines)
 
 
+def entry_label(index: int, record: dict[str, object]) -> str:
+    """The run inspector's list entry: the node's name, or a Route record indented under the node it leaves."""
+    if record.get("node") == "route":
+        return f"{index + 1:>3}   {route_line(record)}"
+    return f"{index + 1:>3} {record.get('node', '?')}"
+
+
 class RunInspector(ModalScreen[None]):
-    """A Workflow run's JSONL log: one entry per node, with its prompt, reply, files, exit code and output tail."""
+    """A Workflow run's JSONL log: one entry per node, with its prompt, reply, files, exit code and output tail, and
+    the Route records (F9) in line, between the nodes they connect."""
 
     DEFAULT_CSS = """
     RunInspector { align: center middle; }
@@ -120,7 +156,7 @@ class RunInspector(ModalScreen[None]):
                 yield Static("the run log has no records yet", id="run-empty", markup=False)
                 return
             with Horizontal():
-                yield OptionList(*[Option(f"{i + 1:>3} {r.get('node', '?')}", id=str(i)) for i, r in enumerate(self.records)], id="run-nodes")
+                yield OptionList(*[Option(entry_label(i, r), id=str(i)) for i, r in enumerate(self.records)], id="run-nodes")
                 with VerticalScroll(id="run-body"):
                     yield Static("", id="run-detail", markup=False)
 

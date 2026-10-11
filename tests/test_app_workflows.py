@@ -331,7 +331,7 @@ async def test_every_node_update_emits_workflow_node_finished(fixture_repo: Path
         await finished(app, pilot)
     run_id = run_ids(app)[0]
     logged = read_log(tmp_path / "runs" / f"{run_id}.jsonl")
-    assert [e.node for e in events] == [r["node"] for r in logged] and len(events) >= 8
+    assert [e.node for e in events] == [r["node"] for r in logged if r["node"] != "route"] and len(events) >= 8
     assert {e.run_id for e in events} == {run_id}
     assert all(e.duration_s >= 0 for e in events)
     assert [e.attempt for e in events if e.node == "write_impl"] == [1, 2]  # the attempt number comes from the node's log line

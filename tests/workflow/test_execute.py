@@ -271,7 +271,7 @@ async def test_no_hints_mode_skips_a_stuck_behavior_and_restores_the_workspace(
 async def test_the_run_log_has_one_rich_line_per_node(fixture_repo: Path, fixture_venv: Path, tmp_path: Path) -> None:
     model = ScriptedModel([MUL_TEST, MUL_IMPL])
     run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["abort"], behaviors=["mul multiplies"])
-    lines = run.log.lines()
+    lines = [line for line in run.log.lines() if line["node"] != "route"]  # Route records are tested in test_trace
     assert [line["node"] for line in lines] == run.rec.trace
     impl = next(line for line in lines if line["node"] == "write_impl")
     assert "mul multiplies" in impl["prompt"] and impl["reply"]["edits"][0]["path"] == "src/mod.py"

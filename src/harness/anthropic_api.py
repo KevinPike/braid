@@ -9,12 +9,13 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Iterable
 from typing import Any
 
 import anthropic
 import httpx2
 
-from harness.config import AnthropicConfig
+from harness.config import AnthropicConfig, ThinkingDisplay
 
 # What a request can raise once the SDK has given up: its own errors, a transport error mid-stream (the SDK wraps those
 # only before the response starts), and a 200 whose body is not JSON (the SDK parses it with ``json.loads``).
@@ -70,3 +71,14 @@ def make_client(config: AnthropicConfig) -> anthropic.AsyncAnthropic:
     return anthropic.AsyncAnthropic(
         max_retries=config.max_retries, timeout=httpx2.Timeout(config.timeout, connect=5.0),
     )
+
+
+def thinking_param(display: ThinkingDisplay) -> dict[str, Any] | None:
+    """The request's ``thinking`` field (F9). Haiku, Sonnet and Opus 5.5 think adaptively by default and return the
+    thinking empty; ``"summarized"`` asks for a readable summary, ``"omitted"`` sends nothing and keeps the default."""
+    return {"type": "adaptive", "display": "summarized"} if display == "summarized" else None
+
+
+def thinking_text(content: Iterable[Any]) -> str:
+    """The thinking summary in a reply's content blocks, joined; empty when the display was omitted."""
+    return "\n\n".join(t for b in content if getattr(b, "type", None) == "thinking" and (t := getattr(b, "thinking", "")))
