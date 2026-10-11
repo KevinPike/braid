@@ -418,5 +418,5 @@ Each is graded by F7's hidden tests and reports its own token usage.
 - F1: does Haiku's adaptive thinking need `effort: low` for the katas, or is the default `medium` worth its cost? Measure both on one kata.
 - F1: should the Plan loop default to Haiku once F1 lands, since local Plans are weak? That decision belongs to the user after the live check.
 - F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? **Decided 2026-10-11:** routing on a model's claim is allowed when it is traced and bounded (ADR 0008). F10 tries an Arbiter first; the Dispute alone can be a bench variant.
-- F7+: should F7–F9 (no dependency on F4–F6) go ahead of F4–F6?
+- F7+: should F7–F9 (no dependency on F4–F6) go ahead of F4–F6? **Decided 2026-10-11:** F4–F6 are skipped for now. The work order is F7–F13.
 - Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F4's mixed-edit handling covers e4b more cheaply.
