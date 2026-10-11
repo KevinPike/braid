@@ -374,6 +374,15 @@ async def test_stuck_after_disputes_shows_the_last_reason_and_what_was_checked(
     assert "disputed test_b1: the test is wrong, it wants 5" in shown.getvalue() and "not upheld: 1 checks" in shown.getvalue()
 
 
+async def test_a_dispute_naming_the_test_file_checks_that_files_examples(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([BAD_MUL_TEST, dispute("tests/test_behavior_1.py", "7 is wrong"), MUL_TEST, MUL_IMPL, edit("src/mod.py", MUL)])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], behaviors=["mul multiplies"],
+                         assumptions=[], invariants=[MUL_RULE], settings=WorkflowConfig(check_tests_at_red=False))
+    assert nodes(run, "check_dispute")[0]["upheld"] and run.rec.behaviors[0].green
+
+
 async def test_a_dispute_with_no_invariants_in_the_plan_is_not_upheld(
     fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
 ) -> None:

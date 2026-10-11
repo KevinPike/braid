@@ -156,6 +156,14 @@ _Avoid_: Objection, challenge
 The most an API-backed **Workflow** run may cost (`max_cost_usd`); passing it stops the run at the next node boundary with status `spend_cap`, and nothing is applied.
 _Avoid_: Budget (that is the `num_ctx` limit), quota
 
+**Bench set**:
+A named list of (kata, **Plan**) pairs in `bench/katas.toml` that `harness-workflow bench` runs N times, `--no-hints`, under one label.
+_Avoid_: Suite, benchmark (the activity), eval (that is `harness-eval`)
+
+**Bench ledger**:
+`~/.braid/bench.jsonl`: one line per bench run, holding its summary and provenance (harness commit, **Plan** hash, backend, settings); the report compares labels from it and calls a difference within the repeats' range noise.
+_Avoid_: Ledger alone (that is the per-call context Ledger), results file
+
 ### Isolation
 
 **Workspace**:

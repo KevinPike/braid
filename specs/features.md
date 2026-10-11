@@ -129,6 +129,23 @@ Until now, the comparison tables in the status notes were copied by hand from on
 4. The comparison computes means and ranges from ledger lines, and labels a difference within the range as noise.
 5. Old summaries without provenance still load in the report.
 
+**Status (2026-10-10): built and gated** (48d1287; `tests/workflow/test_bench.py`).
+
+- **Provenance.** `build_once` (behind `run_build`) writes the fields into every summary. `plan_sha256` hashes the Plan's canonical JSON, so reformatting a file does not change it but any edit does. `execution` is the graph variant (`EXECUTION` plus F3's switches).
+- **Manifest.** `bench/katas.toml` has `claude-plans`, `local-plans` (the M14 Plans, with the 4-Behavior word-wrap Plan the F1 row used), and F3's `disputed` and `disputed-control`. Pairs may carry a `name`, needed when a set holds a kata twice. The ledger and report key on it.
+- **Bench.** A fresh model per run, so usage never leaks between runs (the run's usage cursor also starts at the model's current call count now). Each run's Spend cap is the smaller of `max_cost_usd` and what is left of `--max-cost` (default $1.00). The Ollama backend is refused (ADR 0007). Each Workspace is removed after its ledger line is written.
+- **Report.** `harness-workflow report` lists labels, shows one, or `--compare A B`. A difference no bigger than the wider of the two min–max ranges is "within noise". With one run on either side, the verdict says the noise is unknown. A repeat that is missing a kata is left out of the total. `--summaries <practice-dir>` replaces `examples/graphs/report.py`, which now calls it.
+- **Baseline `baseline-f1`** (`claude-plans`, `claude-haiku-5-5`, 3 repeats, `--no-hints`): **29.7/30 [29–30]**, 19.7 attempts, 12.3 Satisfied, 0.3 Stuck, 4.5 minutes and **$0.033 per repeat** ($0.1003 for 15 runs). The only miss was word-wrap Behavior 5 in one repeat, the F1 dispute again. Runs after the first few record `harness_dirty: true`: I was editing F3 while the bench ran, but the process had already imported the committed 48d1287 code.
+
+| kata | baseline-f1 (3 repeats) |
+|---|---|
+| bowling | 6.0/6 [6–6] · 3.0a · 3.0s · 0 stuck · 0.7m · $0.0043 |
+| cron-next | 6.0/6 [6–6] · 4.0a · 2.0s · 0 stuck · 1.0m · $0.0086 |
+| roman-numerals | 6.0/6 [6–6] · 2.7a · 3.3s · 0 stuck · 0.6m · $0.0044 |
+| semver-compare | 6.0/6 [6–6] · 5.0a · 1.0s · 0 stuck · 0.9m · $0.0077 |
+| word-wrap | 5.7/6 [5–6] · 5.0a · 3.0s · 0.3 stuck · 1.2m · $0.0084 |
+| total | 29.7/30 [29–30] · 19.7a · 12.3s · 0.3 stuck · 4.5m · $0.0334 |
+
 ---
 
 ## F3 — Test disputes, settled by Plan invariants

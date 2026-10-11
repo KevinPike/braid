@@ -259,10 +259,13 @@ class _Loop:
             found = inv.extract(file.read_text(errors="replace"), rel)
             examples += found.examples
             skipped += found.skipped
-        if test:
+        if test:  # a test function's name, "path::name", or a test file
             name = test.split("::")[-1].split("[")[0].strip()
-            examples = [e for e in examples if e.test.split("::")[-1].split("[")[0] == name]
-            skipped = [s for s in skipped if f"::{name}" in s]
+            by_name = [e for e in examples if e.test.split("::")[-1].split("[")[0] == name]
+            stem = Path(test.split("::")[0].strip()).stem
+            by_file = [e for e in examples if Path(e.test.split("::")[0]).stem == stem]
+            examples = by_name or by_file
+            skipped = [s for s in skipped if f"::{name}" in s or Path(s.split("::")[0]).stem == stem]
         if not examples or not plan.invariants:
             return inv.CheckResult(examples=len(examples), skipped=skipped)
         scratch = self.ws.path / ".tmp" / "invariants"
