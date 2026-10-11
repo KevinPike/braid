@@ -182,13 +182,13 @@ def aggregate(lines: Iterable[Mapping[str, Any]], label: str) -> dict[str, Stats
 
 
 def verdict(a: Stats, b: Stats) -> str:
-    """How B's mean Green compares with A's: a difference no bigger than the wider of the two ranges is noise."""
+    """How B's mean Green compares with A's: a difference smaller than the wider of the two ranges is noise."""
     diff = b.green - a.green
     if diff == 0:
         return "same"
     if a.n < 2 or b.n < 2:
         return f"{diff:+.1f} (one run: noise unknown)"
-    if abs(diff) <= max(a.spread, b.spread):
+    if abs(diff) < max(a.spread, b.spread):
         return f"{diff:+.1f} within noise"
     return f"{diff:+.1f} {'better' if diff > 0 else 'worse'}"
 
@@ -200,7 +200,7 @@ def _cell(s: Stats) -> str:
 
 
 LEGEND = ("Cell: mean Behaviors Green/planned [min–max over repeats] · implementation attempts (a) · Satisfied (s) · "
-          "Stuck · minutes per run (m) · cost per run. A difference no bigger than the wider range is within noise.")
+          "Stuck · minutes per run (m) · cost per run. A difference smaller than the wider range is within noise.")
 
 
 def label_table(lines: Sequence[Mapping[str, Any]], label: str) -> str:

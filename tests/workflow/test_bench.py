@@ -161,6 +161,8 @@ def test_the_comparison_computes_means_and_ranges_and_labels_noise() -> None:
     assert bench.verdict(a["k1"], b["k1"]) == "+0.7 within noise"
     assert bench.verdict(a["k2"], b["k2"]) == "-3.0 worse"
     assert bench.verdict(a["k2"], a["k2"]) == "same"
+    edge = [line("c", "k", r, g) for r, g in ((1, 4), (2, 6))] + [line("d", "k", r, 7) for r in (1, 2)]
+    assert bench.verdict(bench.aggregate(edge, "c")["k"], bench.aggregate(edge, "d")["k"]) == "+2.0 better"  # not smaller than 6-4
     table = bench.compare_table(lines, "a", "b")
     assert "| k1 |" in table and "within noise" in table and "| total |" in table and "[4–6]" in table
 
