@@ -1,0 +1,51 @@
+{
+  "goal": "Implement compare(a, b) in semver_compare.py returning -1/0/1 per semver 2.0 precedence and raising ValueError on invalid versions.",
+  "behaviors": [
+    "compare(\"1.2.3\", \"1.10.0\") returns -1, compare(\"1.2.3\", \"1.2.3\") returns 0 and compare(\"2.0.0\", \"1.9.9\") returns 1, comparing major.minor.patch as integers.",
+    "compare(\"1.0.0\", \"1.0.0+build.5\") returns 0 and compare(\"1.0.0+a\", \"1.0.0+b\") returns 0, because build metadata after '+' is ignored.",
+    "compare(\"1.0.0-alpha\", \"1.0.0\") returns -1 and compare(\"1.0.0\", \"1.0.0-alpha\") returns 1, because a pre-release is lower than the same version without one.",
+    "compare(\"1.0.0-alpha\", \"1.0.0-beta\") returns -1 and compare(\"1.0.0-alpha.1\", \"1.0.0-alpha.2\") returns -1, comparing pre-release identifiers one by one, with numeric identifiers compared as integers (\"1.0.0-2\" vs \"1.0.0-10\" returns -1).",
+    "compare(\"1.0.0-1\", \"1.0.0-alpha\") returns -1 because numeric identifiers are lower than alphanumeric ones, and compare(\"1.0.0-alpha\", \"1.0.0-alpha.1\") returns -1 because a shorter identifier list is lower when all preceding identifiers are equal.",
+    "compare(\"1.0\", \"1.0.0\"), compare(\"abc\", \"1.0.0\"), compare(\"1.0.0\", \"01.0.0\") and compare(\"1.0.0-\", \"1.0.0\") each raise ValueError for an invalid version string."
+  ],
+  "assumptions": [
+    {
+      "text": "semver_compare.py exists in the repo root as the single flat module",
+      "probe": "test -f semver_compare.py",
+      "evidence": "git ls-files - semver_compare.py is listed"
+    },
+    {
+      "text": "The tests/ folder exists for the new test files",
+      "probe": "test -d tests",
+      "evidence": "git ls-files - tests/.gitkeep is listed"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured",
+      "probe": "test -f pyproject.toml",
+      "evidence": "git ls-files - pyproject.toml is listed"
+    },
+    {
+      "text": "Python 3.8 or newer is available for running the code and pytest",
+      "probe": "python3 -c 'import sys; assert sys.version_info >= (3, 8)'",
+      "evidence": null
+    },
+    {
+      "text": "pytest is available to run the tests",
+      "probe": "python3 -m pytest --version || .venv/bin/python -m pytest --version",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "semver_compare.py",
+    "tests/test_semver_compare.py"
+  ],
+  "demo": "python -c 'from semver_compare import compare; print(compare(\"1.2.3\", \"1.10.0\")); print(compare(\"1.0.0-alpha\", \"1.0.0\"))'",
+  "out_of_scope": [
+    "Parsing or returning structured version objects",
+    "Range or constraint matching such as ^1.2.0 or ~1.2.0",
+    "Sorting lists of versions",
+    "Lenient parsing such as a leading 'v' or missing minor/patch parts",
+    "A command-line interface"
+  ],
+  "open_questions": []
+}

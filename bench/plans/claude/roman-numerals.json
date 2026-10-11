@@ -1,0 +1,50 @@
+{
+  "goal": "Implement to_roman(n: int) -> str in roman_numerals.py, converting integers 1 to 3999 to Roman numerals with subtractive notation and raising ValueError for anything else.",
+  "behaviors": [
+    "to_roman(1) returns \"I\" and to_roman(3) returns \"III\" (repeated additive symbols for units).",
+    "to_roman(58) returns \"LVIII\" and to_roman(3888) returns \"MMMDCCCLXXXVIII\" (additive notation across all symbols I, V, X, L, C, D, M).",
+    "to_roman(4) returns \"IV\" and to_roman(9) returns \"IX\" (subtractive notation for units).",
+    "to_roman(40) returns \"XL\", to_roman(90) returns \"XC\", to_roman(400) returns \"CD\" and to_roman(900) returns \"CM\" (subtractive notation for tens and hundreds).",
+    "to_roman(1994) returns \"MCMXCIV\" and to_roman(3999) returns \"MMMCMXCIX\" (mixed subtractive cases and upper bound).",
+    "to_roman(0), to_roman(-1) and to_roman(4000) each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "roman_numerals.py exists in the repo root as the single flat implementation module.",
+      "probe": "test -f roman_numerals.py",
+      "evidence": "git ls-files - roman_numerals.py is listed"
+    },
+    {
+      "text": "The tests/ folder exists where the pytest test file will go.",
+      "probe": "test -d tests",
+      "evidence": "git ls-files - tests/.gitkeep is listed"
+    },
+    {
+      "text": "pyproject.toml exists to configure the project and toolchain.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "git ls-files - pyproject.toml is listed"
+    },
+    {
+      "text": "pytest is available to run the tests.",
+      "probe": "python -m pytest --version || .venv/bin/python -m pytest --version || uv run pytest --version",
+      "evidence": null
+    },
+    {
+      "text": "roman_numerals.py can be imported from the repo root.",
+      "probe": "python -c 'import roman_numerals'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "roman_numerals.py",
+    "tests/test_roman_numerals.py"
+  ],
+  "demo": "python -c 'from roman_numerals import to_roman; print(to_roman(4)); print(to_roman(1994))'",
+  "out_of_scope": [
+    "Converting Roman numerals back to integers",
+    "Handling non-int inputs such as strings or floats beyond what the range check naturally does",
+    "Command-line interface or packaging changes",
+    "Numbers above 3999 using overline or vinculum notation"
+  ],
+  "open_questions": []
+}

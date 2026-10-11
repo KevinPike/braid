@@ -1,0 +1,42 @@
+{
+  "goal": "# cron-next\n\n`next_run(expr: str, after: datetime) -> datetime` returns the first minute strictly after `after` that matches\na five-field cron expression (minute, hour, day of month, month, day of week with Sunday as 0). Each field supports\n`*`, a number, a range (`1-5`), a step (`*/15`, `1-30/5`) and comma-separated lists of those. When both day of month\nand day of week are restricted, a time must match both. The result has zero seconds. A malformed expression raises\n`ValueError`.\n\n- `next_run(\"*/15 * * * *\", datetime(2026, 1, 1, 10, 7))` returns `datetime(2026, 1, 1, 10, 15)`\n- `next_run(\"0 9 * * *\", datetime(2026, 1, 1, 9, 0))` returns `datetime(2026, 1, 2, 9, 0)`",
+  "behaviors": [
+    "The function must correctly parse a valid five-field cron expression and raise a `ValueError` if the expression is malformed (e.g., wrong number of fields or invalid syntax within a field).",
+    "The function must find the next minute strictly after the given `after` datetime that matches the minute and hour constraints, even if the date does not advance.",
+    "The function must correctly advance the date and time when the next match occurs on a subsequent day, respecting minute and hour constraints.",
+    "The function must correctly evaluate and enforce complex field specifications (ranges, steps, comma-separated lists) for any single field (minute, hour, day of month, month, day of week).",
+    "The function must correctly enforce that a time matches both the day of month and day of week constraints when both are specified in the expression (AND logic)."
+  ],
+  "assumptions": [
+    {
+      "text": "The input `expr` string will always be a string.",
+      "probe": "python -c \"import datetime; print(type('test'))\"",
+      "evidence": "-"
+    },
+    {
+      "text": "The input `after` datetime object will always be a valid `datetime.datetime` instance.",
+      "probe": "python -c \"import datetime; print(isinstance(datetime.datetime.now(), datetime.datetime))\"",
+      "evidence": "-"
+    }
+  ],
+  "files": [
+    "cron_next.py"
+  ],
+  "demo": "python -c \"from datetime import datetime; from cron_next import next_run; print(next_run('*/15 * * * *', datetime(2026, 1, 1, 10, 7)).strftime('%Y-%m-%d %H:%M:%S'))\"",
+  "out_of_scope": [
+    "Handling leap seconds or time zone conversions beyond standard naive datetime arithmetic.",
+    "Support for seconds field in the cron expression.",
+    "Handling impossible dates (e.g., Feb 30th) implied by the expression."
+  ],
+  "open_questions": [
+    "When both day of month and day of week are restricted, what is the desired behavior if the next potential match satisfies one constraint but not the other (i.e., how should the search proceed)?",
+    "What is the expected performance constraint or maximum search horizon for finding the next run time?",
+    "Should the implementation prioritize correctness for complex field logic (ranges/steps/lists) over strict adherence to a specific, small initial implementation scope?",
+    "Are there any specific preferences regarding the internal representation of the parsed cron expression (e.g., should it be a list of parsed objects, or a dictionary mapping field names to constraints)?",
+    "Is the primary focus for V1 the robustness of the parsing (Behavior 1) or the accuracy of the date advancement logic (Behavior 3)?"
+  ],
+  "notes": [
+    "stopped at round limit",
+    "unapplied review feedback: Answers from GOAL.md: same as before; no further requirements beyond the goal text."
+  ]
+}

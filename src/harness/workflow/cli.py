@@ -1,15 +1,19 @@
-"""``harness-workflow``: ``plan`` runs the Plan loop on a goal (M14), ``build`` runs the Execution loop on a Plan (M13)."""
+"""``harness-workflow``: ``plan`` runs the Plan loop on a goal (M14), ``build`` runs the Execution loop on a Plan (M13),
+``bench`` runs a manifest set of (kata, Plan) pairs N times into the ledger and ``report`` reads it back (F2)."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import io
+import json
 import os
 import re
 import signal
 import sys
 import time
 from collections.abc import Awaitable, Callable, Coroutine
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
@@ -18,8 +22,9 @@ from harness.config import HarnessConfig, load_config
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
-from harness.workflow.backend import choose, make_model
-from harness.workflow.execute import Ask, build_execution_graph, drive_graph, initial_state
+from harness.workflow import bench
+from harness.workflow.backend import Choice, choose, make_model
+from harness.workflow.execute import EXECUTION, Ask, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
@@ -51,6 +56,23 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     b.add_argument("--no-hints", action="store_true", help="baseline: Stuck skips the Behavior, clarify waives, Sign-off says yes")
     b.add_argument("--unload", action="store_true", help="unload the model at the end")
+    n = sub.add_parser("bench", help="run a manifest set of (kata, Plan) pairs N times, --no-hints, into the ledger")
+    n.add_argument("set", help="a set in the manifest (bench/katas.toml): claude-plans, local-plans, ...")
+    n.add_argument("--model", help="model id (default: the backend's model from config)")
+    n.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    n.add_argument("--repeat", type=int, default=1, help="runs per pair (default 1)")
+    n.add_argument("--label", help="the ledger label (default: <set>-<model>-<timestamp>)")
+    n.add_argument("--max-cost", type=float, default=1.0, metavar="USD",
+                   help="stop the whole bench once it has cost this much (default 1.00); each run keeps its own Spend cap")
+    n.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
+    n.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    r = sub.add_parser("report", help="the benchmark ledger: one label, a comparison of two, or the latest summary per kata")
+    r.add_argument("labels", nargs="*", help="a label to show (none: list the labels)")
+    r.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare label B against label A")
+    r.add_argument("--summaries", type=Path, metavar="PRACTICE_DIR", help="the latest summary per model x kata under DIR/*/runs/")
+    r.add_argument("--all", action="store_true", help="with --summaries: include hinted runs")
+    r.add_argument("--ledger", type=Path, help="the ledger (default <data_dir>/bench.jsonl)")
+    r.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     return p
 
 
@@ -97,14 +119,38 @@ def show(payload: dict[str, Any], out: TextIO) -> None:
     out.flush()
 
 
+@dataclass(frozen=True)
+class BuildResult:
+    code: int
+    summary: Path | None  # None when the run never started (uv sync failed)
+    workspace: Workspace
+    cost_usd: float
+    status: str | None
+
+
 async def run_build(
     plan: Plan, project: Path, *, model: WorkflowModel, model_id: str, sandbox: Sandbox, config: HarnessConfig,
     hints: bool, ask: Ask, out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic,
-    tty: bool | None = None,
+    tty: bool | None = None, plan_path: Path | None = None, backend: str | None = None,
 ) -> int:
+    result = await build_once(
+        plan, project, model=model, model_id=model_id, sandbox=sandbox, config=config, hints=hints, ask=ask, out=out,
+        err=err, clock=clock, tty=tty, plan_path=plan_path, backend=backend,
+    )
+    return result.code
+
+
+async def build_once(
+    plan: Plan, project: Path, *, model: WorkflowModel, model_id: str, sandbox: Sandbox, config: HarnessConfig,
+    hints: bool, ask: Ask, out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic,
+    tty: bool | None = None, plan_path: Path | None = None, backend: str | None = None, bench_label: str | None = None,
+    run_id: str | None = None,
+) -> BuildResult:
+    """One Execution loop run; its summary carries the provenance (F2). ``backend`` defaults to the model id's."""
     cfg = config.workflow
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    run_id = f"{stamp}-{re.sub(r'[^A-Za-z0-9._-]', '_', model_id)}"
+    run_id = run_id or f"{stamp}-{re.sub(r'[^A-Za-z0-9._-]', '_', model_id)}"
+    backend = backend or choose(config, model=model_id).backend
     progress = Progress(err, out, clock=clock, tty=tty)
     rec = Recorder()
     log = RunLog(cfg.runs_dir.expanduser() / f"{run_id}.jsonl", listener=lambda record: progress.end(describe(record)))
@@ -115,7 +161,7 @@ async def run_build(
     synced = await workspace.sync_deps()
     if synced.exit_code != 0:
         err.write(f"uv sync --frozen failed:\n{synced.output}\n")
-        return 1
+        return BuildResult(1, None, workspace, 0.0, None)
     graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log)
     seen = {"idx": 0, "total": len(plan.behaviors)}
 
@@ -151,15 +197,76 @@ async def run_build(
         progress.clear()
     summary = write_summary(
         project / "runs", model=model_id, project=project, no_hints=not hints, status=final.get("status"),
-        planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path,
+        planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path, name=run_id,
+        provenance=bench.provenance(
+            plan, plan_path=plan_path, backend=backend, effort=cfg.effort if backend == "anthropic" else None,
+            max_attempts=cfg.max_attempts, execution=EXECUTION, bench=bench_label,
+        ),
     )
+    status = final.get("status")
     if cancelled:
         out.write(f"\ncancelled; Workspace kept at {workspace.path}\nsummary: {summary}\n")
         out.flush()
-        return CANCELLED_EXIT
-    out.write(final_report(rec, clock() - started) + f"\n\nstatus: {final.get('status')}; polish {rec.polish}\nsummary: {summary}\n")
+        return BuildResult(CANCELLED_EXIT, summary, workspace, rec.cost_usd, status)
+    out.write(final_report(rec, clock() - started) + f"\n\nstatus: {status}; polish {rec.polish}\nsummary: {summary}\n")
     out.flush()
-    return SPEND_CAP_EXIT if final.get("status") == "spend_cap" else 0
+    return BuildResult(SPEND_CAP_EXIT if status == "spend_cap" else 0, summary, workspace, rec.cost_usd, status)
+
+
+async def run_bench(
+    bench_set: bench.BenchSet, *, make: Callable[[], WorkflowModel], choice: Choice, sandbox: Sandbox, config: HarnessConfig,
+    repeat: int, label: str, max_cost: float, ledger: Path, out: TextIO = sys.stdout, err: TextIO = sys.stderr,
+    clock: Callable[[], float] = time.monotonic,
+) -> int:
+    """Every pair ``repeat`` times, ``--no-hints`` and answering ``no`` at finish, one ledger line per run; each Workspace
+    is removed afterwards. Each run's Spend cap is the smaller of ``max_cost_usd`` and what is left of ``max_cost``; once
+    the bench has spent ``max_cost`` it stops cleanly (exit 3), keeping the lines already written."""
+    spent = 0.0
+    runs = len(bench_set.pairs) * repeat
+    out.write(f"bench {bench_set.name} on {choice.model_id}: {len(bench_set.pairs)} pairs x {repeat} = {runs} runs, "
+              f"label {label}, max ${max_cost:.2f}, ledger {ledger}\n")
+    done = 0
+    for n in range(1, repeat + 1):
+        for pair in bench_set.pairs:
+            left = max_cost - spent
+            if left <= 0:
+                out.write(f"bench stopped at ${spent:.4f} (max ${max_cost:.2f}) after {done}/{runs} runs\n")
+                return SPEND_CAP_EXIT
+            run_config = config.model_copy(deep=True)
+            run_config.workflow.max_cost_usd = min(config.workflow.max_cost_usd, left)
+            plan = Plan.load(pair.plan)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            run_id = re.sub(r"[^A-Za-z0-9._-]", "_", f"{stamp}-{choice.model_id}-{label}-{pair.kata}-r{n}")
+            started = clock()
+            log_out = io.StringIO()  # the run's own output; the bench prints one line per run instead
+            result = await build_once(
+                plan, pair.project, model=make(), model_id=choice.model_id, sandbox=sandbox, config=run_config, hints=False,
+                ask=lambda _p: "no", out=log_out, err=log_out, clock=clock, tty=False, plan_path=pair.plan,
+                backend=choice.backend, bench_label=label, run_id=run_id,
+            )
+            try:
+                if result.summary is None:
+                    err.write(f"{pair.kata} r{n}: the run did not start\n{log_out.getvalue()}")
+                    continue
+                summary = json.loads(result.summary.read_text())
+                bench.append_ledger(ledger, bench.ledger_line(label=label, set_name=bench_set.name, repeat=n, pair=pair, summary=summary))
+            finally:
+                await result.workspace.remove()
+            spent += result.cost_usd
+            done += 1
+            t = summary["totals"]
+            out.write(f"{pair.kata} r{n}/{repeat}: {t['green']}/{summary['planned']} Green · {t['attempts']}a · "
+                      f"{t.get('satisfied', 0)}s · {summary.get('stuck', 0)} stuck · {(clock() - started) / 60:.1f}m · "
+                      f"${result.cost_usd:.4f} · {result.status}\n")
+            out.flush()
+            if result.code == CANCELLED_EXIT:
+                return CANCELLED_EXIT
+            if result.status == "spend_cap" and run_config.workflow.max_cost_usd < config.workflow.max_cost_usd:
+                out.write(f"bench stopped at ${spent:.4f} (max ${max_cost:.2f}) after {done}/{runs} runs\n")
+                return SPEND_CAP_EXIT
+    out.write(f"bench done: {done} runs, ${spent:.4f}\n")
+    return 0
+
 
 
 def cost_note(rec: Recorder) -> str:
@@ -263,9 +370,51 @@ async def live_build(args: argparse.Namespace, config: HarnessConfig, ask: Ask) 
     async def body(model: WorkflowModel, model_id: str) -> int:
         return await run_build(
             plan, project, model=model, model_id=model_id, sandbox=SeatbeltSandbox(), config=config, hints=not args.no_hints, ask=ask,
+            plan_path=args.plan.expanduser().resolve(),
         )
 
     return await with_model(args, config, body)
+
+
+async def live_bench(args: argparse.Namespace, config: HarnessConfig) -> int:
+    sets = bench.load_manifest(args.manifest)
+    if args.set not in sets:
+        sys.stderr.write(f"no set {args.set!r} in {args.manifest} (sets: {', '.join(sets)})\n")
+        return 2
+    choice = choose(config, model=args.model, backend=args.backend)
+    if choice.backend != "anthropic":
+        sys.stderr.write("bench runs on the Anthropic API; the Ollama path is frozen (ADR 0007)\n")
+        return 2
+    label = args.label or re.sub(r"[^A-Za-z0-9._-]", "_", f"{args.set}-{choice.model_id}-{datetime.now():%Y%m%d-%H%M%S}")
+
+    def make() -> WorkflowModel:
+        model = make_model(config, choice, None)
+        assert model is not None
+        return model
+
+    return await run_bench(
+        sets[args.set], make=make, choice=choice, sandbox=SeatbeltSandbox(), config=config, repeat=args.repeat,
+        label=label, max_cost=args.max_cost, ledger=config.paths.bench_ledger,
+    )
+
+
+def report(args: argparse.Namespace, config: HarnessConfig, out: TextIO = sys.stdout) -> int:
+    if args.summaries is not None:
+        runs = bench.load_summaries(args.summaries.expanduser(), args.all)
+        out.write((bench.summaries_table(runs) if runs else "no runs found") + "\n")
+        return 0
+    ledger = args.ledger or config.paths.bench_ledger
+    lines = bench.read_ledger(ledger)
+    if args.compare:
+        out.write(bench.compare_table(lines, *args.compare) + "\n")
+    elif args.labels:
+        out.write("\n\n".join(bench.label_table(lines, label) for label in args.labels) + "\n")
+    else:
+        rows = bench.labels(lines)
+        out.write(("labels in " + str(ledger) + ":\n" + "\n".join(f"  {name}  {n} runs  from {at}" for name, n, at in rows))
+                  if rows else f"the ledger {ledger} is empty")
+        out.write("\n")
+    return 0
 
 
 async def live_plan(args: argparse.Namespace, config: HarnessConfig, ask: Ask) -> int:
@@ -302,9 +451,14 @@ async def run_cancellable(coro: Coroutine[Any, Any, int]) -> int:
 def main(argv: list[str] | None = None, *, ask: Ask = _stdin) -> None:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
-    if args.max_cost is not None:
-        config.workflow.max_cost_usd = args.max_cost
-    run = live_plan if args.command == "plan" else live_build
-    code = asyncio.run(run_cancellable(run(args, config, ask)))
+    if args.command == "report":
+        code = report(args, config)
+    elif args.command == "bench":
+        code = asyncio.run(run_cancellable(live_bench(args, config)))
+    else:
+        if args.max_cost is not None:
+            config.workflow.max_cost_usd = args.max_cost
+        run = live_plan if args.command == "plan" else live_build
+        code = asyncio.run(run_cancellable(run(args, config, ask)))
     if code:
         raise SystemExit(code)

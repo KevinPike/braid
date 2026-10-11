@@ -1,0 +1,25 @@
+# F2 benchmark manifest: named sets of (kata, Plan) pairs for `harness-workflow bench <set>`.
+# Plans live here, so a run can be repeated from them; kata repos are referenced by path (make them with
+# examples/graphs/make_katas.py). A pair may set `project` to override practice_dir/<kata>.
+
+practice_dir = "~/projects/braid-practice"
+
+[sets.claude-plans]
+description = "The five katas with the Plans Claude wrote (M13; F1's Haiku row: 29/30)."
+pairs = [
+  { kata = "bowling", plan = "plans/claude/bowling.json" },
+  { kata = "cron-next", plan = "plans/claude/cron-next.json" },
+  { kata = "roman-numerals", plan = "plans/claude/roman-numerals.json" },
+  { kata = "semver-compare", plan = "plans/claude/semver-compare.json" },
+  { kata = "word-wrap", plan = "plans/claude/word-wrap.json" },
+]
+
+[sets.local-plans]
+description = "The five katas with the Plans gemma4:e4b wrote in the Plan loop (M14; F1's Haiku row: 21/24)."
+pairs = [
+  { kata = "bowling", plan = "plans/local/bowling.json" },
+  { kata = "cron-next", plan = "plans/local/cron-next.json" },
+  { kata = "roman-numerals", plan = "plans/local/roman-numerals.json" },
+  { kata = "semver-compare", plan = "plans/local/semver-compare.json" },
+  { kata = "word-wrap", plan = "plans/local/word-wrap.json" },
+]

@@ -29,6 +29,7 @@ from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter, tail
 
+EXECUTION = "tdd-v1"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str

@@ -1,0 +1,52 @@
+{
+  "goal": "Implement next_run(expr, after) in cron_next.py returning the first minute strictly after `after` matching a five-field cron expression, raising ValueError on malformed input.",
+  "behaviors": [
+    "parse_field(\"*/15\", 0, 59) returns the set {0, 15, 30, 45}, and parse_field(\"*\", 1, 12) returns {1..12}, parse_field(\"5\", 0, 59) returns {5}.",
+    "parse_field handles ranges, stepped ranges and comma lists: \"1-5\" returns {1,2,3,4,5}, \"1-30/5\" returns {1,6,11,16,21,26}, and \"1,10-12,*/30\" over 0-59 returns {0,1,10,11,12,30}.",
+    "parse_field and the expression parser raise ValueError for malformed input: \"60\" in minute range 0-59, \"5-1\", \"*/0\", \"abc\", an empty field, and an expression with 4 fields such as \"* * * *\".",
+    "next_run(\"*/15 * * * *\", datetime(2026,1,1,10,7)) returns datetime(2026,1,1,10,15), and the result is strictly after `after` with seconds zero, so next_run(\"0 9 * * *\", datetime(2026,1,1,9,0)) returns datetime(2026,1,2,9,0) and an `after` with seconds like 10:07:30 yields 10:08 for \"* * * * *\".",
+    "next_run rolls over hour, day, month and year boundaries: next_run(\"0 0 1 1 *\", datetime(2026,1,1,0,0)) returns datetime(2027,1,1,0,0), and next_run(\"30 2 31 * *\", datetime(2026,2,1,0,0)) returns datetime(2026,3,31,2,30).",
+    "When both day of month and day of week are restricted a time must match both, with Sunday as 0: next_run(\"0 0 13 * 5\", datetime(2026,1,1)) returns datetime(2026,2,13,0,0) (Friday the 13th), and \"0 0 * * 0\" after Thursday 2026-01-01 00:00 returns datetime(2026,1,4,0,0)."
+  ],
+  "assumptions": [
+    {
+      "text": "cron_next.py exists at the repo root as the single flat module",
+      "probe": "test -f cron_next.py",
+      "evidence": "git ls-files - cron_next.py"
+    },
+    {
+      "text": "tests/ directory exists for the pytest files",
+      "probe": "test -d tests",
+      "evidence": "git ls-files - tests/.gitkeep"
+    },
+    {
+      "text": "pyproject.toml exists to configure the project",
+      "probe": "test -f pyproject.toml",
+      "evidence": "git ls-files - pyproject.toml"
+    },
+    {
+      "text": "Python is version 3.10 or newer and datetime is available",
+      "probe": "python3 -c 'import sys, datetime; assert sys.version_info >= (3, 10)'",
+      "evidence": null
+    },
+    {
+      "text": "pytest is available to run the tests",
+      "probe": "python3 -m pytest --version || .venv/bin/python -m pytest --version",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "cron_next.py",
+    "tests/test_cron_next.py"
+  ],
+  "demo": "python -c 'from datetime import datetime; from cron_next import next_run; print(next_run(\"*/15 * * * *\", datetime(2026,1,1,10,7))); print(next_run(\"0 9 * * *\", datetime(2026,1,1,9,0)))'",
+  "out_of_scope": [
+    "Named months and weekdays such as JAN or MON",
+    "Special strings such as @daily",
+    "Seconds or year fields",
+    "Time zones and daylight saving handling",
+    "Day of week value 7 as Sunday",
+    "OR semantics for day of month and day of week"
+  ],
+  "open_questions": []
+}

@@ -165,6 +165,11 @@ class PathsConfig(BaseModel):
         return self.resolved_data_dir / "evals"
 
     @property
+    def bench_ledger(self) -> Path:
+        """F2: one line per benchmark run (``harness-workflow bench``), with its summary and provenance."""
+        return self.resolved_data_dir / "bench.jsonl"
+
+    @property
     def calibration_file(self) -> Path:
         return self.resolved_data_dir / "calibration.json"
 

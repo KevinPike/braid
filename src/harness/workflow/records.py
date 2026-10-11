@@ -8,7 +8,7 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from harness.workflow.model import ApiCall
@@ -106,7 +106,9 @@ class UsageMeter:
     A model without ``ApiCall``s in a ``calls`` list (anything Ollama-backed, or a fake) has none."""
 
     def __init__(self, model: object) -> None:
-        self.model, self.mark = model, 0
+        calls = getattr(model, "calls", None)
+        self.model = model
+        self.mark = len(calls) if isinstance(calls, list) else 0  # a model reused across runs: only this run's calls
 
     def take(self) -> list[ApiCall]:
         calls = getattr(self.model, "calls", None)
@@ -143,12 +145,15 @@ def read_log(path: Path) -> list[dict[str, Any]]:
 
 def write_summary(
     directory: Path, *, model: str, project: Path, no_hints: bool, status: str | None, planned: int, rec: Recorder,
-    workspace: Path, run_log: Path | None, now: datetime | None = None,
+    workspace: Path, run_log: Path | None, now: datetime | None = None, provenance: Mapping[str, Any] | None = None,
+    name: str | None = None,
 ) -> Path:
-    """The M11 summary JSON (``examples/graphs/report.py`` reads it): per Behavior and in total."""
+    """The M11 summary JSON (``harness-workflow report`` reads it): per Behavior and in total, plus F2's provenance
+    (``workflow/bench.py``: which harness commit, Plan, backend and settings produced it). ``name`` defaults to a
+    timestamp and the model."""
     directory.mkdir(parents=True, exist_ok=True)
     stamp = (now or datetime.now()).strftime("%Y%m%d-%H%M%S")
-    path = directory / f"{stamp}-{re.sub(r'[^A-Za-z0-9._-]', '_', model)}.json"
+    path = directory / f"{name or stamp + '-' + re.sub(r'[^A-Za-z0-9._-]', '_', model)}.json"
     b = rec.behaviors
     path.write_text(json.dumps({
         "model": model, "kata": project.name, "no_hints": no_hints, "status": status,
@@ -163,5 +168,6 @@ def write_summary(
         },
         "stuck": rec.stuck, "polish": rec.polish, "trace": rec.trace, "workspace": str(workspace),
         "run_log": str(run_log) if run_log else None,
+        **(provenance or {}),
     }, indent=2) + "\n")
     return path

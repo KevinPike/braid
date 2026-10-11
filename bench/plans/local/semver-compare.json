@@ -1,0 +1,35 @@
+{
+  "goal": "# semver-compare\n\n`compare(a: str, b: str) -> int` returns `-1` if version `a` is lower than `b`, `0` if they are equal and `1`\nif it is higher, following semver 2.0 precedence: numeric `major.minor.patch` compared as integers, a version with a\npre-release (`1.0.0-alpha`) lower than the same version without one, pre-release identifiers compared one by one\n(numeric identifiers as integers and lower than alphanumeric ones), and build metadata (`+build`) ignored. A string\nthat is not a valid version raises `ValueError`.\n\n- `compare(\"1.2.3\", \"1.10.0\")` returns `-1`\n- `compare(\"1.0.0-alpha\", \"1.0.0\")` returns `-1`",
+  "behaviors": [
+    "The function must correctly parse and compare two standard semantic version strings (major.minor.patch) treating components as integers, returning -1, 0, or 1 accordingly. This covers basic numeric comparison.",
+    "The function must correctly handle pre-release tags, ensuring that a version with a pre-release tag is considered lower than the same version without one (e.g., 1.0.0-alpha < 1.0.0).",
+    "The function must correctly compare pre-release identifiers sequentially, treating numeric identifiers as integers and ensuring they are lower than alphanumeric identifiers (e.g., 1.0.0-alpha.1 < 1.0.0-alpha.10).",
+    "The function must ignore any build metadata present in the version strings during comparison, treating '1.0.0+build' as equal to '1.0.0'.",
+    "The function must raise a `ValueError` if either input string does not conform to a valid semantic version format according to SemVer 2.0 rules, including malformed pre-release tags."
+  ],
+  "assumptions": [
+    {
+      "text": "A valid semantic version string must adhere strictly to SemVer 2.0 specification for structure (major.minor.patch, optional pre-release, optional build metadata).",
+      "probe": "python -c \"import re; print(re.match(r'^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)(?:-((?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9]\\d*|\\d*[a-zA-Z-][0-9a-zA-Z-]*))*))?(?:\\+([0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*))?$', '1.0.0-alpha.1+build1') is not None\"",
+      "evidence": "N/A"
+    }
+  ],
+  "files": [
+    "semver_compare.py"
+  ],
+  "demo": "python -c \"from semver_compare import compare; print(f'1.2.3 vs 1.10.0: {compare('1.2.3', '1.10.0')}')\n1.0.0-alpha vs 1.0.0: {compare('1.0.0-alpha', '1.0.0')}\n1.0.0-alpha.1 vs 1.0.0-alpha.10: {compare('1.0.0-alpha.1', '1.0.0-alpha.10')}\n1.0.0+build1 vs 1.0.0: {compare('1.0.0+build1', '1.0.0')}\"",
+  "out_of_scope": [
+    "Comparison of versions with only build metadata (e.g., '1.0.0+build' vs '1.0.0+otherbuild')."
+  ],
+  "open_questions": [
+    "What is the intended level of strictness for the initial structural validation (Behavior 5)? Should it strictly enforce all SemVer 2.0 rules immediately, or should it allow for a more lenient initial parse?",
+    "Regarding pre-release identifier comparison (Behavior 3), should the initial implementation prioritize correctness for simple numeric vs. alphanumeric comparisons, or should it aim for full recursive/sequential comparison immediately?",
+    "What is the primary goal for the first iteration: achieving perfect SemVer compliance, or ensuring the core numeric and pre-release ordering logic works for the most common cases?",
+    "Should the plan explicitly address the risk of leading zeros in numeric components (e.g., '1.01.0') as a primary focus, or can this be deferred until after the core comparison logic is stable?",
+    "Is the comparison of a version with a pre-release tag against the same version without one (Behavior 2) considered the most critical ordering rule to get right first?"
+  ],
+  "notes": [
+    "stopped at round limit",
+    "unapplied review feedback: Answers from GOAL.md: no further requirements beyond the goal text."
+  ]
+}

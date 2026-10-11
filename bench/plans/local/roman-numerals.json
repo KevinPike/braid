@@ -1,0 +1,34 @@
+{
+  "goal": "# roman-numerals\n\n`to_roman(n: int) -> str` converts an integer from 1 to 3999 to its Roman numeral, using subtractive\nnotation (IV, IX, XL, XC, CD, CM). Any other integer raises `ValueError`.\n\n- `to_roman(4)` returns `\"IV\"`\n- `to_roman(1994)` returns `\"MCMXCIV\"`",
+  "behaviors": [
+    "The function must raise a `ValueError` if the input integer is less than 1.",
+    "The function must raise a `ValueError` if the input integer is greater than 3999.",
+    "The function must correctly convert the integer 4 to the Roman numeral 'IV' using subtractive notation.",
+    "The function must correctly convert the integer 1994 to the Roman numeral 'MCMXCIV' using subtractive notation."
+  ],
+  "assumptions": [
+    {
+      "text": "The input `n` will be an integer.",
+      "probe": "python -c \"import sys; print(type(sys.argv[1]))\" 2>/dev/null | grep -q \"<class 'int'>\"",
+      "evidence": "N/A"
+    }
+  ],
+  "files": [
+    "roman_converter.py"
+  ],
+  "demo": "python -c \"from roman_converter import to_roman; print(f'4 -> {to_roman(4)}'); print(f'1994 -> {to_roman(1994)}'); try: to_roman(0); print('Error on 0'); except ValueError as e: print(f'Caught expected error for 0: {e}'); try: to_roman(4000); print('Error on 4000'); except ValueError as e: print(f'Caught expected error for 4000: {e}');\"",
+  "out_of_scope": [
+    "Handling non-integer input types (e.g., floats, strings)."
+  ],
+  "open_questions": [
+    "What is the intended approach for implementing the conversion logic (e.g., greedy subtraction, lookup table)?",
+    "Should the function be expected to handle the full range of 1 to 3999, or are the provided examples sufficient for the initial implementation?",
+    "Are there any specific constraints on the *style* of the Roman numeral output beyond using subtractive notation (e.g., must it be the shortest possible form)?",
+    "If the input is outside the 1-3999 range, is raising `ValueError` the only acceptable error handling, or should other exceptions be considered?",
+    "Are there any specific edge cases within the 1-3999 range (e.g., numbers ending in 4 or 9) that require special attention beyond the examples provided?"
+  ],
+  "notes": [
+    "stopped at round limit",
+    "unapplied review feedback: Answers from GOAL.md: handle every int 1 to 3999, not just the examples; algorithm is the implementer's choice; output is the standard subtractive form (IV, IX, XL, XC, CD, CM); any int outside 1..3999 raises ValueError and the goal names no other exception; no special edge cases beyond the subtractive pairs."
+  ]
+}

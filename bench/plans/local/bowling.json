@@ -1,0 +1,36 @@
+{
+  "goal": "# bowling\n\n`score(rolls: list[int]) -> int` returns the total score of one complete game of ten-pin bowling, given the\npins knocked down by each roll in order. A strike scores 10 plus the next two rolls, a spare scores 10 plus the next\nroll, and the tenth frame gives up to two bonus rolls. The input is always a valid, complete game.\n\n- `score([0] * 20)` returns `0`\n- `score([10] * 12)` returns `300`",
+  "behaviors": [
+    "The score must be zero when all rolls are zero.",
+    "The score must correctly calculate the score for a standard open frame (two rolls summing to less than 10).",
+    "The score must correctly calculate a strike (10 plus the next two rolls) when a strike occurs in any frame.",
+    "The score must correctly calculate a spare (10 plus the next roll) when a spare occurs in any frame, including the tenth frame.",
+    "The score must correctly calculate the total score for a perfect game (12 strikes).",
+    "The score must correctly calculate the total score when the tenth frame involves bonus rolls (strike or spare)."
+  ],
+  "assumptions": [
+    {
+      "text": "The input list `rolls` will always represent a complete game of ten-pin bowling.",
+      "probe": "python -c \"len([0]*20) == 20\"",
+      "evidence": "N/A"
+    }
+  ],
+  "files": [
+    "bowling.py"
+  ],
+  "demo": "python -c \"from bowling import score; print(f'Zero score: {score([0] * 20)})'); print(f'Perfect score: {score([10] * 12)})'\"",
+  "out_of_scope": [
+    "Handling invalid or incomplete game inputs."
+  ],
+  "open_questions": [
+    "What is your preferred approach for iterating through the rolls: frame-by-frame or roll-by-roll?",
+    "When implementing the lookahead for strikes/spares, do you prefer a helper function or inline logic?",
+    "How strictly should the plan adhere to the 20-roll assumption, given the risk noted about bonus rolls extending the input length?",
+    "Are there any specific scoring edge cases (e.g., a strike in the 9th frame followed by a spare in the 10th) that you want to prioritize in the initial implementation?",
+    "Do you intend for the logic to handle the 10th frame as a special case, or should it be integrated into the general frame logic?"
+  ],
+  "notes": [
+    "stopped at round limit",
+    "unapplied review feedback: Answers from GOAL.md: no further requirements beyond the goal text."
+  ]
+}
