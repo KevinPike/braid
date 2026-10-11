@@ -2,7 +2,7 @@
 
 M11–M15 are built (see `specs/initial.md` status notes). These are the next features, planned 2026-10-10 from the live results: e4b gets 28/30 Green with Claude's Plans, but only 11/24 with its own; mixed edits cost attempts; small-model planning does not converge. Terms are from `CONTEXT.md`. Each feature lists its gates; every gate gets a pytest test with fakes, and live numbers are measured, not gated.
 
-**Order:** F1 → F2 → F3 → F4 → F5 (F2 rewritten 2026-10-10 after the F1 live check; `write_change` moved under Later). F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
+**Order:** F1 → F2 → F3 → F4 → F5 → F6. On 2026-10-10, after the F1 live check, test disputes became F3, `write_change` moved under Later, and benchmarks were added as F2, so that every later feature is measured against a baseline. F1 comes first because a Haiku row turns every later change into a three-way comparison (e4b, Haiku, Claude Plans) at a few cents per run.
 
 ---
 
@@ -54,14 +54,41 @@ Run both loops on Claude through the Anthropic API, so the katas can be run on C
   - Bowling, local Plan: one test expects 58 for a game the rules score 70; another has an expected value that is an unreadable expression for an incomplete game.
   - Word-wrap Behavior 2 (local Plan): the test's expected output is wrong.
 
-  In each case Haiku said so on all three attempts and would not special-case the implementation. This led to the new F2 (test disputes settled by Plan invariants).
+  In each case Haiku said so on all three attempts and would not special-case the implementation. This led to the new F3 (test disputes settled by Plan invariants).
 - **Not measured:** effort `low` against `medium`; the Spend cap ($0.10) was never close.
 
 **Later, not in F1:** Haiku as the Plan-loop model (Claude-quality Plans without `claude -p`). The chat agent on Strands' Anthropic provider (allowed by ADR 0006; build it when it is needed). Anthropic Batches for a cheap overnight baseline.
 
 ---
 
-## F2 — Test disputes, settled by Plan invariants
+## F2 — Benchmarks: know whether a change helped
+
+Until now, the comparison tables in the status notes were copied by hand from one run per model × kata. `report.py` keeps only the latest run per cell, and summaries don't record which Plan, harness commit or settings produced them. On the same Plans, e4b moved between 27/30 and 28/30 across reruns, and one kata between 6/6 and 4/6, so a difference of 2 may be noise. A model can now run all five katas for a few cents, so repeats are affordable.
+
+- **Provenance in every summary.** Add `harness_commit` and `harness_dirty`, `plan_path` and `plan_sha256`, `backend`, `model`, `effort`, `max_attempts`, `execution` (graph variant) and `bench` (a run label, or null). This is plain data, so older summaries still load with the fields missing.
+- **A manifest** at `bench/katas.toml`, checked into the repo: named sets of `(kata, plan)` pairs.
+  - `claude-plans`: the five katas with their `plan.json`.
+  - `local-plans`: the M14 Plans.
+  - `disputed`: the four F1 Behaviors, with Invariants for F3.
+  - The Plans live in the repo under `bench/plans/` so a run can be repeated from them; the kata repos are referenced by path.
+- **`harness-workflow bench <set> --model <id> [--repeat N] [--label name]`.**
+  - It runs every pair N times, `--no-hints`, answering `no` at finish, and removes each Workspace afterwards.
+  - It appends one line per run to a ledger at `~/.braid/bench.jsonl`, holding the summary and its provenance.
+  - Every run has its own Spend cap, and the whole bench has `--max-cost`, which stops it cleanly with exit code 3.
+- **`report.py --compare <label> <label>`** (or a `bench report` subcommand): per kata and in total, it shows mean Green, the min–max range over repeats, attempts, Satisfied, Stuck, minutes and cost. A difference smaller than the range is reported as "within noise".
+- **Comparison only, no hard gate** ("measured, not gated", as before). A drop shows in the comparison; it never fails the test suite.
+- **First baseline:** `claude-plans` on `claude-haiku-5-5`, 3 repeats, labelled `baseline-f1`, about $0.10. Every later feature reports its comparison against a baseline in its status notes.
+
+**Gates** (`tests/workflow/test_bench.py`, with fakes):
+1. A summary carries the provenance fields, and the Plan hash changes when the Plan does.
+2. `bench` runs every pair × N, appends one ledger line per run, and leaves no Workspace behind.
+3. The bench-wide `--max-cost` stops cleanly with exit code 3, keeping the runs already written.
+4. The comparison computes means and ranges from ledger lines, and labels a difference within the range as noise.
+5. Old summaries without provenance still load in the report.
+
+---
+
+## F3 — Test disputes, settled by Plan invariants
 
 The F1 live check: all four Haiku Stucks were tests whose expected value contradicts the Plan. For example, word-wrap expects `"ij yo"` at width 4, and a bowling test expects 58 for a game the rules score 70. Haiku said the test was wrong on every attempt, spent three attempts, and the run went to Stuck without saying why. An invalid test that reaches implementation should be caught and sent back to `write_test` with the reason. A model's claim must never decide the route (ADR 0004), so a deterministic check decides it, against invariants the Plan states.
 
@@ -69,7 +96,7 @@ The F1 live check: all four Haiku Stucks were tests whose expected value contrad
   - `Plan.invariants: list[Invariant]`, where `Invariant(text, check)`. `check` is a Python expression over one call of the function under test: `fn` (its name), `args`, `kwargs` and `result`. Examples:
     - `all(len(line) <= args[1] for line in result.split("\n"))` (word-wrap)
     - `0 <= result <= 300` (bowling)
-  - The Plan loop's `draft` writes them, from the goal's rules. F3's Plan checks add a check that a Plan with rules in its goal has at least one invariant.
+  - The Plan loop's `draft` writes them, from the goal's rules. F4's Plan checks add a check that a Plan with rules in its goal has at least one invariant.
   - Hand-written Plans (`plan.json`) can add them by hand.
 - **Extracting the asserted examples.** A deterministic helper parses a test file with `ast` and finds `assert fn(<literals>) == <literal>`, both ways round, including inside `pytest.mark.parametrize` tables when the values are literals. It returns `(test name, fn, args, kwargs, expected)` for each. Asserts it can't evaluate with `ast.literal_eval` are skipped and counted, never guessed.
 - **`check_invariants`**, a deterministic node.
@@ -92,7 +119,7 @@ The F1 live check: all four Haiku Stucks were tests whose expected value contrad
 5. A Behavior that ends Stuck after disputes shows the dispute reason in the Stuck interrupt.
 6. An invariant expression that raises counts as "unchecked", not as a violation, and is reported.
 
-## F3 — Mixed edits and Plan checks
+## F4 — Mixed edits and Plan checks
 
 **Mixed edits** (still needed for Polish and the split graph). When a reply mixes allowed and refused files, write the allowed files, **still run the check**, and put the refusal in the next prompt. Gate: a `write_impl` reply with the implementation plus a test file runs `run_green` on the implementation and does not use up a second attempt for the refusal alone.
 
@@ -107,7 +134,7 @@ The F1 live check: all four Haiku Stucks were tests whose expected value contrad
 
 ---
 
-## F4 — Time travel: fork a run from a checkpoint
+## F5 — Time travel: fork a run from a checkpoint
 
 LangGraph keeps every checkpoint (M15), so a stuck run can be replayed from just before its bad node with a different prompt, hint or model.
 
@@ -121,7 +148,7 @@ LangGraph keeps every checkpoint (M15), so a stuck run can be replayed from just
 
 ---
 
-## F5 — Graphs defined in YAML, as skills
+## F6 — Graphs defined in YAML, as skills
 
 Small Workflows written as YAML files and run with `/run <name> [args]`. This revives M6 (Skills) as small checked graphs, not prompt files.
 
@@ -144,5 +171,5 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 
 - F1: does Haiku's adaptive thinking need `effort: low` for the katas, or is the default `medium` worth its cost? Measure both on one kata.
 - F1: should the Plan loop default to Haiku once F1 lands, since local Plans are weak? That decision belongs to the user after the live check.
-- F2: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? That would route on a model's claim, so it needs an ADR 0004 amendment. Another option is an arbiter on a stronger model (a crew). Decide after the F2 replays.
-- Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F3's mixed-edit handling covers e4b more cheaply.
+- F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? That would route on a model's claim, so it needs an ADR 0004 amendment. Another option is an arbiter on a stronger model (a crew). Decide after the F3 replays.
+- Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F4's mixed-edit handling covers e4b more cheaply.
