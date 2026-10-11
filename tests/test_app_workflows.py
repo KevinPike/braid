@@ -33,7 +33,6 @@ from harness.workflow.records import read_log
 from harness.workflow.runs import RunInfo, RunStore
 from harness.workflow_pane import WorkflowDeps, parse_flags, shorten_command
 from tests.guard.fakes import GIB, FakeBackend
-from tests.workflow.fakes import SchemaModel
 from tests.workflow.test_checkpoint import Hangs
 from tests.workflow.test_execute import MOD, MUL_IMPL, MUL_TEST, NEG, NEG_TEST, ScriptedModel, edit, make_test, tree
 from tests.workflow.test_plan_loop import scripted

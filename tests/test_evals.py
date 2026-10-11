@@ -6,7 +6,7 @@ Fakes only: a fake Ollama backend and fake agents, no network. The Strands Evals
 
 import importlib.util
 import json
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 
@@ -60,7 +60,7 @@ def test_empty_result_has_no_metrics_instead_of_crashing() -> None:
 
 def test_markdown_and_json_reports_are_written(tmp_path: Path) -> None:
     results = [result("good", [True] * 4), result("bad", [False] * 4), ModelResult("gone", status="skipped", reason="not pulled")]
-    when = datetime(2026, 10, 8, 12, 0, 0, tzinfo=timezone.utc)
+    when = datetime(2026, 10, 8, 12, 0, 0, tzinfo=UTC)
     md_path, json_path, md = write_reports(results, tmp_path / "evals", num_ctx=1000, cases_path="x.json", when=when)
     assert md_path.name == "20261008T120000Z.md" and json_path.name == "20261008T120000Z.json"
     assert md_path.read_text() == md

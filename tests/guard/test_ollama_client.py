@@ -5,6 +5,7 @@ import pytest
 import respx
 
 from harness.guard.ollama_client import CallMetrics, OllamaClient, RunningModel, UnpinnedModelError, UnsupportedModelError
+from datetime import UTC
 
 HOST = "http://ollama.test"
 
@@ -121,10 +122,10 @@ async def test_show_extracts_architecture(client: OllamaClient) -> None:
 
 def test_ps_undercount_detection() -> None:
     """ollama#17251: ps reports the speculative draft's footprint instead of the target's."""
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     def entry(size: int) -> "RunningModel":
-        return RunningModel("m", "d", size, size, datetime.now(timezone.utc), 4096)
+        return RunningModel("m", "d", size, size, datetime.now(UTC), 4096)
 
     assert not entry(7_000).undercounts(expected_size=10_000)
     assert entry(1_000).undercounts(expected_size=10_000)

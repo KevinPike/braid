@@ -14,7 +14,7 @@ from harness.workflow.execute import build_execution_graph, drive_graph, initial
 from harness.workflow.plan import Plan
 from harness.workflow.records import BehaviorStats, Recorder
 from harness.workflow.runs import RunInfo, RunStore, open_checkpointer
-from tests.workflow.test_execute import MUL_IMPL, MUL_TEST, ScriptedModel, edit, MUL, tree
+from tests.workflow.test_execute import MUL_IMPL, MUL_TEST, ScriptedModel, tree
 
 
 class Hangs:

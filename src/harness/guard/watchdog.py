@@ -11,7 +11,7 @@ import statistics
 import subprocess
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 from enum import IntEnum
 from typing import Protocol
 
@@ -156,7 +156,7 @@ class WatchdogBackend(Protocol):
 
 
 def _utc_now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Watchdog:

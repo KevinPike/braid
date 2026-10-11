@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 from harness.guard.ollama_client import ModelInfo, ModelTag, RunningModel
 
@@ -23,7 +23,7 @@ class FakeBackend:
     ) -> None:
         # ollama#17251: with a speculative draft model, /api/ps reports only the draft's small footprint.
         self.draft_only_ps = draft_only_ps
-        self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.clock = clock or (lambda: datetime.now(UTC))
         self.keep_alive_s = 1800.0
         self.models = models
         self.gpu_bytes = gpu_bytes

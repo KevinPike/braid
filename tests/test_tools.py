@@ -1,6 +1,6 @@
 import socket
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 
 import pytest
@@ -20,7 +20,7 @@ def project(tmp_path: Path) -> Path:
 
 
 def tools_for(project: Path, **kw: object):  # type: ignore[no-untyped-def]
-    ts = build_tools(project, Path("notes"), now=lambda: datetime(2026, 10, 8, 12, 30, tzinfo=timezone.utc), **kw)  # type: ignore[arg-type]
+    ts = build_tools(project, Path("notes"), now=lambda: datetime(2026, 10, 8, 12, 30, tzinfo=UTC), **kw)  # type: ignore[arg-type]
     return {t.tool_name: t for t in ts}
 
 

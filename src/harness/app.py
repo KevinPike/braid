@@ -15,7 +15,6 @@ from strands import Agent
 from strands.hooks import MessageAddedEvent
 from strands.types.content import Message
 
-from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll

@@ -39,7 +39,7 @@ def test_estimate_within_5pct_over_30_turns_and_categories_add_up() -> None:
     rng = random.Random(1)
     ledger = Ledger(lambda _m: 32768)
     history: list[dict[str, str]] = [{"role": "system", "content": "You are helpful. " * 20}]
-    for turn in range(30):
+    for _turn in range(30):
         history.append({"role": "user", "content": "word " * rng.randint(5, 400)})
         ledger.before_call("m", history, None)
         ledger.after_call(CallMetrics(fake_tokens(history), 10, 1.0, 0.0))

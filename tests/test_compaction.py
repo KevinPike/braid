@@ -64,10 +64,10 @@ async def test_hundred_turn_session_never_passes_the_ceiling() -> None:
 
 async def test_a_growing_turn_is_anticipated_from_the_biggest_turn_so_far() -> None:
     s = Session()
-    for i in range(10):
+    for _i in range(10):
         await s.turn("a" * 400, "b" * 400)
     worst = 0
-    for i in range(40):  # turns now three times bigger than before
+    for _i in range(40):  # turns now three times bigger than before
         worst = max(worst, await s.turn("a" * 1200, "b" * 1200))
     assert worst <= 0.9 * NUM_CTX
 
@@ -86,7 +86,7 @@ async def test_facts_from_turn_five_survive_compaction_in_order() -> None:
 async def test_pinned_messages_are_never_summarized() -> None:
     s = Session(policy=CompactionPolicy(pin_first=2))
     s.messages.extend([text("user", "PINNED-RULE: always answer in French"), text("assistant", "d'accord")])
-    for i in range(40):
+    for _i in range(40):
         await s.turn("x" * 400, "y" * 400)
     assert message_text(s.messages[0]).startswith("PINNED-RULE")
     assert not any("PINNED-RULE" in message_text(m) for batch in s.summarized for m in batch)
@@ -106,7 +106,7 @@ async def test_tool_call_and_result_are_never_split() -> None:
 
 async def test_every_compaction_has_a_trim_log_entry() -> None:
     s = Session()
-    for i in range(30):
+    for _i in range(30):
         await s.turn("x" * 400, "y" * 400)
     entries = s.trimlog.entries()
     assert entries and all(e.strategy == "summarize" and e.messages_removed > 0 and e.tokens_after < e.tokens_before
@@ -121,7 +121,7 @@ async def test_a_failing_summarizer_leaves_history_untouched_and_is_logged() -> 
         raise RuntimeError("ollama down")
 
     s.compactor._summarize = boom
-    for i in range(3):
+    for _i in range(3):
         await s.turn("x" * 400, "y" * 400)
     before = list(s.messages)
     assert await s.compactor.compact(s.messages, "test") is None
@@ -131,7 +131,7 @@ async def test_a_failing_summarizer_leaves_history_untouched_and_is_logged() -> 
 
 async def test_truncation_forces_compaction_even_under_the_ceiling() -> None:
     s = Session()
-    for i in range(10):
+    for _i in range(10):
         await s.turn("x" * 100, "y" * 100)
     assert s.compactor.should_compact() is None
     s.compactor.force("Truncation detected")
@@ -181,7 +181,7 @@ async def test_compaction_runs_between_turns_and_the_queue_waits_for_it() -> Non
     s = Session()
     app = HarnessApp(HarnessConfig(), replier=reply, trimlog=s.trimlog, compactor=s.compactor)
     app.fake_messages = s.messages
-    for i in range(8):
+    for _i in range(8):
         s.messages.extend([text("user", "x" * 400), text("assistant", "y" * 400)])
     s.ledger.records.append(CallRecord(NUM_CTX, {}, 0, None, 3700, 100))
 

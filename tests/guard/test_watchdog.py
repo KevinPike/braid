@@ -1,10 +1,10 @@
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, UTC
 
 from harness.guard.ollama_client import CallMetrics, RunningModel
 from harness.guard.watchdog import Level, Watchdog, check_call, check_ps
 from tests.guard.fakes import GIB, FakeBackend
 
-T0 = datetime(2026, 10, 8, 9, 0, tzinfo=timezone.utc)
+T0 = datetime(2026, 10, 8, 9, 0, tzinfo=UTC)
 
 
 def rm(*, size: int = 100, vram: int = 100, ctx: int = 8192, expires_in: float = 1800) -> RunningModel:

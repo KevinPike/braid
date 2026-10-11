@@ -12,7 +12,7 @@ from harness.context.ledger import CallRecord, Ledger
 from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
 from harness.decide.questions import ROUTER, check_policy, compaction_state, policy_state, route, should_compact
-from harness.decide.tev import Choice, Noul, Score, TevClient, TevInputTooLarge, estimate_tokens
+from harness.decide.tev import Noul, Score, TevClient, TevInputTooLarge, estimate_tokens
 from textual.widgets import Input, Static
 
 HOST = "http://ollama.test"

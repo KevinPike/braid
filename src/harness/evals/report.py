@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import statistics
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any, Literal
 
@@ -168,7 +168,7 @@ def write_reports(
     results: list[ModelResult], evals_dir: Path, *, num_ctx: int, cases_path: str, when: datetime | None = None
 ) -> tuple[Path, Path, str]:
     """Write ``<UTC timestamp>.md`` and ``.json`` into ``evals_dir``; returns both paths and the markdown."""
-    when = when or datetime.now(timezone.utc)
+    when = when or datetime.now(UTC)
     evals_dir.mkdir(parents=True, exist_ok=True)
     stem = when.strftime("%Y%m%dT%H%M%SZ")
     md = render_markdown(results, when=when, num_ctx=num_ctx, cases_path=cases_path)

@@ -11,7 +11,7 @@ Python 3.12 TUI (Textual) over a Strands agent on local Ollama, with a runtime g
 
 ## Commands
 
-`uv run harness` runs the app; `uv run pytest -q` and `uv run mypy src tests` must both pass before committing (`mypy --strict`, full type hints).
+`uv run harness` runs the app; `uv run pytest -q`, `uv run mypy src tests` and `uv run ruff check .` must all pass before committing (`mypy --strict`, full type hints; ruff rules are in `pyproject.toml`).
 
 ## Conventions
 

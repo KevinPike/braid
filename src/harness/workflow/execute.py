@@ -13,7 +13,7 @@ import re
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
-from typing import Annotated, Any, Literal, Protocol, TypedDict, TypeVar, cast
+from typing import Annotated, Any, Literal, Protocol, TypedDict, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.memory import InMemorySaver
@@ -32,7 +32,6 @@ from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str
-S = TypeVar("S")
 YES = {"y", "yes", "ok", "looks good", "lgtm"}
 
 
@@ -544,7 +543,7 @@ def build_execution_graph(
 Ask = Callable[[dict[str, Any]], str | Awaitable[str]]
 
 
-async def drive_graph(
+async def drive_graph[S](
     graph: StateGraph[Any], state: S, ask: Ask, *,
     on_update: Callable[[str, dict[str, Any]], None] | None = None, on_start: Callable[[str], None] | None = None,
     thread_id: str = "exec", checkpointer: BaseCheckpointSaver[Any] | None = None, resume: bool = False,

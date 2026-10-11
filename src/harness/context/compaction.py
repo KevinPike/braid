@@ -12,6 +12,7 @@ import json
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
+from itertools import pairwise
 
 from strands.agent.conversation_manager.compression.context_compression import (
     adjust_split_point_for_tool_pairs,
@@ -105,7 +106,7 @@ class Compactor:
     def turn_growth(self) -> int:
         """Largest per-turn growth seen so far, so the ceiling holds for a turn as big as the biggest before it."""
         measured = [r.prompt_eval_count for r in self.ledger.records if r.prompt_eval_count is not None]
-        deltas = [b - a for a, b in zip(measured, measured[1:]) if b > a]
+        deltas = [b - a for a, b in pairwise(measured) if b > a]
         return max([MIN_TURN_GROWTH, *deltas])
 
     def should_compact(self) -> str | None:

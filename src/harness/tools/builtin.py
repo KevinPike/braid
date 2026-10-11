@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator, Callable
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -38,7 +38,7 @@ def build_tools(
     notes_dir: Path,
     *,
     max_read_chars: int = 20_000,
-    now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
+    now: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> list[DecoratedFunctionTool[Any, Any]]:
     root = root.resolve()
 
