@@ -2,17 +2,22 @@
 host = "http://localhost:11434"
 
 [profile]
-model = "gemma4:e4b"
-num_ctx = 32768
-keep_alive = "30m"
-system_prompt = "You are a concise, helpful assistant running locally."
+backend = "anthropic"         # ADR 0007: the chat agent on the Anthropic API; "ollama" is the frozen local path
+anthropic_model = "claude-haiku-5-5"
+# effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
+# context_window = 200000     # Anthropic only: compaction's window (default: the model's real one, 1M for Haiku 5.5)
+# No API key here, ever: the SDK reads ANTHROPIC_API_KEY, else an `ant auth login` profile.
+model = "gemma4:e4b"          # Ollama only (a "claude-" id here picks the API instead)
+num_ctx = 32768               # Ollama only
+keep_alive = "30m"            # Ollama only
+system_prompt = "You are a concise, helpful assistant."
 
 [paths]
 data_dir = "~/.braid"
 
 [context]
 strategy = "summarize"        # none | sliding_window | summarize
-summarizer_model = "gemma4:e2b"   # falls back to the daily driver when not pulled
+summarizer_model = "gemma4:e2b"   # Ollama only (falls back to the daily driver when not pulled); the API summarizes with the chat model
 summarizer_num_ctx = 16384
 ceiling = 0.9
 target = 0.5
@@ -29,7 +34,7 @@ write = true                  # write_file; every write needs TUI approval
 approve = ["shell", "write_file"]   # tools gated by approval; these two are always gated
 
 [decide]
-enabled = true
+enabled = true                # tev1 runs on Ollama, so the decision layer is off on the anthropic backend
 model = "tev1:0.8b"
 max_input_tokens = 1500
 
@@ -43,7 +48,7 @@ models = ["gemma4:e4b", "gemma4:e2b", "gemma4:12b", "gpt-oss:20b"]   # not-pulle
 num_ctx = 8192
 
 [workflow]
-backend = "ollama"            # "anthropic" runs Workflows on the Anthropic API (ADR 0006): data leaves the machine and runs cost money
+backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (data leaves the machine, runs cost money); "ollama" is frozen
 # model = "gemma4:e4b"        # Ollama model; default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
 # anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own

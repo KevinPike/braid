@@ -5,7 +5,6 @@ Ollama goes through the guard client (ADR 0004); Claude goes through the Anthrop
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Protocol, TypeVar
 
 import anthropic
@@ -13,6 +12,7 @@ from pydantic import BaseModel, ValidationError
 
 from harness.config import Effort
 from harness.guard.ollama_client import OllamaClient
+from harness.usage import PRICING, ApiCall, Price, api_call, require_pricing
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -69,41 +69,13 @@ class GuardedWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
-@dataclass(frozen=True)
-class Price:
-    """USD per million tokens. A prompt (input + cache reads + cache writes) over ``long_over`` tokens bills at the long tier."""
-
-    input: float
-    output: float
-    long_input: float
-    long_output: float
-    long_over: int = 100_000
-
-
-# Cache reads cost 0.1x the tier's input price, cache writes 1.25x.
-PRICING: dict[str, Price] = {"claude-haiku-5-5": Price(0.10, 0.50, 0.50, 2.50)}
-
-
-@dataclass(frozen=True)
-class ApiCall:
-    """Usage and cost of one Anthropic API request."""
-
-    input_tokens: int
-    output_tokens: int
-    cache_read_input_tokens: int
-    cache_creation_input_tokens: int
-    cost_usd: float
-    request_id: str | None
-
-
 class AnthropicWorkflowModel:
     """Asks the Anthropic API for JSON in ``schema``'s shape (ADR 0006). Never sends sampling parameters."""
 
     def __init__(
         self, client: anthropic.AsyncAnthropic, model_id: str, *, max_tokens: int = 16000, effort: Effort | None = None,
     ) -> None:
-        if model_id not in PRICING:
-            raise ValueError(f"no pricing for {model_id!r}; add it to PRICING (known: {', '.join(PRICING)})")
+        require_pricing(model_id)
         self.client = client
         self.model_id = model_id
         self.max_tokens = max_tokens
@@ -116,14 +88,10 @@ class AnthropicWorkflowModel:
 
     def _record(self, response: anthropic.types.Message) -> None:
         u = response.usage
-        cache_read = u.cache_read_input_tokens or 0
-        cache_write = u.cache_creation_input_tokens or 0
-        price = PRICING[self.model_id]
-        long = u.input_tokens + cache_read + cache_write > price.long_over
-        price_in, price_out = (price.long_input, price.long_output) if long else (price.input, price.output)
-        cost = (u.input_tokens * price_in + cache_read * price_in * 0.1 + cache_write * price_in * 1.25
-                + u.output_tokens * price_out) / 1_000_000
-        self.calls.append(ApiCall(u.input_tokens, u.output_tokens, cache_read, cache_write, cost, response._request_id))
+        self.calls.append(api_call(
+            self.model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
+            response._request_id,
+        ))
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
         # `messages.create` rather than `messages.parse`: parse validates inside the HTTP layer, so an invalid or
@@ -158,3 +126,6 @@ class AnthropicWorkflowModel:
                     "Reply with valid JSON only."
                 )
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
+
+
+__all__ = ["PRICING", "AnthropicWorkflowModel", "ApiCall", "GuardedWorkflowModel", "Price", "WorkflowModel", "WorkflowModelError"]

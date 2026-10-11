@@ -77,6 +77,7 @@ def make_config(tmp_path: Path, repo: Path, venv: Path, **wf: Any) -> HarnessCon
     settings: dict[str, Any] = {
         "workspaces_dir": tmp_path / "ws", "runs_dir": tmp_path / "runs", "plans_dir": tmp_path / "plans",
         "checkpoints_db": tmp_path / "workflows.db", "max_polish_rounds": 0, "model": "fake:1", "num_ctx": 4096,
+        "backend": "ollama",  # these runs use fake Ollama-side models; the swap tests exercise the frozen path
         "test_command": f"{venv}/bin/python -m pytest -q --no-header -p no:cacheprovider",
     }
     settings.update(wf)

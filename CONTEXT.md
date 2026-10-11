@@ -1,6 +1,6 @@
 # Local Agent Harness
 
-A terminal agent harness that runs local Ollama models on a 24 GB Mac and keeps context use and runtime health visible and guarded. It exists to surface what Ollama hides.
+A terminal agent harness on this Mac for exploring Workflows as graphs, with cloud models on the Anthropic API by default (ADR 0007). It began as a harness for local Ollama models that keeps context use and runtime health visible and guarded; that path is frozen but kept.
 
 ## Language
 
@@ -51,7 +51,7 @@ _Avoid_: Restart
 ### Context
 
 **Context window**:
-The pinned `num_ctx` tokens a call may use; split into categories (system prompt, tool schemas, history, tool results, current turn).
+The tokens a call may use: the model's real window on the API (or `[profile] context_window`), the pinned `num_ctx` on Ollama; split into categories (system prompt, tool schemas, history, tool results, current turn).
 _Avoid_: Prompt size, memory
 
 **Compaction**:
@@ -173,7 +173,7 @@ _Avoid_: Exception, override
 ### Models
 
 **Daily driver**:
-The model that runs the main loop (`gemma4:e4b`).
+The model that runs the main loop: `claude-haiku-5-5` on the Anthropic API (ADR 0007); `gemma4:e4b` on the frozen Ollama path.
 _Avoid_: Main model, default model
 
 **Decision layer**:

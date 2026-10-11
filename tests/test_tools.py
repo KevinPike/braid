@@ -107,6 +107,14 @@ async def test_shell_env_is_scrubbed_and_network_follows_the_option(project: Pat
 
 
 @darwin_only
+async def test_the_chat_shell_cannot_see_the_anthropic_api_key(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """F1b: the chat agent runs on the API, and its shell tool must not hand the key to model-written commands."""
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-test-should-not-leak")
+    out = await ProjectSandbox(project).execute("env")
+    assert "PATH=" in out.stdout and "ANTHROPIC" not in out.stdout and "sk-ant" not in out.stdout
+
+
+@darwin_only
 async def test_shell_timeout_raises_the_strands_error(project: Path) -> None:
     from strands.sandbox.errors import SandboxTimeoutError
 

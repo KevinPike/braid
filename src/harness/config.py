@@ -15,13 +15,36 @@ class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
 
 
+Backend = Literal["anthropic", "ollama"]
+API_PREFIX = "claude-"  # a model id with this prefix runs on the Anthropic API, whatever ``backend`` says
+
+
 class ProfileConfig(BaseModel):
+    """The chat agent. ``backend = "anthropic"`` (the default, ADR 0007) runs ``anthropic_model`` on the API with no Guard;
+    ``"ollama"`` runs ``model`` through the guard client (the frozen path). A ``claude-`` ``model`` picks the API too."""
+
+    backend: Backend = "anthropic"
+    anthropic_model: str = "claude-haiku-5-5"
+    effort: Effort | None = None  # Anthropic only; None leaves the model's default
+    max_tokens: int = 16000  # Anthropic only: cap on generated tokens per call
+    context_window: int | None = None  # Anthropic only: compaction's window; default the model's real one
     model: str = "gemma4:e4b"
     num_ctx: int = 32768
     keep_alive: str = "30m"
-    system_prompt: str = "You are a concise, helpful assistant running locally."
+    system_prompt: str = "You are a concise, helpful assistant."
     # Tried in order when `model` does not fit the GPU budget (preflight step-down).
     fallbacks: list[str] = []
+
+    @property
+    def chat_backend(self) -> Backend:
+        return "anthropic" if self.model.startswith(API_PREFIX) else self.backend
+
+    @property
+    def chat_model(self) -> str:
+        """The model the chat agent starts on: ``model`` when it is a ``claude-`` id or the backend is Ollama."""
+        if self.model.startswith(API_PREFIX) or self.backend == "ollama":
+            return self.model
+        return self.anthropic_model
 
 
 class ContextConfig(BaseModel):
@@ -87,7 +110,7 @@ class WorkflowConfig(BaseModel):
     ``backend = "anthropic"`` runs on the Anthropic API (ADR 0006), with ``anthropic_model``; a ``claude-`` model id
     picks it too. Credentials are never config: the SDK reads ``ANTHROPIC_API_KEY`` or an ``ant auth`` profile."""
 
-    backend: Literal["ollama", "anthropic"] = "ollama"
+    backend: Backend = "anthropic"  # ADR 0007; "ollama" is the frozen path
     model: str | None = None
     anthropic_model: str = "claude-haiku-5-5"
     effort: Effort | None = None  # Anthropic only; None leaves the model's default

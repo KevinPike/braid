@@ -3,16 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
 
 import anthropic
 
-from harness.config import HarnessConfig
+from harness.config import API_PREFIX, HarnessConfig
+from harness.config import Backend as BackendName
 from harness.guard.ollama_client import OllamaClient
 from harness.workflow.model import AnthropicWorkflowModel, GuardedWorkflowModel, WorkflowModel
-
-BackendName = Literal["ollama", "anthropic"]
-API_PREFIX = "claude-"
 
 
 @dataclass(frozen=True)

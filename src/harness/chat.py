@@ -86,7 +86,8 @@ def render_context(record: CallRecord | None) -> str:
     else:
         err = record.error
         nums = (
-            f"estimate {record.estimate} · ollama {record.prompt_eval_count} · out {record.eval_count}"
+            f"estimate {record.estimate} · {'api' if record.model.startswith('claude-') else 'ollama'} {record.prompt_eval_count}"
+            f" · out {record.eval_count}"
             + (f" · off {err:.1%}" if err is not None else "")
         )
     if record.strands_estimate is not None:

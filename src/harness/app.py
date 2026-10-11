@@ -1,4 +1,5 @@
-"""Textual app: chat pane plus the Guard-driven status bar."""
+"""Textual app: the chat pane, plus a status bar that shows API usage and cost (the default backend, ADR 0007) or the
+Guard's view of Ollama (the frozen path)."""
 
 from __future__ import annotations
 
@@ -11,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import anthropic
 from strands import Agent
 from strands.hooks import MessageAddedEvent
 from strands.types.content import Message
@@ -23,13 +25,13 @@ from textual.widget import Widget
 from textual.widgets import Input, Static
 from textual.worker import Worker
 
-from harness.agent import build_agent, stream_reply
+from harness.agent import AnthropicChatModel, build_agent, build_api_agent, stream_reply
 from harness.approval import APPLY_WORKSPACE, ApprovalGate, ApprovalRequest
 from harness.chat import AlertBanner, ApprovalPrompt, ContextPanel, Reply
 from harness.config import HarnessConfig, load_config
 from harness.context.compaction import CompactionPolicy, Compactor, message_text
 from harness.context.ledger import Ledger
-from harness.context.strategies import build_conversation_manager, build_offloader, make_summarizer
+from harness.context.strategies import build_conversation_manager, build_offloader, make_api_summarizer, make_summarizer
 from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
 from harness.decide.questions import check_policy, route, should_compact
@@ -49,6 +51,7 @@ from harness.session.store import SessionInfo, SessionStore, settle
 from harness.workflow_pane import WorkflowDeps, WorkflowPane
 from harness.status import StatusBar
 from harness.telemetry import setup_telemetry
+from harness.usage import CONTEXT_WINDOWS, PRICING, ApiCall, UsageMeter
 
 class PromptInput(Input):
     """Input whose Up/Down recall earlier prompts."""
@@ -135,6 +138,7 @@ class HarnessApp(App[None]):
         continue_last: bool = False,
         workflows: WorkflowDeps | None = None,
         debug_log: DebugLog | None = None,
+        anthropic_client: anthropic.AsyncAnthropic | None = None,
     ) -> None:
         super().__init__()
         self.config = config
@@ -152,8 +156,20 @@ class HarnessApp(App[None]):
         self.tev = tev
         self.store = store or SessionStore(config.paths.sessions_file if replier is None else ":memory:")
         self._startup_notes: list[str] = []
+        # The Anthropic backend (ADR 0007): no Guard, Preflight, Calibration or model swap; usage and cost come from the API.
+        self._api = replier is None and config.profile.chat_backend == "anthropic"
+        self._anthropic: anthropic.AsyncAnthropic | None = None
+        self.meter: UsageMeter | None = None
         self._resume_info = self._pick_session(resume, continue_last)
-        info = self._resume_info or self.store.create(config.profile.model, config.profile.num_ctx)
+        if self._api:
+            model = config.profile.chat_model
+            if self._resume_info is not None and self._resume_info.model in PRICING:
+                model = self._resume_info.model  # a resumed API session keeps its model
+            self._anthropic = anthropic_client or anthropic.AsyncAnthropic()  # the SDK's own credential resolution
+            self.meter = UsageMeter(model, self._window(model))
+        info = self._resume_info or (
+            self.store.create(self.meter.state.model, self.meter.state.context_window) if self.meter is not None
+            else self.store.create(config.profile.model, config.profile.num_ctx))
         self.session_id = info.id
         self._preflight: PreflightResult | None = None
         self._open_calls: dict[str, int] = {}  # model -> the calls row awaiting its measured counts
@@ -162,8 +178,10 @@ class HarnessApp(App[None]):
         self._agent: Agent | None = None
         self._model: str | None = None
         self._watchdog = watchdog
-        if replier is None:
-            # Real mode: preflight (run on mount) pins num_ctx and builds the agent.
+        if self._api:
+            replier = self._guarded_reply  # the agent is built on mount, with no preflight
+        elif replier is None:
+            # Real mode on Ollama: preflight (run on mount) pins num_ctx and builds the agent.
             self._client = OllamaClient(config.ollama.host, keep_alive=config.profile.keep_alive)
             self._watchdog = Watchdog(self._client, pinned=self._client.pinned, refresh_keep_alive=self._client.refresh_keep_alive)
             replier = self._guarded_reply
@@ -173,7 +191,13 @@ class HarnessApp(App[None]):
         self._run_id = 0
         self.history = PromptHistory(p.text for p in self.store.prompts())  # global recall across sessions
         self.queue = PromptQueue()
-        self.ledger = Ledger(self._client.pinned if self._client is not None else lambda _m: None)
+        if self.meter is not None:
+            meter = self.meter
+            self.ledger = Ledger(lambda _m: meter.state.context_window)
+            meter.on_request(self._on_api_request)
+            meter.on_call(self._on_api_call)
+        else:
+            self.ledger = Ledger(self._client.pinned if self._client is not None else lambda _m: None)
         # Each component is subscribed to exactly once, by the adapter; everything else registers on self.hooks.
         if self._client is not None:
             self.hooks.attach_client(self._client)
@@ -227,9 +251,15 @@ class HarnessApp(App[None]):
             self.run_worker(self._watchdog.run(), name="watchdog", group="guard")
         if self._client is not None:
             self.run_worker(self._boot(), name="preflight", group="guard")
+        if self.meter is not None:
+            meter = self.meter
+            meter.subscribe(status.set_usage)
+            status.set_usage(meter.state)
         for note in self._startup_notes:
             await self._note(note)
-        if self._client is None and self._resume_info is not None:  # real mode adopts it once the model is loaded
+        if self._api:
+            await self._boot_api()
+        if self._client is None and not self._api and self._resume_info is not None:  # real mode adopts it once the model is loaded
             await self._adopt(self._resume_info)
 
     def _on_trim(self, event: TrimRecorded) -> None:
@@ -290,6 +320,53 @@ class HarnessApp(App[None]):
             self._save_session()
         self._pump()
 
+    def _window(self, model: str) -> int:
+        """The Context window compaction works against: ``[profile] context_window``, else the model's real one."""
+        return self.config.profile.context_window or CONTEXT_WINDOWS.get(model, 200_000)
+
+    async def _boot_api(self) -> None:
+        """The Anthropic backend: build the agent and its helpers at once; nothing to load, no Ollama request."""
+        assert self.meter is not None
+        model = self.meter.state.model
+        self._agent = self._make_agent(model)
+        self._model = model
+        await self._note(f"chat: {model} on the Anthropic API (data leaves this machine; every call costs money)")
+        if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
+            await self._note("no ANTHROPIC_API_KEY set: the SDK will try an `ant auth login` profile "
+                             "(the harness does not read .env; `uv run --env-file .env harness` does)")
+        self._build_api_helpers(model)
+        if self._resume_info is not None:
+            await self._adopt(self._resume_info)
+        else:
+            self._save_session()
+        self._pump()
+
+    def _build_api_helpers(self, model: str) -> None:
+        """Compaction summarizes with the chat model on the API; the tev1 decision layer runs on Ollama, so it is off."""
+        assert self._anthropic is not None and self.meter is not None
+        meter, cfg = self.meter, self.config.context
+        self.tev = None
+        self.compactor = None
+        if cfg.strategy != "summarize":
+            return
+        self.compactor = Compactor(
+            trimlog=self.trimlog, ledger=self.ledger, num_ctx=lambda: meter.state.context_window,
+            summarize=make_api_summarizer(self._anthropic, model, meter),
+            policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first), strip_thinking=True,
+        )
+
+    def _on_api_request(self, model: str, body: Mapping[str, Any]) -> None:
+        if self.workflows.running:
+            return
+        pending = self.ledger.pending
+        self._open_calls[model] = self.store.record_call(
+            self.session_id, model, self._num_ctx, body, pending.estimate if pending is not None else None)
+
+    def _on_api_call(self, model: str, call: ApiCall) -> None:
+        n = self._open_calls.pop(model, None)
+        if n is not None:
+            self.store.complete_call(self.session_id, n, call.prompt_tokens, call.output_tokens)
+
     async def _end_loading(self) -> None:
         """Clear the status bar's loading state, but only after a fresh ``/api/ps`` poll: the last stored poll may
         predate the load (it can say "no model loaded"), and rendering it would flash an empty frame."""
@@ -302,18 +379,32 @@ class HarnessApp(App[None]):
 
     def _make_agent(self, model: str) -> Agent:
         """An agent whose history is managed by the configured strategy (never Strands' silent default)."""
-        assert self._client is not None
         cfg = self.config.context
         est = self.ledger.estimator
         offloader = build_offloader(cfg, self.config.paths, self.trimlog, est)
         gate = ApprovalGate(self.ask_approval, self._advise_policy, gated=self.config.tools.approve, hooks=self.hooks)
-        agent = build_agent(
-            self._client, model, self.config.profile.system_prompt, self.ledger,
-            conversation_manager=build_conversation_manager(cfg, self.trimlog, est),
+        common: dict[str, Any] = dict(
             plugins=[offloader] if offloader is not None else None,
             tools=self._tools(),
             hooks=[gate],  # the write and shell tools are only ever registered on an agent that has this gate
         )
+        if self._api:
+            assert self._anthropic is not None and self.meter is not None
+            profile = self.config.profile
+            chat_model = AnthropicChatModel(
+                self._anthropic, model, max_tokens=profile.max_tokens, effort=profile.effort, meter=self.meter,
+                ledger=self.ledger, context_window=self._window(model),
+            )
+            agent = build_api_agent(
+                chat_model, profile.system_prompt,
+                conversation_manager=build_conversation_manager(cfg, self.trimlog, est, strip_thinking=True), **common,
+            )
+        else:
+            assert self._client is not None
+            agent = build_agent(
+                self._client, model, self.config.profile.system_prompt, self.ledger,
+                conversation_manager=build_conversation_manager(cfg, self.trimlog, est), **common,
+            )
         # Every added message is saved at once, so a kill mid-turn keeps what the turn had so far.
         agent.hooks.add_callback(MessageAddedEvent, lambda e: self.store.save_messages(self.session_id, e.agent.messages))
         return agent
@@ -573,6 +664,9 @@ class HarnessApp(App[None]):
         await self._note("trim log (most recent last):\n" + "\n".join(e.line() for e in entries))
 
     async def _model_command(self, name: str) -> None:
+        if self._api:
+            await self._api_model_command(name)
+            return
         if self._client is None:
             await self._note("/model: no model backend in this session")
             return
@@ -582,6 +676,33 @@ class HarnessApp(App[None]):
             await self._note(f"current model: {current}; available: {tags}")
             return
         await self._switch_model(name)
+
+    async def _api_model_command(self, name: str) -> None:
+        if not name:
+            await self._note(f"current model: {self._model}; priced: {', '.join(PRICING)}")
+        elif name not in PRICING:
+            await self._note(f"/model: {name} is not a priced Anthropic model (known: {', '.join(PRICING)}); "
+                             "the Ollama path is frozen and needs [profile] backend = \"ollama\" at startup")
+        else:
+            await self._switch_api_model(name)
+
+    async def _switch_api_model(self, name: str, *, persist: bool = True) -> None:
+        """A new agent on another Claude model, with the conversation carried over (its thinking blocks are bound to the
+        old model; the API drops the ones the new model cannot read)."""
+        assert self.meter is not None
+        if name == self._model:
+            await self._note(f"already on {name}")
+            return
+        previous = self._agent
+        self._agent = self._make_agent(name)
+        if previous is not None:
+            self._agent.messages.extend(previous.messages)
+        self._model = name
+        self.meter.set_model(name, self._window(name))
+        self._build_api_helpers(name)
+        if persist:
+            self._save_session()
+        await self._note(f"now on {name}; conversation kept")
 
     async def _switch_model(self, name: str, num_ctx: int | None = None, *, persist: bool = True) -> bool:
         """Unload the old model, then preflight and load the new one (at the profile's num_ctx unless given).
@@ -635,6 +756,8 @@ class HarnessApp(App[None]):
 
     @property
     def _num_ctx(self) -> int:
+        if self.meter is not None:
+            return self.meter.state.context_window
         pinned = self._client.pinned(self._model) if self._client is not None and self._model else None
         return pinned or self.config.profile.num_ctx
 
@@ -703,6 +826,8 @@ class HarnessApp(App[None]):
 
     async def _switch_session(self, info: SessionInfo) -> None:
         """Leave the current session (saved) for ``info``, reloading the model if its model or num_ctx differ."""
+        if self._api and info.model in PRICING and info.model != self._model:
+            await self._switch_api_model(info.model, persist=False)
         if self._client is not None and (info.model, info.num_ctx) != (self._model, self._num_ctx):
             if not await self._switch_model(info.model, info.num_ctx, persist=False):
                 await self._note(f"could not load {info.model} at num_ctx {info.num_ctx}; staying in session {self.session_id}")
@@ -757,7 +882,7 @@ class HarnessApp(App[None]):
 
     def _pump(self) -> None:
         """Start the next queued prompt if idle, not paused, no approval is pending and no red Alert is active."""
-        if self._busy or self.approval_pending or self._pauses_waiting or self.workflows.running or self.held_by_alert or (self._client is not None and self._agent is None):
+        if self._busy or self.approval_pending or self._pauses_waiting or self.workflows.running or self.held_by_alert or ((self._client is not None or self._api) and self._agent is None):
             self._refresh_queue_label()
             return
         prompt = self.queue.pop()
@@ -806,6 +931,10 @@ class HarnessApp(App[None]):
             except Exception as exc:
                 await self._note(f"compaction error: {exc}")
             self._save_session()
+        except asyncio.CancelledError:
+            # Ctrl-C: back to the last finished turn, as a resume would, so no tool call is left without its result.
+            self._messages[:] = settle(self._messages)[0]
+            raise
         finally:
             if run_id == self._run_id:  # a cancelled run may be unwound after the app has moved on
                 self._busy = False

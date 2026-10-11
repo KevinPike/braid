@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from harness.config import HarnessConfig, WorkflowConfig
 from harness.sandbox import LocalSandbox, Sandbox, SeatbeltSandbox
 from harness.workflow import cli
-from harness.workflow.backend import choose, make_model
+from harness.workflow.backend import Choice, choose, make_model
 from harness.workflow.cli import SPEND_CAP_EXIT, build_parser, run_build, run_plan, with_model
 from harness.workflow.model import AnthropicWorkflowModel, ApiCall, GuardedWorkflowModel
 from harness.workflow.plan import Assumption, Plan
@@ -91,9 +91,10 @@ def test_the_model_id_picks_the_backend_whatever_the_config_says() -> None:
 
 
 def test_without_a_model_id_each_backend_reads_its_own_model() -> None:
-    config = HarnessConfig(workflow=WorkflowConfig(model="gemma4:e2b", anthropic_model="claude-haiku-5-5"))
+    config = HarnessConfig(workflow=WorkflowConfig(backend="ollama", model="gemma4:e2b", anthropic_model="claude-haiku-5-5"))
     assert (choose(config).backend, choose(config).model_id) == ("ollama", "gemma4:e2b")
-    assert choose(HarnessConfig()).model_id == "gemma4:e4b"  # [workflow] model, then the Profile's
+    assert choose(HarnessConfig(workflow=WorkflowConfig(backend="ollama"))).model_id == "gemma4:e4b"  # [workflow] model, then the Profile's
+    assert choose(HarnessConfig()) == Choice("anthropic", "claude-haiku-5-5")  # the default backend (ADR 0007)
     api = choose(config, backend="anthropic")
     assert (api.backend, api.model_id) == ("anthropic", "claude-haiku-5-5")
     on_api = HarnessConfig(workflow=WorkflowConfig(backend="anthropic"))

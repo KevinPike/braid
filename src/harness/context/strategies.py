@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+import anthropic
 from strands.agent.conversation_manager import (
     ConversationManager,
     NullConversationManager,
@@ -18,20 +19,25 @@ from strands.vended_plugins.context_offloader import ContextOffloader, FileStora
 from harness.agent import GuardedOllamaModel
 from harness.config import ContextConfig, PathsConfig
 from harness.context.accounting import TokenEstimator
-from harness.context.compaction import SUMMARY_PROMPT, Summarizer, message_text, transcript
+from harness.context.compaction import SUMMARY_PROMPT, Summarizer, message_text, strip_thinking, transcript
 from harness.context.trimlog import TrimEntry, TrimLog
 from harness.guard.ollama_client import OllamaClient
+from harness.usage import UsageMeter, api_call
 
 SUMMARIZER_SHARE = 0.6  # of the summarizer's num_ctx a chunk may fill; the rest is for the prompt and the summary
 
 
 class LoggedSlidingWindow(SlidingWindowConversationManager):
-    """Strands' sliding window, with every reduction written to the Trim log."""
+    """Strands' sliding window, with every reduction written to the Trim log. ``strip_thinking`` (Claude) removes the
+    kept turns' thinking blocks after a reduction, since their prefix changed (``compaction.strip_thinking``)."""
 
-    def __init__(self, window_size: int, trimlog: TrimLog, estimator: TokenEstimator, pin_first: int = 0) -> None:
+    def __init__(
+        self, window_size: int, trimlog: TrimLog, estimator: TokenEstimator, pin_first: int = 0, *, strip_thinking: bool = False,
+    ) -> None:
         super().__init__(window_size=window_size, pin_first=pin_first or None)
         self._trimlog = trimlog
         self._estimator = estimator
+        self._strip_thinking = strip_thinking
 
     def _tokens(self, messages: Sequence[Message]) -> int:
         return sum(self._estimator.tokens(len(message_text(m)), 1) for m in messages)
@@ -40,6 +46,8 @@ class LoggedSlidingWindow(SlidingWindowConversationManager):
         before_messages, before = len(agent.messages), self._tokens(agent.messages)
         super().reduce_context(agent, e, **kwargs)
         removed = before_messages - len(agent.messages)
+        if removed and self._strip_thinking:
+            strip_thinking(agent.messages)
         # Truncated tool results shrink tokens without removing messages, so log those too.
         after = self._tokens(agent.messages)
         if removed or after < before:
@@ -78,10 +86,12 @@ def build_offloader(cfg: ContextConfig, paths: PathsConfig, trimlog: TrimLog, es
     return ContextOffloader(storage=storage, max_result_tokens=cfg.offload_tokens, preview_tokens=preview)
 
 
-def build_conversation_manager(cfg: ContextConfig, trimlog: TrimLog, estimator: TokenEstimator) -> ConversationManager:
+def build_conversation_manager(
+    cfg: ContextConfig, trimlog: TrimLog, estimator: TokenEstimator, *, strip_thinking: bool = False,
+) -> ConversationManager:
     """Strands' default manager would trim silently after 40 messages, so every strategy names its own."""
     if cfg.strategy == "sliding_window":
-        return LoggedSlidingWindow(cfg.window_size, trimlog, estimator, cfg.pin_first)
+        return LoggedSlidingWindow(cfg.window_size, trimlog, estimator, cfg.pin_first, strip_thinking=strip_thinking)
     return NullConversationManager()
 
 
@@ -137,4 +147,30 @@ def make_summarizer(client: OllamaClient, model: str, num_ctx: int, estimator: T
     return summarize
 
 
-__all__ = ["build_conversation_manager", "build_offloader", "make_summarizer", "transcript"]
+API_SUMMARY_MAX_TOKENS = 8000
+
+
+def make_api_summarizer(client: anthropic.AsyncAnthropic, model_id: str, meter: UsageMeter | None = None) -> Summarizer:
+    """Summarize on the Anthropic API with the chat model, in one request: the model's window holds any history that
+    compaction would summarize. The call is priced on ``meter`` as a helper call (it costs, but is not the context)."""
+    async def summarize(messages: Sequence[Message]) -> str:
+        response = await client.messages.create(
+            model=model_id,
+            max_tokens=API_SUMMARY_MAX_TOKENS,
+            system=[{"type": "text", "text": SUMMARY_PROMPT, "cache_control": {"type": "ephemeral"}}],
+            messages=[{"role": "user", "content": "Summarize this conversation:\n\n" + transcript(messages)}],
+        )
+        if meter is not None:
+            u = response.usage
+            meter.record(model_id, api_call(
+                model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
+                response._request_id,
+            ), main=False)
+        if response.stop_reason == "refusal":
+            raise RuntimeError(f"{model_id} declined to summarize")
+        return "".join(b.text for b in response.content if b.type == "text")
+
+    return summarize
+
+
+__all__ = ["build_conversation_manager", "build_offloader", "make_api_summarizer", "make_summarizer", "transcript"]

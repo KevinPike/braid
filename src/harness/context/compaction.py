@@ -65,6 +65,23 @@ def message_text(message: Message) -> str:
     return "\n".join(parts)
 
 
+def strip_thinking(messages: list[Message]) -> int:
+    """Remove every thinking block in place, and any message left empty; returns how many blocks went.
+
+    Claude checks that everything before a replayed thinking block is unchanged ("preserved thinking", ADR 0007), so
+    a history rewritten in front of kept turns must not replay their thinking: on an enforced account it is a 400.
+    """
+    removed = 0
+    kept: list[Message] = []
+    for message in messages:
+        blocks = [b for b in message["content"] if "reasoningContent" not in b]
+        removed += len(message["content"]) - len(blocks)
+        if blocks:
+            kept.append({**message, "content": blocks} if len(blocks) != len(message["content"]) else message)
+    messages[:] = kept
+    return removed
+
+
 def transcript(messages: Sequence[Message]) -> str:
     return "\n\n".join(f"{m['role']}: {message_text(m)}" for m in messages)
 
@@ -81,6 +98,7 @@ class Compactor:
         strategy: str = "summarize",
         advisor: Advisor | None = None,
         advise_from: float = 0.8,
+        strip_thinking: bool = False,
     ) -> None:
         self.trimlog = trimlog
         self.ledger = ledger
@@ -91,6 +109,7 @@ class Compactor:
         self.pending_reason: str | None = None
         self.advisor = advisor
         self.advise_from = advise_from
+        self.strip_thinking = strip_thinking  # Claude: the kept turns follow a new prefix, so their thinking must go
 
     def estimate(self, messages: Sequence[Message]) -> int:
         est: TokenEstimator = self.ledger.estimator
@@ -182,10 +201,12 @@ class Compactor:
             return None
         summary: Message = {"role": "user", "content": [{"text": SUMMARY_HEADER + summary_text.strip()}]}
         messages[:] = protected + [summary] + tail
+        stripped = strip_thinking(messages) if self.strip_thinking else 0
         after = self.estimate(messages)
         return self.trimlog.record(TrimEntry(
             self.strategy, reason, len(to_summarize), before, after,
-            f"kept {len(protected)} pinned + {len(tail)} recent",
+            f"kept {len(protected)} pinned + {len(tail)} recent"
+            + (f"; stripped {stripped} thinking blocks" if stripped else ""),
         ))
 
     @staticmethod

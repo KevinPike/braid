@@ -1,4 +1,5 @@
-"""Status bar: the Guard's output. Green on full GPU, yellow on pressure, red on spill or truncation."""
+"""Status bar. On the Anthropic API: the model, tokens against its real window, and the session's cost. On Ollama: the
+Guard's output, green on full GPU, yellow on pressure, red on spill or truncation."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from textual.widgets import Static
 
 from harness.guard.budget import GIB
 from harness.guard.watchdog import GuardState, Level
+from harness.usage import UsageState, render_usage
 
 _CLASSES = {Level.GREEN: "green", Level.YELLOW: "yellow", Level.RED: "red"}
 
@@ -50,6 +52,7 @@ class StatusBar(Static):
 
     loading_model: str | None = None
     _state: GuardState = GuardState()
+    _usage: UsageState | None = None
     _elapsed: float | None = None
     on_render: Callable[[str], None] | None = None  # sees every text the bar renders (the debug log)
 
@@ -59,6 +62,11 @@ class StatusBar(Static):
 
     def set_state(self, state: GuardState) -> None:
         self._state = state
+        self._refresh_text()
+
+    def set_usage(self, usage: UsageState) -> None:
+        """API usage replaces the Guard's view: with no model on Ollama there is nothing for it to watch."""
+        self._usage = usage
         self._refresh_text()
 
     def show_loading(self, model: str | None) -> None:
@@ -75,6 +83,9 @@ class StatusBar(Static):
         if self.loading_model is not None:
             self.set_classes("yellow")
             text = f"loading {self.loading_model}…"
+        elif self._usage is not None:
+            self.set_classes("green")
+            text = render_usage(self._usage)
         else:
             self.set_classes(_CLASSES[self._state.level])
             text = render_status(self._state)

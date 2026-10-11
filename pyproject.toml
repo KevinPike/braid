@@ -1,7 +1,7 @@
 [project]
 name = "braid"
 version = "0.1.0"
-description = "A local agent harness: a Textual TUI over a Strands agent on Ollama, with a runtime guard for context and memory health"
+description = "An agent harness for exploring Workflows as graphs: a Textual TUI over a Strands agent and LangGraph Workflows, on the Anthropic API (or, frozen, on Ollama with a runtime guard)"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"

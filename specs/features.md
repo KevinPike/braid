@@ -95,6 +95,13 @@ ADR 0007: Anthropic becomes the default backend and the Ollama path is frozen. T
 
 **Live check:** one short chat session with a tool call and a forced compaction on `claude-haiku-5-5`; record cost and cache reads.
 
+**Status (2026-10-10): built and gated** (`tests/test_anthropic_chat.py`, `tests/test_app_anthropic.py`, and a chat-shell key-scrub test in `tests/test_tools.py`).
+
+- **Model.** `AnthropicChatModel` subclasses Strands' `AnthropicModel` only for its pure formatting (Strands messages to API blocks, API stream events to `StreamEvent`s). It builds its own request and sends it on the 1.x client handed in, so the `anthropic<1.0` pin on Strands' provider never matters. Cancelling the consuming task closes the HTTP stream. A refusal ends the turn with a visible note. Prices and context windows moved to `harness/usage.py`, shared with `AnthropicWorkflowModel`.
+- **App.** With the anthropic backend there is no `OllamaClient`, Watchdog, Preflight, tev1 or model swap; a gate fails on any of them being built. The status bar shows the model, the last call's tokens against the real window, in/out/cache totals and the session cost. The Ledger and the session's calls table get API usage. `/model` switches between priced Claude models only. Ctrl-C now cuts the history back to the last finished turn, as a resume does.
+- **Preserved thinking (live, 2026-10-10).** This account **is enforced by default**. A compacted history (summary + kept turns) that replays a thinking block got a 400 ("bound to a different conversation"), with or without the beta header. The same history with the thinking blocks stripped was accepted. **Chosen strategy: strip.** Compaction and the sliding window remove thinking blocks from the history they rewrite (`strip_thinking`), and the summarizer runs on the chat model through the API. The trigger uses the model's real window (1M), or `[profile] context_window` to compact earlier (Haiku's price goes up 5× past 100K-token prompts).
+- **Live check** (headless TUI on `claude-haiku-5-5`, `list_directory` tool call, `/compact`, one more turn): 5 calls, **$0.00075**, 5,378 cache-read tokens. Every call after the first read the system prompt and tools from cache, including the one after compaction. The compaction stripped 2 thinking blocks, and the next turn was accepted and remembered the earlier answers.
+
 ---
 
 ## F2 — Benchmarks: know whether a change helped
