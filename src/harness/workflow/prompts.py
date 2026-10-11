@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from harness.workflow.invariants import show_rules
 from harness.workflow.plan import Plan
 
 MAX_TREE_LINES = 200
@@ -20,13 +21,16 @@ def trimmed(text: str, limit: int = MAX_FILE_LINES) -> str:
     return text if len(lines) <= limit else "\n".join(lines[:limit]) + f"\n[... {len(lines) - limit} more lines ...]"
 
 
-def context(plan: Plan, idx: int, tree: list[str], files: dict[str, str]) -> str:
+def context(plan: Plan, idx: int, tree: list[str], files: dict[str, str], *, rules: bool = True) -> str:
     """The Plan, Behaviors up to the current one, the file tree and the contents of the files that matter.
 
     Later Behaviors stay hidden: a model that sees them builds them all now, and their tests then pass at Red.
+    ``rules`` shows the Plan's Invariants (F3), which code checks against every expected value in a test.
     """
     shown = "\n\n".join(f"--- {rel} ---\n{trimmed(text)}" for rel, text in files.items())
     notes = "".join(f"- {n}\n" for n in plan.notes)
+    if rules and plan.invariants:
+        notes += "Rules every expected value in a test must satisfy (checked by code):\n" + show_rules(plan.invariants) + "\n"
     behaviors = "\n".join(f"{i + 1}. {b}" for i, b in enumerate(plan.behaviors[: idx + 1]))
     tree_text = "\n".join(tree[:MAX_TREE_LINES])
     return (
@@ -58,13 +62,22 @@ def vacuous_feedback(output: str) -> str:
     )
 
 
-def write_impl(ctx: str, behavior: str, hint: str, last_run: str) -> str:
+DISPUTE_RULE = (
+    "If you are sure a test's expected value contradicts the goal or the Plan's rules, do not special-case it: set "
+    "`dispute` to {test: the test function's name, reason: why, in one or two sentences} (edits may then be empty). "
+    "Code checks a dispute against the Plan's rules; it does not change the test by itself."
+)
+
+
+def write_impl(ctx: str, behavior: str, hint: str, last_run: str, dispute_note: str = "") -> str:
     prompt = (
         f"{ctx}\n\nTask: make the tests pass by editing the implementation (not the tests). Current behavior: {behavior}\n"
         "Write the SMALLEST change that makes the tests pass. Do not handle cases no test covers yet; later behaviors will "
-        "get their own tests. Keep all earlier behaviors working.\n\n"
+        f"get their own tests. Keep all earlier behaviors working. {DISPUTE_RULE}\n\n"
         f"Last pytest output (tail):\n{last_run}"
     )
+    if dispute_note:
+        prompt += f"\n\n{dispute_note}"
     if hint:
         prompt += f"\n\nA human hint: {hint}"
     return prompt
@@ -129,7 +142,10 @@ DRAFT_SYSTEM = (
     "You write a Plan for a small Python feature that will be built test-first by a small local model. Reply with JSON "
     "only, in this shape: behaviors (3 to 6 short sentences, simplest first, each provable by ONE test and about 30 lines "
     "of implementation), assumptions (each {text, probe, evidence}), files (project paths the work reads or touches), "
-    "demo (a `python -c` command that prints the feature's output on the goal's examples, or null), out_of_scope. "
+    "demo (a `python -c` command that prints the feature's output on the goal's examples, or null), out_of_scope, "
+    "invariants (each {text, check, fn}: a rule from the goal that every expected value must satisfy, as a Python "
+    "expression over one call of the function `fn` with `args`, `kwargs` and `result` bound, such as "
+    "`all(len(line) <= args[1] for line in result.split(\"\\n\"))`; one per rule the goal states, or none). "
     f"{SPACING_RULE} "
     "Every assumption needs either a probe, a shell command that exits 0 when the assumption holds and needs no network, "
     "or evidence copied from a VERIFIED finding as path:line. Prefer a probe; never invent evidence."

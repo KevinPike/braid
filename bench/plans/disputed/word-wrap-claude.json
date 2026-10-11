@@ -1,0 +1,62 @@
+{
+  "goal": "Implement wrap(text, width) in word_wrap.py that greedily wraps words into lines of at most width characters, splitting over-long words and rejecting width below 1.",
+  "behaviors": [
+    "wrap(\"\", 5) returns \"\" and wrap(\"hello\", 10) returns \"hello\" (a single short word stays on one line).",
+    "wrap(\"the quick brown fox\", 10) returns \"the quick\\nbrown fox\" (words are joined by single spaces and greedily packed onto lines of at most width characters).",
+    "wrap(\"a  b   c\", 10) returns \"a b c\" (runs of spaces between words collapse to a single space).",
+    "wrap(\"abcdefghij\", 4) returns \"abcd\\nefgh\\nij\" (a word longer than width is split into width-sized pieces).",
+    "wrap(\"hi abcdefghij yo\", 4) returns \"hi\\nabcd\\nefgh\\nij yo\" (the leftover piece of a split word starts a line that following words can join).",
+    "wrap(\"abc\", 0) and wrap(\"abc\", -3) each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "word_wrap.py exists at the repo root as the single flat module.",
+      "probe": "test -f word_wrap.py",
+      "evidence": "word_wrap.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "uv is available to run pytest in the project environment.",
+      "probe": "command -v uv",
+      "evidence": null
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "word_wrap.py",
+    "tests/test_word_wrap.py"
+  ],
+  "demo": "python -c 'from word_wrap import wrap; print(repr(wrap(\"the quick brown fox\", 10))); print(repr(wrap(\"abcdefghij\", 4)))'",
+  "out_of_scope": [
+    "Preserving newlines, tabs, or other whitespace beyond splitting on spaces",
+    "Hyphenation or smart breaking of long words",
+    "Command-line interface or file input",
+    "Unicode display width handling (width counts characters)"
+  ],
+  "open_questions": [],
+  "invariants": [
+    {
+      "text": "every line is at most width characters",
+      "fn": "wrap",
+      "check": "all(len(line) <= args[1] for line in result.split(\"\\n\"))"
+    },
+    {
+      "text": "greedy: no line has room for the first word of the line after it",
+      "fn": "wrap",
+      "check": "all(len(a) + 1 + len(b.split(\" \")[0]) > args[1] for a, b in zip(result.split(\"\\n\"), result.split(\"\\n\")[1:]))"
+    }
+  ]
+}

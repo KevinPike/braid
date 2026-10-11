@@ -1,0 +1,47 @@
+{
+  "goal": "# word-wrap\n\n`wrap(text: str, width: int) -> str` breaks `text` into lines of at most `width` characters, joined with\n`\"\\n\"`. Words are separated by single spaces and a line takes as many whole words as fit (greedy). A word longer than\n`width` is split into `width`-sized pieces. `width` below 1 raises `ValueError`.\n\n- `wrap(\"the quick brown fox\", 10)` returns `\"the quick\\nbrown fox\"`\n- `wrap(\"abcdefghij\", 4)` returns `\"abcd\\nefgh\\nij\"`",
+  "behaviors": [
+    "The function must raise a `ValueError` if the provided `width` is less than 1.",
+    "The function must correctly wrap a string containing multiple words separated by single spaces, fitting as many whole words as possible on each line without exceeding the specified width, provided no word exceeds the width.",
+    "If a single word is longer than the specified width, it must be split into chunks of size `width`, and these chunks must be joined by newlines, ensuring no line exceeds `width`.",
+    "The function must correctly handle an empty input string by returning an empty string."
+  ],
+  "assumptions": [
+    {
+      "text": "The input text string consists of words separated by single spaces, or is empty.",
+      "probe": "python -c \"import re; print(len(re.findall(r'\\S+', 'a b c')))\"",
+      "evidence": "GOAL.md:4"
+    }
+  ],
+  "files": [
+    "wrap.py"
+  ],
+  "demo": "python -c \"from wrap import wrap; print(repr(wrap('the quick brown fox', 10))) \n print(repr(wrap('abcdefghij', 4))) \n print(repr(wrap('', 10)))\"",
+  "out_of_scope": [
+    "Handling of punctuation within words.",
+    "Handling of multiple spaces between words."
+  ],
+  "open_questions": [
+    "What is the desired behavior if the input text contains multiple spaces between words (e.g., 'a  b')?",
+    "Should leading or trailing whitespace in the input text be preserved or stripped?",
+    "When a word is split due to exceeding `width`, should the resulting chunks be separated by a space or a newline if they are not the last chunk of the original word?",
+    "Does the greedy word-fitting (Behavior 2) take precedence over word splitting (Behavior 3) if a word fits partially but the next word would fit entirely?",
+    "If the input is only whitespace, what should be returned?"
+  ],
+  "notes": [
+    "stopped at round limit",
+    "unapplied review feedback: Answers from GOAL.md: no further requirements beyond the goal text."
+  ],
+  "invariants": [
+    {
+      "text": "every line is at most width characters",
+      "fn": "wrap",
+      "check": "all(len(line) <= args[1] for line in result.split(\"\\n\"))"
+    },
+    {
+      "text": "greedy: no line has room for the first word of the line after it",
+      "fn": "wrap",
+      "check": "all(len(a) + 1 + len(b.split(\" \")[0]) > args[1] for a, b in zip(result.split(\"\\n\"), result.split(\"\\n\")[1:]))"
+    }
+  ]
+}

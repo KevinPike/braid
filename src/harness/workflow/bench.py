@@ -64,6 +64,11 @@ class Pair:
     kata: str
     plan: Path
     project: Path
+    name: str = ""  # how the ledger and the report name it; the kata unless a set holds the kata twice
+
+    @property
+    def key(self) -> str:
+        return self.name or self.kata
 
 
 @dataclass(frozen=True)
@@ -74,16 +79,20 @@ class BenchSet:
 
 
 def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, BenchSet]:
-    """``[sets.<name>]`` tables of ``pairs = [{kata, plan, project?}]``. A Plan path is relative to the manifest; a kata's
-    project defaults to ``practice_dir/<kata>``."""
+    """``[sets.<name>]`` tables of ``pairs = [{kata, plan, project?, name?}]``. A Plan path is relative to the manifest; a
+    kata's project defaults to ``practice_dir/<kata>``; ``name`` (default the kata) must be unique within a set."""
     data = tomllib.loads(path.read_text())
     practice = Path(data.get("practice_dir", "~/projects/braid-practice")).expanduser()
     sets: dict[str, BenchSet] = {}
     for name, body in data.get("sets", {}).items():
         pairs = tuple(
-            Pair(p["kata"], (path.parent / p["plan"]).resolve(), Path(p["project"]).expanduser() if "project" in p else practice / p["kata"])
+            Pair(p["kata"], (path.parent / p["plan"]).resolve(),
+                 Path(p["project"]).expanduser() if "project" in p else practice / p["kata"], p.get("name", ""))
             for p in body["pairs"]
         )
+        keys = [x.key for x in pairs]
+        if len(set(keys)) != len(keys):
+            raise ValueError(f"set {name!r} names a pair twice ({', '.join(keys)}); give the pairs a `name`")
         sets[name] = BenchSet(name, body.get("description", ""), pairs)
     return sets
 
@@ -92,7 +101,7 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, BenchSet]:
 
 def ledger_line(*, label: str, set_name: str, repeat: int, pair: Pair, summary: Mapping[str, Any]) -> dict[str, Any]:
     return {
-        "label": label, "set": set_name, "repeat": repeat, "kata": pair.kata, "plan": str(pair.plan),
+        "label": label, "set": set_name, "repeat": repeat, "kata": pair.kata, "pair": pair.key, "plan": str(pair.plan),
         "at": datetime.now(UTC).isoformat(timespec="seconds"), "summary": dict(summary),
     }
 
@@ -155,14 +164,15 @@ def _total(summaries_by_repeat: Mapping[int, Sequence[Mapping[str, Any]]], katas
 
 
 def aggregate(lines: Iterable[Mapping[str, Any]], label: str) -> dict[str, Stats]:
-    """Per kata, and ``"total"``, for every ledger line with ``label``."""
+    """Per pair (its name, else its kata), and ``"total"``, for every ledger line with ``label``."""
     by_kata: dict[str, list[dict[str, Any]]] = defaultdict(list)
     by_repeat: dict[int, list[dict[str, Any]]] = defaultdict(list)
     for line in lines:
         if line.get("label") != label:
             continue
-        summary = {**line["summary"], "kata": line["kata"]}
-        by_kata[line["kata"]].append(summary)
+        key = line.get("pair", line["kata"])
+        summary = {**line["summary"], "kata": key}
+        by_kata[key].append(summary)
         by_repeat[line["repeat"]].append(summary)
     out = {kata: _stats(runs) for kata, runs in sorted(by_kata.items())}
     total = _total(by_repeat, len(by_kata))

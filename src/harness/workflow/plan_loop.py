@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field
 from harness.config import WorkflowConfig
 from harness.workflow import prompts
 from harness.workflow.model import ApiCall, WorkflowModel, WorkflowModelError
+from harness.workflow.invariants import Invariant
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
 from harness.workflow.research import check_citation, research, summarize
@@ -44,6 +45,7 @@ class PlanDraft(BaseModel):
     files: list[str] = []
     demo: str | None = None
     out_of_scope: list[str] = []
+    invariants: list[Invariant] = []
 
 
 class CritiqueReply(BaseModel):

@@ -24,7 +24,7 @@ from harness.guard.preflight import Candidate, PreflightError, run_preflight, sy
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
 from harness.workflow import bench
 from harness.workflow.backend import Choice, choose, make_model
-from harness.workflow.execute import EXECUTION, Ask, build_execution_graph, drive_graph, initial_state
+from harness.workflow.execute import Ask, execution_variant, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
@@ -66,6 +66,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="stop the whole bench once it has cost this much (default 1.00); each run keeps its own Spend cap")
     n.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
     n.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    n.add_argument("--no-red-check", action="store_true", help="F3 ablation: no Invariant check after Red, only on a Dispute")
+    n.add_argument("--hide-rules", action="store_true", help="F3 ablation: do not show the Plan's Invariants to the models")
     r = sub.add_parser("report", help="the benchmark ledger: one label, a comparison of two, or the latest summary per kata")
     r.add_argument("labels", nargs="*", help="a label to show (none: list the labels)")
     r.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare label B against label A")
@@ -102,6 +104,16 @@ def show(payload: dict[str, Any], out: TextIO) -> None:
         w(f"  | stuck on: {payload['behavior']}")
         for line in payload["last_run"].splitlines()[-8:]:
             w(f"  |   {line}")
+        if dispute := payload.get("dispute"):  # F3: the implementer said a test is wrong; what the Invariant check found
+            w(f"  | disputed {dispute['test']}: {dispute['reason']}")
+            if dispute["upheld"]:
+                w("  |   upheld by: " + "; ".join(v["invariant"] for v in dispute["violations"]))
+            elif dispute.get("checked"):
+                w(f"  |   not upheld: {dispute['checked']} checks against the Plan's Invariants passed")
+            else:
+                w("  |   not upheld: no Invariant covered it (add one to the Plan, or fix the test, then resume)")
+            for u in dispute.get("unchecked", [])[:3]:
+                w(f"  |   unchecked: {u['invariant']}: {u['error']}")
         w("  > <a hint for the model> | skip | abort")
     elif payload["kind"] == "sign_off":
         w("  | demo output:")
@@ -200,7 +212,7 @@ async def build_once(
         planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path, name=run_id,
         provenance=bench.provenance(
             plan, plan_path=plan_path, backend=backend, effort=cfg.effort if backend == "anthropic" else None,
-            max_attempts=cfg.max_attempts, execution=EXECUTION, bench=bench_label,
+            max_attempts=cfg.max_attempts, execution=execution_variant(cfg), bench=bench_label,
         ),
     )
     status = final.get("status")
@@ -236,7 +248,7 @@ async def run_bench(
             run_config.workflow.max_cost_usd = min(config.workflow.max_cost_usd, left)
             plan = Plan.load(pair.plan)
             stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            run_id = re.sub(r"[^A-Za-z0-9._-]", "_", f"{stamp}-{choice.model_id}-{label}-{pair.kata}-r{n}")
+            run_id = re.sub(r"[^A-Za-z0-9._-]", "_", f"{stamp}-{choice.model_id}-{label}-{pair.key}-r{n}")
             started = clock()
             log_out = io.StringIO()  # the run's own output; the bench prints one line per run instead
             result = await build_once(
@@ -246,7 +258,7 @@ async def run_bench(
             )
             try:
                 if result.summary is None:
-                    err.write(f"{pair.kata} r{n}: the run did not start\n{log_out.getvalue()}")
+                    err.write(f"{pair.key} r{n}: the run did not start\n{log_out.getvalue()}")
                     continue
                 summary = json.loads(result.summary.read_text())
                 bench.append_ledger(ledger, bench.ledger_line(label=label, set_name=bench_set.name, repeat=n, pair=pair, summary=summary))
@@ -255,7 +267,7 @@ async def run_bench(
             spent += result.cost_usd
             done += 1
             t = summary["totals"]
-            out.write(f"{pair.kata} r{n}/{repeat}: {t['green']}/{summary['planned']} Green · {t['attempts']}a · "
+            out.write(f"{pair.key} r{n}/{repeat}: {t['green']}/{summary['planned']} Green · {t['attempts']}a · "
                       f"{t.get('satisfied', 0)}s · {summary.get('stuck', 0)} stuck · {(clock() - started) / 60:.1f}m · "
                       f"${result.cost_usd:.4f} · {result.status}\n")
             out.flush()
@@ -386,6 +398,10 @@ async def live_bench(args: argparse.Namespace, config: HarnessConfig) -> int:
         sys.stderr.write("bench runs on the Anthropic API; the Ollama path is frozen (ADR 0007)\n")
         return 2
     label = args.label or re.sub(r"[^A-Za-z0-9._-]", "_", f"{args.set}-{choice.model_id}-{datetime.now():%Y%m%d-%H%M%S}")
+    if args.no_red_check:
+        config.workflow.check_tests_at_red = False
+    if args.hide_rules:
+        config.workflow.show_invariants = False
 
     def make() -> WorkflowModel:
         model = make_model(config, choice, None)

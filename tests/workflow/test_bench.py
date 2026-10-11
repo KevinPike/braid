@@ -14,7 +14,7 @@ from harness.sandbox import LocalSandbox
 from harness.workflow import bench
 from harness.workflow.backend import Choice
 from harness.workflow.cli import SPEND_CAP_EXIT, build_once, run_bench
-from harness.workflow.execute import EXECUTION
+from harness.workflow.execute import EXECUTION, execution_variant
 from harness.workflow.plan import Plan
 from tests.conftest import make_fixture_repo
 from tests.workflow.test_api_runs import CostlyModel, cfg
@@ -47,6 +47,13 @@ async def test_a_summary_carries_its_provenance(fixture_repo: Path, fixture_venv
     assert summary["plan_path"] == str(path) and summary["plan_sha256"] == bench.plan_sha256(plan)
     assert (summary["backend"], summary["model"], summary["effort"]) == ("anthropic", "claude-haiku-5-5", "low")
     assert (summary["max_attempts"], summary["execution"], summary["bench"]) == (3, EXECUTION, "lbl")
+
+
+def test_the_execution_variant_names_the_switches() -> None:
+    from harness.config import WorkflowConfig
+
+    assert execution_variant(WorkflowConfig()) == EXECUTION
+    assert execution_variant(WorkflowConfig(check_tests_at_red=False, show_invariants=False)) == f"{EXECUTION}/no-red-check/hidden-rules"
 
 
 def test_the_plan_hash_changes_with_the_plan_and_not_with_its_formatting(tmp_path: Path) -> None:
@@ -195,9 +202,27 @@ def test_the_manifest_resolves_plans_and_projects(tmp_path: Path) -> None:
     assert s.pairs[1].project == Path("/elsewhere/j")
 
 
+def test_a_set_that_holds_a_kata_twice_needs_pair_names(tmp_path: Path) -> None:
+    manifest = tmp_path / "m.toml"
+    manifest.write_text('[sets.s]\npairs = [{ kata = "k", plan = "a.json" }, { kata = "k", plan = "b.json" }]\n')
+    with pytest.raises(ValueError, match="give the pairs a `name`"):
+        bench.load_manifest(manifest)
+    manifest.write_text('[sets.s]\npairs = [{ kata = "k", name = "k/a", plan = "a.json" }, { kata = "k", name = "k/b", plan = "b.json" }]\n')
+    assert [p.key for p in bench.load_manifest(manifest)["s"].pairs] == ["k/a", "k/b"]
+
+
+def test_ledger_lines_aggregate_by_pair_name_when_there_is_one() -> None:
+    lines = [{**line("a", "k", 1, 6), "pair": "k/a"}, {**line("a", "k", 1, 2), "pair": "k/b"}]
+    stats = bench.aggregate(lines, "a")
+    assert stats["k/a"].green == 6 and stats["k/b"].green == 2 and stats["total"].green == 8
+
+
 def test_the_checked_in_manifest_names_the_f1_sets() -> None:
     sets = bench.load_manifest()
-    assert {"claude-plans", "local-plans"} <= sets.keys()
+    assert {"claude-plans", "local-plans", "disputed", "disputed-control"} <= sets.keys()
+    assert [p.key for p in sets["disputed"].pairs] == [p.key for p in sets["disputed-control"].pairs]
+    assert all(Plan.load(p.plan).invariants for p in sets["disputed"].pairs)
+    assert not any(Plan.load(p.plan).invariants for p in sets["disputed-control"].pairs)
     for s in sets.values():
         for pair in s.pairs:
             assert pair.plan.exists(), pair.plan

@@ -23,3 +23,20 @@ pairs = [
   { kata = "semver-compare", plan = "plans/local/semver-compare.json" },
   { kata = "word-wrap", plan = "plans/local/word-wrap.json" },
 ]
+
+[sets.disputed]
+description = """F3: the Plans behind the four Behaviors Haiku disputed in the F1 live check (word-wrap B5 on Claude's
+Plan; bowling B2 and B3 and word-wrap B2 on the local Plans), with Invariants added by hand."""
+pairs = [
+  { kata = "word-wrap", name = "word-wrap/claude", plan = "plans/disputed/word-wrap-claude.json" },
+  { kata = "bowling", name = "bowling/local", plan = "plans/disputed/bowling-local.json" },
+  { kata = "word-wrap", name = "word-wrap/local", plan = "plans/disputed/word-wrap-local.json" },
+]
+
+[sets.disputed-control]
+description = "The control for `disputed`: the same three Plans without Invariants, so no Dispute can be upheld."
+pairs = [
+  { kata = "word-wrap", name = "word-wrap/claude", plan = "plans/claude/word-wrap.json" },
+  { kata = "bowling", name = "bowling/local", plan = "plans/local/bowling.json" },
+  { kata = "word-wrap", name = "word-wrap/local", plan = "plans/local/word-wrap.json" },
+]

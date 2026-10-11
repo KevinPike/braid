@@ -1,7 +1,8 @@
 """The Execution loop (ADR 0004, 0005): check Assumptions, make each Behavior Red then Green, Sign-off, Polish, finish.
 
-Models write, code checks: every pass/fail decision is a pytest or Probe run in the Sandbox, a path rule, or a human.
-Node names and routing follow ``examples/graphs/exec_graph.py``.
+Models write, code checks: every pass/fail decision is a pytest or Probe run in the Sandbox, a path rule, an Invariant
+check in the Sandbox (F3), or a human. A Dispute from the implementer never routes by itself: it only triggers the
+Invariant check on the disputed test. Node names and routing follow ``examples/graphs/exec_graph.py``.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import functools
 import inspect
 import operator
 import re
+import shlex
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from pathlib import Path
@@ -24,12 +26,20 @@ from pydantic import BaseModel, Field
 from harness.config import WorkflowConfig
 from harness.sandbox import RunResult, Sandbox, Workspace
 from harness.tools.builtin import resolve_inside
+from harness.workflow import invariants as inv
 from harness.workflow import prompts
 from harness.workflow.model import WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.records import BehaviorStats, Recorder, RunLog, UsageMeter, tail
 
-EXECUTION = "tdd-v1"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
+EXECUTION = "tdd-v2-invariants"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
+
+
+def execution_variant(settings: WorkflowConfig) -> str:
+    """``EXECUTION`` plus the switches that change the graph's behavior, for the summary's provenance."""
+    return EXECUTION + ("" if settings.check_tests_at_red else "/no-red-check") + ("" if settings.show_invariants else "/hidden-rules")
+
+
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str
@@ -44,6 +54,19 @@ class FileEdit(BaseModel):
 class Edits(BaseModel):
     edits: list[FileEdit] = Field(min_length=1, max_length=3)
     rationale: str  # one sentence, logged
+
+
+class Dispute(BaseModel):
+    test: str  # the disputed test function's name
+    reason: str
+
+
+class ImplEdits(BaseModel):
+    """``write_impl``'s reply: edits, or a Dispute (F3), or both."""
+
+    edits: list[FileEdit] = Field(default_factory=list, max_length=3)
+    rationale: str
+    dispute: Dispute | None = None
 
 
 class ExecState(TypedDict, total=False):
@@ -66,6 +89,12 @@ class ExecState(TypedDict, total=False):
     polish_feedback: str
     edited: list[str]
     test_paths: list[str]
+    test_owner: dict[str, int]  # test file -> the Behavior whose write_test wrote it
+    invariant_verdict: Literal["ok", "violated"]
+    dispute: dict[str, Any] | None  # the last Dispute on this Behavior and how the check went: shown at Stuck
+    dispute_raised: dict[str, str] | None  # the Dispute in the last write_impl reply, until check_dispute reads it
+    dispute_note: str  # a Dispute not upheld, for the next write_impl prompt
+    revisit: dict[str, int] | None  # {"idx": earlier Behavior whose test is being fixed, "back": the one to return to}
     status: str
     recorder: dict[str, Any]  # Recorder.dump() after each node: the per-Behavior stats and elapsed time survive a resume
 
@@ -170,14 +199,14 @@ class _Loop:
         for rel in dict.fromkeys([*plan.files, *state.get("edited", [])]):
             if (self.ws.path / rel).is_file():
                 files[rel] = (self.ws.path / rel).read_text(errors="replace")
-        return prompts.context(plan, state.get("idx", 0), await self.ws.list_files(), files)
+        return prompts.context(plan, state.get("idx", 0), await self.ws.list_files(), files, rules=self.cfg.show_invariants)
 
-    async def ask(self, prompt: str) -> tuple[Edits | None, float, str]:
+    async def ask[E: (Edits, ImplEdits)](self, prompt: str, schema: type[E]) -> tuple[E | None, float, str]:
         start = time.monotonic()
-        edits: Edits | None = None
+        edits: E | None = None
         error = ""
         try:
-            edits = await self.model.complete(prompts.SYSTEM, prompt, Edits)
+            edits = await self.model.complete(prompts.SYSTEM, prompt, schema)
         except WorkflowModelError as exc:
             error = str(exc)
         elapsed = time.monotonic() - start
@@ -186,7 +215,7 @@ class _Loop:
         return edits, elapsed, error
 
     def apply(
-        self, edits: Edits | None, allow: Literal["tests", "impl"], before: dict[str, bytes | None] | None = None,
+        self, edits: Edits | ImplEdits | None, allow: Literal["tests", "impl"], before: dict[str, bytes | None] | None = None,
     ) -> tuple[dict[str, str], list[str]]:
         """Write the edits that pass the path rules; return (written, refusals). ``before`` collects what each path held."""
         written: dict[str, str] = {}
@@ -211,6 +240,44 @@ class _Loop:
             except ValueError as exc:
                 refused.append(str(exc))
         return written, refused
+
+    # --- Invariants (F3) -----------------------------------------------------------------------------------
+    def python(self) -> str:
+        """The interpreter the checker runs on: the test command's, when it names one."""
+        first = shlex.split(self.cfg.test_command)[0] if self.cfg.test_command.strip() else ""
+        return first if "python" in Path(first).name else "python3"
+
+    async def check(self, plan: Plan, paths: list[str], test: str | None = None) -> inv.CheckResult:
+        """Evaluate the Plan's Invariants on the examples asserted in ``paths`` (only ``test``'s, when given), in the
+        Sandbox. Model-written test files and Invariants never run in the harness itself."""
+        examples: list[inv.Example] = []
+        skipped: list[str] = []
+        for rel in paths:
+            file = self.ws.path / rel
+            if not file.is_file():
+                continue
+            found = inv.extract(file.read_text(errors="replace"), rel)
+            examples += found.examples
+            skipped += found.skipped
+        if test:
+            name = test.split("::")[-1].split("[")[0].strip()
+            examples = [e for e in examples if e.test.split("::")[-1].split("[")[0] == name]
+            skipped = [s for s in skipped if f"::{name}" in s]
+        if not examples or not plan.invariants:
+            return inv.CheckResult(examples=len(examples), skipped=skipped)
+        scratch = self.ws.path / ".tmp" / "invariants"
+        scratch.mkdir(parents=True, exist_ok=True)
+        (scratch / "check.py").write_text(inv.CHECKER)
+        (scratch / "input.json").write_text(inv.checker_input(examples, plan.invariants))
+        r = await self.sh(f"{shlex.quote(self.python())} -I .tmp/invariants/check.py .tmp/invariants/input.json", PROBE_TIMEOUT_S)
+        if r.timed_out:
+            return inv.CheckResult(examples=len(examples), skipped=skipped, error="the invariant check timed out")
+        return inv.read_checker_output(r.output, len(examples), skipped)
+
+    def test_files(self, state: ExecState) -> list[str]:
+        return sorted(state.get("test_owner", {})) or sorted(
+            str(p.relative_to(self.ws.path)) for p in (self.ws.path / "tests").rglob("test*.py")
+        )
 
     # --- stage 1: assumption check -------------------------------------------------------------------------
     async def check_assumptions(self, state: ExecState) -> dict[str, Any]:
@@ -258,13 +325,14 @@ class _Loop:
         out: dict[str, Any] = {"idx": idx, "phase": "test"}
         if fresh:
             self.rec.behavior_started = time.monotonic()
-            out.update(snapshot=await self.capture(), red_tries=0, satisfied=False, last_run="")
-        else:  # a rewrite starts from the Workspace as the Behavior found it, so a rejected test file cannot linger
-            await self.restore(state["snapshot"])
+            out.update(snapshot=await self.capture(), red_tries=0, satisfied=False, last_run="", dispute=None, dispute_note="")
+        elif not state.get("revisit"):  # a rewrite starts from the Workspace as the Behavior found it
+            await self.restore(state["snapshot"])  # so a rejected test file cannot linger
         prompt = prompts.write_test(await self.context(cast(ExecState, {**state, **out})), idx, plan.behaviors[idx], state.get("hint", ""), "" if fresh else state.get("last_run", ""))
-        edits, elapsed, error = await self.ask(prompt)
+        edits, elapsed, error = await self.ask(prompt, Edits)
         written, refused = self.apply(edits, "tests")
         out["test_paths"] = [*written]
+        out["test_owner"] = {**state.get("test_owner", {}), **{rel: idx for rel in written}}
         out["edited"] = [*dict.fromkeys([*state.get("edited", []), *written])]
         if refused:
             out["last_run"] = "Edit refused: " + "; ".join(refused)
@@ -292,12 +360,36 @@ class _Loop:
         self.current(state).red_rejections += 1
         return {"red_verdict": "rejected", "red_tries": tries + 1, "last_run": f"{reason}\n{tail(r.output)}"}
 
-    def after_red(self, state: ExecState) -> Literal["write_test", "write_impl", "check_satisfied", "stuck"]:
+    def after_red(self, state: ExecState) -> Literal["write_test", "write_impl", "check_satisfied", "check_invariants", "stuck"]:
+        if state.get("revisit") and state["red_verdict"] != "rejected":  # a corrected earlier test: check it, then go back
+            return "check_invariants"
         if state["red_verdict"] == "red":
-            return "write_impl"
+            return "check_invariants" if self.plan(state).invariants and self.cfg.check_tests_at_red else "write_impl"
         if state["red_verdict"] == "passed":
             return "check_satisfied"
         return "stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test"
+
+    async def check_invariants(self, state: ExecState) -> dict[str, Any]:
+        """After Red, before implementation sees the test: every expected value it asserts must satisfy the Plan's
+        Invariants. A violation is a Red rejection, sent back to ``write_test`` with the rule and the example named."""
+        result = await self.check(self.plan(state), state.get("test_paths", []))
+        self.log("check_invariants", state, **result.summary())
+        if not result.violations:
+            return {"invariant_verdict": "ok"}
+        self.current(state).red_rejections += 1
+        return {"invariant_verdict": "violated", "red_tries": state.get("red_tries", 0) + 1, "last_run": inv.feedback(result.violations)}
+
+    def after_invariants(self, state: ExecState) -> Literal["write_impl", "write_test", "resume_behavior", "stuck"]:
+        if state["invariant_verdict"] == "violated":
+            return "stuck" if state["red_tries"] >= self.cfg.max_attempts else "write_test"
+        return "resume_behavior" if state.get("revisit") else "write_impl"
+
+    def resume_behavior(self, state: ExecState) -> dict[str, Any]:
+        """An earlier Behavior's test was corrected after an upheld Dispute: back to the Behavior that disputed it, whose
+        suite now runs with the corrected test."""
+        revisit = state["revisit"] or {}
+        self.log("resume_behavior", state, corrected=state.get("test_paths", []), back_to=revisit.get("back"))
+        return {"idx": revisit["back"], "revisit": None, "phase": "impl", "refused": False, "red_tries": 0}
 
     async def check_satisfied(self, state: ExecState) -> dict[str, Any]:
         """The new test passed at Red. Run it against the implementation as it was at HEAD: if it fails there, earlier
@@ -332,18 +424,65 @@ class _Loop:
         stats.attempts += 1
         attempts = state.get("attempts", 0) + 1
         behavior = self.plan(state).behaviors[state["idx"]]
-        prompt = prompts.write_impl(await self.context(state), behavior, state.get("hint", ""), state.get("last_run", ""))
-        edits, elapsed, error = await self.ask(prompt)
+        prompt = prompts.write_impl(
+            await self.context(state), behavior, state.get("hint", ""), state.get("last_run", ""), state.get("dispute_note", ""),
+        )
+        edits, elapsed, error = await self.ask(prompt, ImplEdits)
         written, refused = self.apply(edits, "impl")
+        dispute = edits.dispute if edits is not None else None
+        if edits is not None and not written and not refused and dispute is None:
+            refused = ["the reply changed no file and raised no dispute"]
         out: dict[str, Any] = {"attempts": attempts, "phase": "impl", "edited": [*dict.fromkeys([*state.get("edited", []), *written])]}
         out["refused"] = bool(refused)
+        out["dispute_raised"] = dispute.model_dump() if dispute else None
         if refused:
             out["last_run"] = "Edit refused: " + "; ".join(refused)
         self.log(
             "write_impl", state, attempt=attempts, prompt=prompt, reply=edits.model_dump() if edits else None,
             model_error=error, written=[*written], refused=refused, model_seconds=round(elapsed, 2),
+            dispute=out["dispute_raised"],
         )
         return out
+
+    def after_impl(self, state: ExecState) -> Literal["check_dispute", "run_green"]:
+        return "check_dispute" if state.get("dispute_raised") else "run_green"
+
+    async def check_dispute(self, state: ExecState) -> dict[str, Any]:
+        """The implementer disputed a test. Code decides (ADR 0004): the Plan's Invariants on that test's examples.
+
+        A violation is upheld: the test goes back to the ``write_test`` of the Behavior that wrote it, with the reason and
+        the rule, and this implementation attempt is not counted. Otherwise the test stands, the attempt counts, and the
+        reason goes into the next prompt."""
+        raised = state.get("dispute_raised") or {}
+        test, reason = raised.get("test", ""), raised.get("reason", "")
+        result = await self.check(self.plan(state), self.test_files(state), test)
+        stats = self.current(state)
+        stats.disputes += 1
+        record: dict[str, Any] = {"test": test, "reason": reason, "upheld": bool(result.violations), **result.summary()}
+        self.log("check_dispute", state, **record)
+        out: dict[str, Any] = {"dispute": record, "dispute_raised": None}
+        if not result.violations:
+            why = ("no Invariant in the Plan" if not self.plan(state).invariants
+                   else "no literal assert found in that test" if not result.examples
+                   else f"all {result.checked} checks passed" + (f", {len(result.unchecked)} unchecked" if result.unchecked else ""))
+            out["dispute_note"] = (f"Your dispute of {test} was checked against the Plan's rules and not upheld ({why}). "
+                                   f"The test stands; make it pass. Your reason was: {reason}")
+            out["refused"] = False  # run the suite even when the reply wrote nothing, so the next prompt has its output
+            return out
+        stats.disputes_upheld += 1
+        stats.attempts -= 1  # an upheld Dispute does not use up an implementation attempt
+        owner = state.get("test_owner", {}).get(result.violations[0].test.split("::")[0], state["idx"])
+        out.update(
+            attempts=state["attempts"] - 1, phase="test", red_tries=0,
+            last_run=f"The implementer disputed {test}: {reason}\n{inv.feedback(result.violations)}",
+        )
+        if owner < state["idx"]:  # an earlier Behavior's test: fix it there, then come back
+            out.update(idx=owner, revisit={"idx": owner, "back": state["idx"]})
+        return out
+
+    @staticmethod
+    def after_dispute(state: ExecState) -> Literal["write_test", "run_green"]:
+        return "write_test" if state.get("phase") == "test" else "run_green"
 
     async def run_green(self, state: ExecState) -> dict[str, Any]:
         if state.get("refused"):  # nothing was written, so there is nothing to run
@@ -360,20 +499,27 @@ class _Loop:
 
     async def stuck(self, state: ExecState) -> dict[str, Any]:
         behavior = self.plan(state).behaviors[state["idx"]]
+        dispute = state.get("dispute")
         if self.hints:
-            answer = str(interrupt({"kind": "stuck", "behavior": behavior, "last_run": state.get("last_run", "")}))
+            payload: dict[str, Any] = {"kind": "stuck", "behavior": behavior, "last_run": state.get("last_run", "")}
+            if dispute:
+                payload["dispute"] = dispute
+            answer = str(interrupt(payload))
         else:
             answer = "skip"
         self.rec.stuck += 1
-        stats = self.current(state)
-        self.log("stuck", state, answer=answer, last_run=tail(state.get("last_run", "")))
+        revisit = state.get("revisit")
+        idx = revisit["back"] if revisit else state["idx"]  # stuck fixing an earlier test: the disputing Behavior is stuck
+        stats = self.rec.behaviors[idx]
+        self.log("stuck", state, answer=answer, last_run=tail(state.get("last_run", "")), dispute=dispute)
         if is_abort(answer):
             return {"status": "aborted"}
         if answer.strip().lower().startswith("skip"):  # mark failed and put the Workspace back as this Behavior found it
-            stats.green, stats.note = False, "stuck"
+            stats.green, stats.note = False, "stuck" + (" after a dispute" if dispute else "")
             stats.seconds = time.monotonic() - self.rec.behavior_started
             await self.restore(state["snapshot"])
-            return {"phase": "skipped", "idx": state["idx"] + 1, "attempts": 0, "red_tries": 0, "hint": "", "last_run": ""}
+            return {"phase": "skipped", "idx": idx + 1, "attempts": 0, "red_tries": 0, "hint": "", "last_run": "",
+                    "revisit": None, "dispute": None, "dispute_note": ""}
         stats.hints += 1
         return {"attempts": 0, "red_tries": 0, "hint": answer}
 
@@ -389,7 +535,7 @@ class _Loop:
         stats.green = True
         stats.seconds = time.monotonic() - self.rec.behavior_started
         self.log("next_behavior", state, satisfied=stats.satisfied, seconds=round(stats.seconds, 2))
-        return {"idx": state["idx"] + 1, "attempts": 0, "phase": "impl", "hint": "", "last_run": ""}
+        return {"idx": state["idx"] + 1, "attempts": 0, "phase": "impl", "hint": "", "last_run": "", "dispute": None, "dispute_note": ""}
 
     def after_next(self, state: ExecState) -> Literal["write_test", "sign_off"]:
         return "write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off"
@@ -423,7 +569,7 @@ class _Loop:
     async def polish(self, state: ExecState) -> dict[str, Any]:
         round_ = state.get("polish_round", 0) + 1
         prompt = prompts.polish(await self.context(state), state.get("polish_feedback", ""))
-        edits, elapsed, error = await self.ask(prompt)
+        edits, elapsed, error = await self.ask(prompt, Edits)
         before: dict[str, bytes | None] = {}
         written, refused = self.apply(edits, "impl", before)
         self.log(
@@ -502,8 +648,9 @@ class _Loop:
     def graph(self) -> StateGraph[ExecState]:
         g = StateGraph(ExecState)
         for name in (
-            "check_assumptions", "clarify", "write_test", "run_red", "check_satisfied", "write_impl", "run_green", "stuck",
-            "next_behavior", "sign_off", "polish", "verify_polish", "finish", "spend_cap",
+            "check_assumptions", "clarify", "write_test", "run_red", "check_satisfied", "check_invariants", "resume_behavior",
+            "write_impl", "check_dispute", "run_green", "stuck", "next_behavior", "sign_off", "polish", "verify_polish",
+            "finish", "spend_cap",
         ):
             g.add_node(name, self.timed(getattr(self, name)))
         gate = self.gate
@@ -518,9 +665,12 @@ class _Loop:
         edges("check_assumptions", self.after_check, ["clarify", "write_test"])
         edges("clarify", self.after_clarify, ["check_assumptions", END])
         edges("write_test", to("run_red"), ["run_red"])
-        edges("run_red", self.after_red, ["write_test", "write_impl", "check_satisfied", "stuck"])
+        edges("run_red", self.after_red, ["write_test", "write_impl", "check_satisfied", "check_invariants", "stuck"])
+        edges("check_invariants", self.after_invariants, ["write_impl", "write_test", "resume_behavior", "stuck"])
+        edges("resume_behavior", to("run_green"), ["run_green"])
         edges("check_satisfied", self.after_satisfied, ["next_behavior", "write_test", "stuck"])
-        edges("write_impl", to("run_green"), ["run_green"])
+        edges("write_impl", self.after_impl, ["check_dispute", "run_green"])
+        edges("check_dispute", self.after_dispute, ["write_test", "run_green"])
         edges("run_green", self.after_green, ["next_behavior", "write_impl", "stuck"])
         edges("stuck", self.after_stuck, ["write_test", "write_impl", "sign_off", END])
         edges("next_behavior", self.after_next, ["write_test", "sign_off"])

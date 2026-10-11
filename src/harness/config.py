@@ -119,6 +119,8 @@ class WorkflowConfig(BaseModel):
     think: bool | None = False  # sent as /api/chat's top-level ``think``; false stops thinking models spending the output on it
     num_predict: int | None = 4096  # cap on generated tokens per model call
     max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
+    show_invariants: bool = True  # F3: show the Plan's Invariants to the models (they are checked by code either way)
+    check_tests_at_red: bool = True  # F3: check a new test against the Invariants after Red; off leaves only Disputes
     max_polish_rounds: int = 1  # 0 skips Polish
     test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
     lint_commands: list[str] = []  # each must exit 0 after Polish, or Polish is reverted

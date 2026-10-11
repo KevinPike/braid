@@ -6,6 +6,8 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from harness.workflow.invariants import Invariant
+
 
 class Assumption(BaseModel):
     text: str
@@ -22,6 +24,7 @@ class Plan(BaseModel):
     out_of_scope: list[str] = []
     open_questions: list[str] = []
     notes: list[str] = []
+    invariants: list[Invariant] = []  # F3: rules every expected value in a test must satisfy, checked by code
 
     @classmethod
     def load(cls, path: Path) -> Plan:
@@ -46,6 +49,7 @@ class Plan(BaseModel):
         ])
         section("Files", [f"- `{f}`" for f in self.files])
         section("Demo", [f"`{self.demo}`"] if self.demo else [])
+        section("Invariants", [f"- {i.text}: `{i.check}`" + (f" (for {i.fn})" if i.fn else "") for i in self.invariants])
         section("Out of scope", [f"- {s}" for s in self.out_of_scope])
         section("Open questions", [f"- {q}" for q in self.open_questions])
         section("Notes", [f"- {n}" for n in self.notes])

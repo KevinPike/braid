@@ -31,6 +31,8 @@ class BehaviorStats:
     satisfied: bool = False  # the new test passed at Red and failed against the HEAD implementation: earlier code covers it
     note: str = ""
     cost_usd: float = 0.0  # API-backed runs only
+    disputes: int = 0  # F3: Disputes the implementer raised on this Behavior
+    disputes_upheld: int = 0  # ... that an Invariant check upheld (the test went back to write_test)
 
 
 @dataclass
@@ -162,6 +164,7 @@ def write_summary(
             "green": sum(x.green for x in b), "attempts": sum(x.attempts for x in b),
             "red_rejections": sum(x.red_rejections for x in b), "hints": sum(x.hints for x in b),
             "satisfied": sum(x.satisfied for x in b), "seconds": round(time.monotonic() - rec.started, 1),
+            "disputes": sum(x.disputes for x in b), "disputes_upheld": sum(x.disputes_upheld for x in b),
             "model_seconds": round(rec.model_seconds, 1), "model_calls": rec.model_calls,
             "cost_usd": round(rec.cost_usd, 8), "input_tokens": rec.input_tokens, "output_tokens": rec.output_tokens,
             "cache_read_input_tokens": rec.cache_read_input_tokens,

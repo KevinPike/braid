@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -12,7 +13,9 @@ from pydantic import BaseModel
 
 from harness.config import WorkflowConfig
 from harness.sandbox import LocalSandbox, Workspace
-from harness.workflow.execute import Edits, ExecState, FileEdit, build_execution_graph, drive_graph, initial_state
+from harness.workflow.execute import Dispute, Edits, ExecState, FileEdit, ImplEdits, build_execution_graph, drive_graph, initial_state
+from harness.workflow.cli import show
+from harness.workflow.invariants import Invariant
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
 
@@ -41,7 +44,7 @@ NEG_TEST = make_test(2, "assert neg(3) == -3", "neg")
 class ScriptedModel:
     """Replies in call order; a reply may be a callable of the prompt. Records every prompt."""
 
-    replies: list[Edits | Callable[[str], Edits]]
+    replies: list[BaseModel | Callable[[str], BaseModel]]
     prompts: list[str] = field(default_factory=list)
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
@@ -49,8 +52,9 @@ class ScriptedModel:
         assert self.replies, f"the scripted model ran out of replies; prompt was:\n{prompt}"
         reply = self.replies.pop(0)
         edits = reply(prompt) if callable(reply) else reply
-        assert isinstance(edits, schema)
-        return edits
+        if isinstance(edits, schema):
+            return edits
+        return schema.model_validate(edits.model_dump())  # write_impl asks for ImplEdits: an Edits reply without a Dispute
 
 
 @dataclass
@@ -74,14 +78,14 @@ def tree(root: Path) -> dict[str, str]:
 async def run_loop(
     fixture_repo: Path, fixture_venv: Path, tmp_path: Path, model: ScriptedModel, answers: list[str], *,
     behaviors: list[str] | None = None, assumptions: list[Assumption] | None = None, hints: bool = True,
-    settings: WorkflowConfig | None = None,
+    settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None,
 ) -> Run:
     ws = await Workspace.create(fixture_repo, tmp_path / "workspaces", "run1")
     (ws.path / ".venv").symlink_to(fixture_venv)
     plan = Plan(
         goal="arithmetic helpers", behaviors=behaviors or ["mul multiplies", "neg negates"],
         assumptions=assumptions if assumptions is not None else [Assumption(text="pyproject exists", probe="test -f pyproject.toml")],
-        files=["src/mod.py"],
+        files=["src/mod.py"], invariants=invariants or [],
     )
     rec = Recorder()
     log = RunLog(tmp_path / "runs" / "run1.jsonl")
@@ -284,3 +288,131 @@ async def test_yes_variants_approve_sign_off(fixture_repo: Path, fixture_venv: P
     model = ScriptedModel([MUL_TEST, MUL_IMPL, MUL_IMPL])
     run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, [answer, "no"], behaviors=["mul multiplies"])
     assert run.rec.trace[-3:] == ["polish", "verify_polish", "finish"]
+
+
+# --- F3: Invariants and Disputes ---------------------------------------------------------------------------------------
+
+MUL_RULE = Invariant(text="mul(a, b) is a times b", fn="mul", check="result == args[0] * args[1]")
+BAD_MUL_TEST = make_test(1, "assert mul(2, 3) == 7")
+
+
+def dispute(test: str, reason: str, *edits: FileEdit) -> ImplEdits:
+    return ImplEdits(edits=list(edits), rationale="scripted", dispute=Dispute(test=test, reason=reason))
+
+
+def nodes(run: Run, name: str) -> list[dict[str, Any]]:
+    return [r for r in run.log.lines() if r["node"] == name]
+
+
+async def test_a_new_test_that_breaks_an_invariant_goes_back_to_write_test_before_implementation_sees_it(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([BAD_MUL_TEST, MUL_TEST, MUL_IMPL, edit("src/mod.py", MUL)])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], behaviors=["mul multiplies"],
+                         assumptions=[], invariants=[MUL_RULE])
+    assert run.rec.trace[:7] == ["check_assumptions", "write_test", "run_red", "check_invariants", "write_test", "run_red", "check_invariants"]
+    first, second = nodes(run, "check_invariants")
+    assert first["violations"][0]["invariant"] == MUL_RULE.text and "mul(2, 3) == 7" in first["violations"][0]["example"]
+    assert second["violations"] == [] and second["checked"] == 1
+    rewrite = model.prompts[1]
+    assert MUL_RULE.text in rewrite and "mul(2, 3) == 7" in rewrite  # the rule and the example are named
+    impl_prompts = [p for p in model.prompts if "Task: make the tests pass" in p]
+    assert impl_prompts and not any("== 7" in p for p in impl_prompts)  # implementation never saw the bad test
+    assert run.rec.behaviors[0].red_rejections == 1 and run.rec.behaviors[0].green
+    assert MUL_RULE.text in model.prompts[0]  # the rule is in the context from the start (show_invariants)
+
+
+async def test_an_upheld_dispute_rewrites_the_test_without_using_an_attempt_and_then_reaches_green(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([
+        BAD_MUL_TEST, dispute("test_b1", "2 times 3 is 6, not 7"), MUL_TEST, MUL_IMPL, edit("src/mod.py", MUL),
+    ])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], behaviors=["mul multiplies"],
+                         assumptions=[], invariants=[MUL_RULE], settings=WorkflowConfig(check_tests_at_red=False))
+    assert run.rec.trace[:9] == [
+        "check_assumptions", "write_test", "run_red", "write_impl", "check_dispute", "write_test", "run_red", "write_impl", "run_green",
+    ]
+    [check] = nodes(run, "check_dispute")
+    assert check["upheld"] and check["reason"] == "2 times 3 is 6, not 7" and check["violations"][0]["invariant"] == MUL_RULE.text
+    assert "2 times 3 is 6, not 7" in model.prompts[2] and MUL_RULE.text in model.prompts[2]  # the rewrite gets both
+    stats = run.rec.behaviors[0]
+    assert stats.green and stats.attempts == 1 and (stats.disputes, stats.disputes_upheld) == (1, 1)
+    assert "== 6" in (run.ws.path / "tests" / "test_behavior_1.py").read_text()
+
+
+async def test_a_dispute_that_breaks_no_invariant_is_not_upheld_and_its_reason_reaches_the_next_prompt(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([MUL_TEST, dispute("test_b1", "I believe mul(2, 3) is 5"), MUL_IMPL, edit("src/mod.py", MUL)])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], behaviors=["mul multiplies"],
+                         assumptions=[], invariants=[MUL_RULE])
+    [check] = nodes(run, "check_dispute")
+    assert not check["upheld"] and check["checked"] == 1 and check["reason"] == "I believe mul(2, 3) is 5"
+    assert run.rec.trace[3:8] == ["check_invariants", "write_impl", "check_dispute", "run_green", "write_impl"]
+    second = [p for p in model.prompts if "Task: make the tests pass" in p][1]
+    assert "not upheld" in second and "I believe mul(2, 3) is 5" in second
+    assert "FAILED" in second or "Error" in second  # the suite still ran, so the prompt has its output
+    stats = run.rec.behaviors[0]
+    assert stats.green and stats.attempts == 2 and (stats.disputes, stats.disputes_upheld) == (1, 0)
+    assert nodes(run, "write_impl")[0]["dispute"] == {"test": "test_b1", "reason": "I believe mul(2, 3) is 5"}
+
+
+async def test_stuck_after_disputes_shows_the_last_reason_and_what_was_checked(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([MUL_TEST, dispute("test_b1", "first reason"), dispute("test_b1", "the test is wrong, it wants 5")])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["abort"], behaviors=["mul multiplies"],
+                         assumptions=[], invariants=[MUL_RULE], settings=WorkflowConfig(max_attempts=2))
+    [stuck] = run.payloads
+    assert stuck["kind"] == "stuck"
+    assert stuck["dispute"]["reason"] == "the test is wrong, it wants 5" and not stuck["dispute"]["upheld"]
+    assert stuck["dispute"]["checked"] == 1 and stuck["dispute"]["test"] == "test_b1"
+    assert run.final["status"] == "aborted"
+    shown = io.StringIO()
+    show(stuck, shown)
+    assert "disputed test_b1: the test is wrong, it wants 5" in shown.getvalue() and "not upheld: 1 checks" in shown.getvalue()
+
+
+async def test_a_dispute_with_no_invariants_in_the_plan_is_not_upheld(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    model = ScriptedModel([MUL_TEST, dispute("test_b1", "wrong"), MUL_IMPL, edit("src/mod.py", MUL)])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], behaviors=["mul multiplies"], assumptions=[])
+    assert not nodes(run, "check_dispute")[0]["upheld"]
+    assert "no Invariant in the Plan" in [p for p in model.prompts if "Task: make the tests pass" in p][1]
+
+
+async def test_a_dispute_on_an_earlier_behaviors_test_fixes_it_there_and_comes_back(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    wrong_mul = MOD + "\n\ndef mul(a: int, b: int) -> int:\n    return a * b + 1\n"  # passes the bad Behavior 1 test
+    model = ScriptedModel([
+        BAD_MUL_TEST, edit("src/mod.py", wrong_mul),  # Behavior 1 goes Green against a wrong test
+        NEG_TEST, dispute("test_b1", "mul(2, 3) is 6", FileEdit(path="src/mod.py", content=NEG)),  # Behavior 2 disputes it
+        MUL_TEST,  # Behavior 1's test, corrected
+        edit("src/mod.py", NEG),  # Polish
+    ])
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["yes", "no"], invariants=[MUL_RULE], assumptions=[],
+                         settings=WorkflowConfig(check_tests_at_red=False))
+    trace = run.rec.trace
+    i = trace.index("check_dispute")
+    assert trace[i:i + 6] == ["check_dispute", "write_test", "run_red", "check_invariants", "resume_behavior", "run_green"]
+    rewrite = nodes(run, "write_test")[-1]
+    assert rewrite["behavior"] == 0 and "mul(2, 3) is 6" in rewrite["prompt"]
+    assert nodes(run, "resume_behavior")[0]["back_to"] == 1
+    assert [b.green for b in run.rec.behaviors] == [True, True]
+    assert run.rec.behaviors[1].attempts == 0 and run.rec.behaviors[1].disputes_upheld == 1
+    assert "== 6" in (run.ws.path / "tests" / "test_behavior_1.py").read_text()
+
+
+async def test_an_invariant_that_raises_is_reported_as_unchecked_and_the_run_goes_on(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path,
+) -> None:
+    broken = Invariant(text="a broken rule", check="result.missing")
+    run = await run_loop(fixture_repo, fixture_venv, tmp_path, ScriptedModel([MUL_TEST, MUL_IMPL, edit("src/mod.py", MUL)]),
+                         ["yes", "no"], behaviors=["mul multiplies"], assumptions=[], invariants=[broken])
+    [check] = nodes(run, "check_invariants")
+    assert check["violations"] == [] and check["unchecked"][0]["invariant"] == "a broken rule"
+    assert "AttributeError" in check["unchecked"][0]["error"]
+    assert run.rec.behaviors[0].green and run.rec.behaviors[0].red_rejections == 0
