@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import Any, TextIO, cast, get_args
 
 from harness.anthropic_api import make_client
-from harness.config import Effort, HarnessConfig, load_config
+from harness.config import Effort, HarnessConfig, arbiter_role, load_config
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
 from harness.workflow import bench
-from harness.workflow.backend import Choice, choose, make_model
+from harness.workflow.backend import Choice, choose, make_arbiter, make_model
 from harness.workflow.batch import BatchedWorkflowModel, Batcher
 from harness.workflow.execute import Ask, execution_variant, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
@@ -127,12 +127,16 @@ def show(payload: dict[str, Any], out: TextIO) -> None:
                 w("  |   not upheld: no Invariant covered it (add one to the Plan, or fix the test, then resume)")
             for u in dispute.get("unchecked", [])[:3]:
                 w(f"  |   unchecked: {u['invariant']}: {u['error']}")
+            if ruling := dispute.get("ruling"):  # F10: what the Arbiter ruled
+                w(f"  |   the Arbiter ({ruling['model']}) ruled {ruling['verdict']}: {ruling['reason']}")
+        show_proposed(payload, w)
         w("  > <a hint for the model> | skip | abort")
     elif payload["kind"] == "sign_off":
         w("  | demo output:")
         for line in payload["demo"].splitlines():
             w(f"  |   {line}")
         w(f"  | passing tests: {len(payload['passing'])}")
+        show_proposed(payload, w)
         w("  > yes | <what's wrong or missing; becomes a new Behavior> | abort")
     else:
         for c in payload["changes"]:
@@ -142,6 +146,13 @@ def show(payload: dict[str, Any], out: TextIO) -> None:
         w(f"  Workspace: {payload['workspace']}")
         w("  > yes (apply the diff to the project) | no (keep the Workspace)")
     out.flush()
+
+
+def show_proposed(payload: dict[str, Any], w: Callable[[str], None]) -> None:
+    """F10: the Invariants the Arbiter proposed. Never added by the harness: the human adds them to the Plan, or not."""
+    for p in payload.get("proposed_invariants", []):
+        w(f"  | proposed Invariant (from the Arbiter, on {p['test']}; not applied): {p['text']}: `{p['check']}`"
+          + (f" (for {p['fn']})" if p.get("fn") else ""))
 
 
 @dataclass(frozen=True)
@@ -169,10 +180,12 @@ async def build_once(
     plan: Plan, project: Path, *, model: WorkflowModel, model_id: str, sandbox: Sandbox, config: HarnessConfig,
     hints: bool, ask: Ask, out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic,
     tty: bool | None = None, plan_path: Path | None = None, backend: str | None = None, bench_label: str | None = None,
-    run_id: str | None = None,
+    run_id: str | None = None, arbiter: WorkflowModel | None = None,
 ) -> BuildResult:
-    """One Execution loop run; its summary carries the provenance (F2). ``backend`` defaults to the model id's."""
+    """One Execution loop run; its summary carries the provenance (F2). ``backend`` defaults to the model id's.
+    ``arbiter`` defaults to the one ``[workflow] arbiter`` names (F10), if any."""
     cfg = config.workflow
+    arbiter = arbiter if arbiter is not None else make_arbiter(config)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_id = run_id or f"{stamp}-{re.sub(r'[^A-Za-z0-9._-]', '_', model_id)}"
     backend = backend or choose(config, model=model_id).backend
@@ -181,14 +194,16 @@ async def build_once(
     log = RunLog(cfg.runs_dir.expanduser() / f"{run_id}.jsonl", listener=lambda record: progress.end(describe(record)))
     workspace = await Workspace.create(project, cfg.workspaces_dir.expanduser(), run_id)
     out.write(f"plan: {plan.goal}\nmodel: {model_id}\nworkspace: {workspace.path}\nrun log: {log.path}\n")
+    if arbiter is not None:
+        out.write(f"arbiter: {cfg.arbiter}, at most {cfg.max_arbitrations} per Behavior\n")
     if workspace.warning:
         out.write(f"warning: {workspace.warning}\n")
     synced = await workspace.sync_deps()
     if synced.exit_code != 0:
         err.write(f"uv sync --frozen failed:\n{synced.output}\n")
         return BuildResult(1, None, workspace, 0.0, None)
-    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log)
-    seen = {"idx": 0, "total": len(plan.behaviors)}
+    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log, arbiter=arbiter)
+    seen ={"idx": 0, "total": len(plan.behaviors)}
 
     def on_start(node: str) -> None:
         progress.set_behavior(seen["idx"], seen["total"])
@@ -395,7 +410,7 @@ async def bench_one(
         result = await build_once(
             plan, pair.project, model=model, model_id=cell.choice.model_id, sandbox=sandbox, config=run_config, hints=False,
             ask=lambda _p: "no", out=log_out, err=log_out, clock=clock, tty=False, plan_path=pair.plan,
-            backend=cell.choice.backend, bench_label=cell.label, run_id=run_id,
+            backend=cell.choice.backend, bench_label=cell.label, run_id=run_id, arbiter=batched_arbiter(model, run_config),
         )
     finally:
         if isinstance(model, BatchedWorkflowModel):
@@ -422,6 +437,15 @@ async def bench_one(
     out.flush()
     capped = result.status == "spend_cap" and cap < cell.config.workflow.max_cost_usd
     return RunOutcome(result.code, result.status, result.cost_usd, capped)
+
+
+def batched_arbiter(model: WorkflowModel, config: HarnessConfig) -> WorkflowModel | None:
+    """A batched run's Arbiter (F10) goes through the run's own lane, so its calls join the same batches, and without
+    server-side fallbacks, which Batches reject. None for an unbatched run: ``build_once`` makes the usual one."""
+    role = arbiter_role(config.workflow)
+    if role is None or not isinstance(model, BatchedWorkflowModel):
+        return None
+    return BatchedWorkflowModel(model.lane, role.model, effort=role.effort)
 
 
 def hidden_note(summary: dict[str, Any]) -> str:
@@ -605,6 +629,8 @@ def grid_cells(
         if bad := [e for e in asked if e not in known]:
             raise ValueError(f"unknown effort {', '.join(bad)} (known: {', '.join(known)})")
         efforts = [cast(Effort, e) for e in asked]
+    if role := arbiter_role(config.workflow):
+        require_pricing(role.model)  # F10: the Arbiter's calls count toward the Spend cap, so it needs a price too
     cells: list[Cell] = []
     for model in models:
         choice = choose(config, model=model, backend=args.backend)

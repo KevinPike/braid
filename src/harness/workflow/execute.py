@@ -1,8 +1,10 @@
 """The Execution loop (ADR 0004, 0005): check Assumptions, make each Behavior Red then Green, Sign-off, Polish, finish.
 
 Models write, code checks: every pass/fail decision is a pytest or Probe run in the Sandbox, a path rule, an Invariant
-check in the Sandbox (F3), or a human. A Dispute from the implementer never routes by itself: it only triggers the
-Invariant check on the disputed test. Node names and routing follow ``examples/graphs/exec_graph.py``.
+check in the Sandbox (F3), or a human. A Dispute from the implementer never routes by itself: it triggers the Invariant
+check on the disputed test, and, when no Invariant upholds it and an Arbiter is configured, an arbitration (F10). The
+Arbiter's Ruling may route, at most ``max_arbitrations`` times per Behavior (ADR 0008); it never marks anything Green.
+Node names and routing follow ``examples/graphs/exec_graph.py``.
 
 Every conditional edge writes a Route record (F9, ADR 0008): the ``after_*`` functions return a ``Route`` naming the
 state field that decided it, and ``gate`` logs it. An edge an interrupt answer decides has a human basis.
@@ -40,13 +42,15 @@ EXECUTION = "tdd-v2-invariants"  # the graph variant, recorded in every summary 
 
 def execution_variant(settings: WorkflowConfig) -> str:
     """``EXECUTION`` plus the switches that change the graph's behavior, for the summary's provenance."""
-    return EXECUTION + ("" if settings.check_tests_at_red else "/no-red-check") + ("" if settings.show_invariants else "/hidden-rules")
+    return (EXECUTION + ("" if settings.check_tests_at_red else "/no-red-check") + ("" if settings.show_invariants else "/hidden-rules")
+            + (f"/arbiter={settings.arbiter}" if settings.arbiter else ""))
 
 
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str
 YES = {"y", "yes", "ok", "looks good", "lgtm"}
+ROLE_OF = {"write_test": "tester", "arbitrate": "arbiter"}  # the Role whose calls a node makes; any other: implementer
 
 
 class FileEdit(BaseModel):
@@ -70,6 +74,15 @@ class ImplEdits(BaseModel):
     edits: list[FileEdit] = Field(default_factory=list, max_length=3)
     rationale: str
     dispute: Dispute | None = None
+
+
+class Ruling(BaseModel):
+    """The Arbiter's reply (F10). ``verdict`` is the schema field its route reads (ADR 0008); a proposed Invariant is
+    only recorded and shown to the human, never added to the Plan."""
+
+    verdict: Literal["test_wrong", "test_right", "unclear"]
+    reason: str
+    proposed_invariant: inv.Invariant | None = None
 
 
 class ExecState(TypedDict, total=False):
@@ -98,6 +111,8 @@ class ExecState(TypedDict, total=False):
     dispute_raised: dict[str, str] | None  # the Dispute in the last write_impl reply, until check_dispute reads it
     dispute_note: str  # a Dispute not upheld, for the next write_impl prompt
     revisit: dict[str, int] | None  # {"idx": earlier Behavior whose test is being fixed, "back": the one to return to}
+    arbitrations: int  # F10: arbitrations for this Behavior, against ``max_arbitrations``
+    ruling: dict[str, Any] | None  # the Arbiter's last Ruling with its model, request id and thinking: what its route reads
     status: str
     answer: str  # the last interrupt answer (clarify, Stuck, Sign-off): what a human-basis route reads
     api_error: dict[str, Any]  # F8: set by drive_graph on a status "api_error" result, never checkpointed
@@ -143,11 +158,14 @@ class _NodeFn(Protocol):
 class _Loop:
     def __init__(
         self, model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
-        hints: bool, recorder: Recorder, log: RunLog | None,
+        hints: bool, recorder: Recorder, log: RunLog | None, arbiter: WorkflowModel | None = None,
     ) -> None:
         self.model, self.sandbox, self.ws, self.cfg = model, sandbox, workspace, settings
         self.hints, self.rec, self.runlog = hints, recorder, log
         self.meter = UsageMeter(model)
+        self.arbiter = arbiter  # F10: None leaves the graph as it was (no ``arbitrate`` node)
+        self.arbiter_meter = UsageMeter(arbiter) if arbiter is not None and arbiter is not model else None
+        self.arbiter_id = str(getattr(arbiter, "model_id", None) or settings.arbiter or "arbiter")
         self.node_started = time.monotonic()
         venv_bin = workspace.path / ".venv" / "bin"
         self.env = {
@@ -158,7 +176,9 @@ class _Loop:
     # --- helpers -------------------------------------------------------------------------------------------
     def log(self, node: str, state: ExecState, **fields: Any) -> None:
         self.rec.trace.append(node)
-        usage = self.rec.add_usage(self.meter.take(), state.get("idx"))  # the API calls this node made, if any
+        calls = self.meter.take() + (self.arbiter_meter.take() if self.arbiter_meter else [])  # this node's API calls
+        usage = self.rec.add_usage(calls, state.get("idx"))  # the Arbiter's count toward the Spend cap too
+        self.rec.add_role(ROLE_OF.get(node, "implementer"), calls)
         if self.runlog:
             self.runlog.write(node, behavior=state.get("idx"), node_seconds=round(time.monotonic() - self.node_started, 2), **fields, **usage)
 
@@ -206,12 +226,14 @@ class _Loop:
                 files[rel] = (self.ws.path / rel).read_text(errors="replace")
         return prompts.context(plan, state.get("idx", 0), await self.ws.list_files(), files, rules=self.cfg.show_invariants)
 
-    async def ask[E: (Edits, ImplEdits)](self, prompt: str, schema: type[E]) -> tuple[E | None, float, str]:
+    async def ask[E: (Edits, ImplEdits, Ruling)](
+        self, prompt: str, schema: type[E], system: str = prompts.SYSTEM, model: WorkflowModel | None = None,
+    ) -> tuple[E | None, float, str]:
         start = time.monotonic()
         edits: E | None = None
         error = ""
         try:
-            edits = await self.model.complete(prompts.SYSTEM, prompt, schema)
+            edits = await (model or self.model).complete(system, prompt, schema)
         except WorkflowModelError as exc:
             error = str(exc)
         elapsed = time.monotonic() - start
@@ -340,7 +362,8 @@ class _Loop:
         out: dict[str, Any] = {"idx": idx, "phase": "test"}
         if fresh:
             self.rec.behavior_started = time.monotonic()
-            out.update(snapshot=await self.capture(), red_tries=0, satisfied=False, last_run="", dispute=None, dispute_note="")
+            out.update(snapshot=await self.capture(), red_tries=0, satisfied=False, last_run="", dispute=None, dispute_note="",
+                       arbitrations=0)
         elif not state.get("revisit"):  # a rewrite starts from the Workspace as the Behavior found it
             await self.restore(state["snapshot"])  # so a rejected test file cannot linger
         prompt = prompts.write_test(await self.context(cast(ExecState, {**state, **out})), idx, plan.behaviors[idx], state.get("hint", ""), "" if fresh else state.get("last_run", ""))
@@ -490,19 +513,96 @@ class _Loop:
             out["refused"] = False  # run the suite even when the reply wrote nothing, so the next prompt has its output
             return out
         stats.disputes_upheld += 1
-        stats.attempts -= 1  # an upheld Dispute does not use up an implementation attempt
         owner = state.get("test_owner", {}).get(result.violations[0].test.split("::")[0], state["idx"])
-        out.update(
-            attempts=state["attempts"] - 1, phase="test", red_tries=0,
-            last_run=f"The implementer disputed {test}: {reason}\n{inv.feedback(result.violations)}",
-        )
-        if owner < state["idx"]:  # an earlier Behavior's test: fix it there, then come back
+        out.update(self.send_back(state, owner, f"The implementer disputed {test}: {reason}\n{inv.feedback(result.violations)}"))
+        return out
+
+    def send_back(self, state: ExecState, owner: int, feedback: str) -> dict[str, Any]:
+        """An upheld Dispute, or a ``test_wrong`` Ruling: the test goes back to the ``write_test`` of Behavior ``owner``,
+        which wrote it, with ``feedback``, and this implementation attempt is not counted. An earlier Behavior's test is
+        fixed there, then the run comes back to this one (``revisit``)."""
+        self.current(state).attempts -= 1
+        out: dict[str, Any] = {"attempts": state["attempts"] - 1, "phase": "test", "red_tries": 0, "last_run": feedback}
+        if owner < state["idx"]:
             out.update(idx=owner, revisit={"idx": owner, "back": state["idx"]})
         return out
 
+    def after_dispute(self, state: ExecState) -> Route:
+        if state.get("phase") == "test":
+            return Route("write_test", "phase", "test")
+        if self.arbiter is None:
+            return Route("run_green", "phase", state.get("phase"))
+        done = state.get("arbitrations", 0)  # the bound (ADR 0008): past it, the Dispute is simply not upheld
+        return Route("arbitrate" if done < self.cfg.max_arbitrations else "run_green", "arbitrations", done)
+
+    # --- the Arbiter (F10) ---------------------------------------------------------------------------------
+    def disputed_file(self, state: ExecState, test: str) -> tuple[str | None, str]:
+        """The test file a Dispute names, by path or by test function name, and its source; (None, "") if none does."""
+        texts = {rel: (self.ws.path / rel).read_text(errors="replace") for rel in self.test_files(state) if (self.ws.path / rel).is_file()}
+        target = test.split("::")[0].strip()
+        name = test.split("::")[-1].split("[")[0].strip()
+        by_path = [rel for rel in texts if target.endswith(".py") and Path(rel).stem == Path(target).stem]
+        by_name = [rel for rel, text in texts.items() if re.search(rf"def {re.escape(name)}\b", text)]
+        found = by_path or by_name or [rel for rel in state.get("test_paths", []) if rel in texts]
+        return (found[0], texts[found[0]]) if found else (None, "")
+
+    async def arbitrate(self, state: ExecState) -> dict[str, Any]:
+        """A Dispute no Invariant upheld goes to the Arbiter, a stronger model. It sees the goal, the Plan with its
+        Invariants, the Behaviors so far, the disputed test file, the reason and the last pytest output, and never an
+        implementation file. Its Ruling routes (``after_arbitrate``): ``test_wrong`` sends the test back as an upheld
+        Dispute would, ``test_right`` puts the ruling in the next ``write_impl`` prompt, ``unclear`` goes to Stuck. With no
+        valid Ruling the Dispute stays not upheld. A proposed Invariant is recorded for the human, never applied."""
+        assert self.arbiter is not None
+        plan = self.plan(state)
+        record = dict(state.get("dispute") or {})
+        test, reason = str(record.get("test", "")), str(record.get("reason", ""))
+        path, source = self.disputed_file(state, test)
+        prompt = prompts.arbitrate(plan, state["idx"], path or test, source or "(the test file was not found)", reason,
+                                   state.get("last_run", ""))
+        ruling, elapsed, error = await self.ask(prompt, Ruling, prompts.ARBITER_SYSTEM, self.arbiter)
+        calls = (self.arbiter_meter or self.meter).peek()  # still this node's: ``log`` takes them below
+        served = calls[-1].served_model if calls and calls[-1].served_model else self.arbiter_id
+        claim = {"model": served, "request_id": calls[-1].request_id if calls else None,
+                 "thinking": "\n\n".join(c.thinking for c in calls if c.thinking)}
+        stats = self.current(state)
+        stats.arbitrations += 1
+        self.log(
+            "arbitrate", state, test=test, test_path=path, arbiter=self.arbiter_id, served_by=served, prompt=prompt,
+            reply=ruling.model_dump() if ruling else None, model_error=error, model_seconds=round(elapsed, 2),
+        )
+        out: dict[str, Any] = {"arbitrations": state.get("arbitrations", 0) + 1, "ruling": None}
+        if ruling is None:
+            return out
+        out["ruling"] = {"verdict": ruling.verdict, "reason": ruling.reason, **claim}
+        proposed = ruling.proposed_invariant.model_dump() if ruling.proposed_invariant else None
+        out["dispute"] = {**record, "ruling": {"verdict": ruling.verdict, "reason": ruling.reason, "model": served,
+                                               "proposed_invariant": proposed}}
+        if proposed:
+            self.rec.proposed_invariants.append(
+                {"behavior": state["idx"], "test": test, "verdict": ruling.verdict, "model": served, **proposed},
+            )
+        if ruling.verdict == "test_wrong":
+            stats.rulings_test_wrong += 1
+            owner = state.get("test_owner", {}).get(path or "", state["idx"])
+            feedback = f"The implementer disputed {test}: {reason}\nAn Arbiter ruled that test wrong: {ruling.reason}"
+            out.update(self.send_back(state, owner, feedback), dispute_note="")
+        elif ruling.verdict == "test_right":
+            stats.rulings_test_right += 1
+            out["dispute_note"] = (f"Your dispute of {test} was not upheld: no Invariant in the Plan covers it, and an "
+                                   f"Arbiter ruled the test right: {ruling.reason} The test stands; make it pass.")
+        return out
+
     @staticmethod
-    def after_dispute(state: ExecState) -> Route:
-        return Route("write_test" if state.get("phase") == "test" else "run_green", "phase", state.get("phase"))
+    def after_arbitrate(state: ExecState) -> Route:
+        ruling = state.get("ruling")
+        if not ruling:  # the Arbiter gave no valid Ruling: the code route, the Dispute not upheld
+            return Route("run_green", "ruling", None)
+        verdict = ruling["verdict"]
+        to = {"test_wrong": "write_test", "test_right": "run_green", "unclear": "stuck"}[verdict]
+        return Route.by_model(
+            to, "verdict", verdict, model=ruling["model"], request_id=ruling["request_id"], reason=ruling["reason"],
+            thinking=ruling["thinking"],
+        )
 
     async def run_green(self, state: ExecState) -> dict[str, Any]:
         if state.get("refused"):  # nothing was written, so there is nothing to run
@@ -524,6 +624,8 @@ class _Loop:
             payload: dict[str, Any] = {"kind": "stuck", "behavior": behavior, "last_run": state.get("last_run", "")}
             if dispute:
                 payload["dispute"] = dispute
+            if self.rec.proposed_invariants:  # F10: for the human to add to the Plan, or not
+                payload["proposed_invariants"] = self.rec.proposed_invariants
             answer = str(interrupt(payload))
         else:
             answer = "skip"
@@ -568,7 +670,10 @@ class _Loop:
         demo = await self.sh(plan.demo, PROBE_TIMEOUT_S) if plan.demo else None
         suite = await self.pytest("-rA")
         passing = [line.removeprefix("PASSED ") for line in suite.output.splitlines() if line.startswith("PASSED ")]
-        answer = str(interrupt({"kind": "sign_off", "demo": demo.output if demo else "", "passing": passing})) if self.hints else "yes"
+        payload: dict[str, Any] = {"kind": "sign_off", "demo": demo.output if demo else "", "passing": passing}
+        if self.rec.proposed_invariants:  # F10: for the human to add to the Plan, or not
+            payload["proposed_invariants"] = self.rec.proposed_invariants
+        answer = str(interrupt(payload)) if self.hints else "yes"
         self.log(
             "sign_off", state, answer=answer, passing=passing,
             demo=self.ran(demo) if demo else None, demo_command=plan.demo,
@@ -686,7 +791,7 @@ class _Loop:
         for name in (
             "check_assumptions", "clarify", "write_test", "run_red", "check_satisfied", "check_invariants", "resume_behavior",
             "write_impl", "check_dispute", "run_green", "stuck", "next_behavior", "sign_off", "polish", "verify_polish",
-            "finish", "spend_cap",
+            "finish", "spend_cap", *(["arbitrate"] if self.arbiter is not None else []),
         ):
             g.add_node(name, self.timed(getattr(self, name)))
         def to(name: str) -> Callable[[ExecState], Route]:  # a fixed edge that still honors the Spend cap
@@ -704,7 +809,9 @@ class _Loop:
         edges("resume_behavior", to("run_green"), ["run_green"])
         edges("check_satisfied", self.after_satisfied, ["next_behavior", "write_test", "stuck"])
         edges("write_impl", self.after_impl, ["check_dispute", "run_green"])
-        edges("check_dispute", self.after_dispute, ["write_test", "run_green"])
+        edges("check_dispute", self.after_dispute, ["write_test", "run_green", *(["arbitrate"] if self.arbiter is not None else [])])
+        if self.arbiter is not None:
+            edges("arbitrate", self.after_arbitrate, ["write_test", "run_green", "stuck"])
         edges("run_green", self.after_green, ["next_behavior", "write_impl", "stuck"])
         edges("stuck", self.after_stuck, ["write_test", "write_impl", "sign_off", END])
         edges("next_behavior", self.after_next, ["write_test", "sign_off"])
@@ -718,11 +825,14 @@ class _Loop:
 
 def build_execution_graph(
     model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
-    hints: bool = True, recorder: Recorder | None = None, log: RunLog | None = None,
+    hints: bool = True, recorder: Recorder | None = None, log: RunLog | None = None, arbiter: WorkflowModel | None = None,
 ) -> StateGraph[ExecState]:
     """The Execution loop as a LangGraph ``StateGraph``. ``hints=False`` is the baseline mode: Stuck skips the
-    Behavior, ``clarify`` waives and Sign-off says yes (``finish`` still asks). ``recorder`` and ``log`` collect results."""
-    return _Loop(model, sandbox, workspace, settings, hints=hints, recorder=recorder or Recorder(), log=log).graph()
+    Behavior, ``clarify`` waives and Sign-off says yes (``finish`` still asks). ``recorder`` and ``log`` collect results.
+    ``arbiter`` (F10, ``backend.make_arbiter``) adds the ``arbitrate`` node; without it the graph is as in F3."""
+    return _Loop(
+        model, sandbox, workspace, settings, hints=hints, recorder=recorder or Recorder(), log=log, arbiter=arbiter,
+    ).graph()
 
 
 Ask = Callable[[dict[str, Any]], str | Awaitable[str]]

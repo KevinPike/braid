@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -122,6 +123,10 @@ class WorkflowConfig(BaseModel):
     max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
     show_invariants: bool = True  # F3: show the Plan's Invariants to the models (they are checked by code either way)
     check_tests_at_red: bool = True  # F3: check a new test against the Invariants after Red; off leaves only Disputes
+    # F10: a stronger model (an API model id) that rules on a Dispute no Invariant upholds; None leaves the graph as in F3
+    arbiter: str | None = None
+    arbiter_effort: Effort | None = None  # None leaves the Arbiter model's default
+    max_arbitrations: int = 1  # per Behavior; past it a Dispute no Invariant upholds takes the code route (ADR 0008)
     max_polish_rounds: int = 1  # 0 skips Polish
     test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
     lint_commands: list[str] = []  # each must exit 0 after Polish, or Polish is reverted
@@ -133,6 +138,20 @@ class WorkflowConfig(BaseModel):
     max_rounds: int = 3  # Plan loop: draft/review rounds before it finalizes with "stopped at round limit"
     critique_angles: list[str] = ["feasibility", "scope", "testability", "risk", "spacing"]  # one Critique call each per round
     critique_prompts: dict[str, str] = {}  # angle -> system prompt, for a new angle or to replace a built-in one
+
+
+@dataclass(frozen=True)
+class RoleModel:
+    """The model and effort one Role runs on."""
+
+    model: str
+    effort: Effort | None = None
+
+
+def arbiter_role(wf: WorkflowConfig) -> RoleModel | None:
+    """The Arbiter's model and effort (F10), or None when there is no Arbiter. The one place that reads them, so F11's
+    ``[workflow.roles.arbiter]`` can take over here."""
+    return RoleModel(wf.arbiter, wf.arbiter_effort) if wf.arbiter else None
 
 
 class AnthropicConfig(BaseModel):

@@ -38,6 +38,9 @@ class BehaviorStats:
     cost_usd: float = 0.0  # API-backed runs only
     disputes: int = 0  # F3: Disputes the implementer raised on this Behavior
     disputes_upheld: int = 0  # ... that an Invariant check upheld (the test went back to write_test)
+    arbitrations: int = 0  # F10: Disputes no Invariant upheld that went to the Arbiter
+    rulings_test_wrong: int = 0  # ... and its rulings: the test went back to write_test
+    rulings_test_right: int = 0  # ... the test stands, and the ruling went into the next write_impl prompt
 
 
 @dataclass(frozen=True)
@@ -94,9 +97,18 @@ class Recorder:
     output_tokens: int = 0
     cache_read_input_tokens: int = 0
     routes: dict[str, int] = field(default_factory=lambda: dict.fromkeys(BASES, 0))  # Route records by basis (F9)
+    roles: dict[str, dict[str, float]] = field(default_factory=dict)  # Role -> {calls, cost_usd}, API calls only (F10)
+    proposed_invariants: list[dict[str, Any]] = field(default_factory=list)  # F10: from rulings, for a human to add
 
     def add_route(self, route: Route) -> None:
         self.routes[route.basis] = self.routes.get(route.basis, 0) + 1
+
+    def add_role(self, role: str, calls: Sequence[ApiCall]) -> None:
+        """Count ``calls`` under ``role`` (tester, implementer, arbiter): the summary reports cost per Role."""
+        if calls:
+            tally = self.roles.setdefault(role, {"calls": 0, "cost_usd": 0.0})
+            tally["calls"] += len(calls)
+            tally["cost_usd"] += sum(c.cost_usd for c in calls)
 
     def add_usage(self, calls: Sequence[ApiCall], behavior: int | None = None) -> dict[str, Any]:
         """Count API ``calls`` toward the totals (and Behavior ``behavior``'s cost); returns the run-log fields for the
@@ -134,6 +146,7 @@ class Recorder:
             "model_calls": self.model_calls, "model_seconds": self.model_seconds, "cost_usd": self.cost_usd,
             "input_tokens": self.input_tokens, "output_tokens": self.output_tokens,
             "cache_read_input_tokens": self.cache_read_input_tokens, "routes": dict(self.routes),
+            "roles": {k: dict(v) for k, v in self.roles.items()}, "proposed_invariants": list(self.proposed_invariants),
         }
 
     def load(self, data: dict[str, Any]) -> None:
@@ -149,6 +162,8 @@ class Recorder:
         self.input_tokens, self.output_tokens = data.get("input_tokens", 0), data.get("output_tokens", 0)
         self.cache_read_input_tokens = data.get("cache_read_input_tokens", 0)
         self.routes = {**dict.fromkeys(BASES, 0), **data.get("routes", {})}  # absent before F9
+        self.roles = {k: dict(v) for k, v in data.get("roles", {}).items()}  # absent before F10
+        self.proposed_invariants = list(data.get("proposed_invariants", []))
 
     @property
     def elapsed_s(self) -> float:
@@ -165,12 +180,17 @@ class UsageMeter:
         self.mark = len(calls) if isinstance(calls, list) else 0  # a model reused across runs: only this run's calls
 
     def take(self) -> list[ApiCall]:
+        new = self.peek()
+        calls = getattr(self.model, "calls", None)
+        self.mark = len(calls) if isinstance(calls, list) else self.mark
+        return new
+
+    def peek(self) -> list[ApiCall]:
+        """The calls ``take`` would hand out, left in place: a node reads its own request id and thinking (F10)."""
         calls = getattr(self.model, "calls", None)
         if not isinstance(calls, list):
             return []
-        new = calls[self.mark:]
-        self.mark = len(calls)
-        return [c for c in new if isinstance(c, ApiCall)]
+        return [c for c in calls[self.mark:] if isinstance(c, ApiCall)]
 
 
 class RunLog:
@@ -226,11 +246,15 @@ def write_summary(
             "red_rejections": sum(x.red_rejections for x in b), "hints": sum(x.hints for x in b),
             "satisfied": sum(x.satisfied for x in b), "seconds": round(time.monotonic() - rec.started, 1),
             "disputes": sum(x.disputes for x in b), "disputes_upheld": sum(x.disputes_upheld for x in b),
+            "arbitrations": sum(x.arbitrations for x in b), "rulings_test_wrong": sum(x.rulings_test_wrong for x in b),
+            "rulings_test_right": sum(x.rulings_test_right for x in b),
             "model_seconds": round(rec.model_seconds, 1), "model_calls": rec.model_calls,
             "cost_usd": round(rec.cost_usd, 8), "input_tokens": rec.input_tokens, "output_tokens": rec.output_tokens,
             "cache_read_input_tokens": rec.cache_read_input_tokens,
         },
         "routes": route_counts(read_log(run_log)) if run_log else dict(rec.routes),
+        "roles": {k: {"calls": int(v["calls"]), "cost_usd": round(v["cost_usd"], 8)} for k, v in rec.roles.items()},
+        "proposed_invariants": rec.proposed_invariants,
         "stuck": rec.stuck, "polish": rec.polish, "trace": rec.trace, "workspace": str(workspace),
         "run_log": str(run_log) if run_log else None,
         **(provenance or {}),

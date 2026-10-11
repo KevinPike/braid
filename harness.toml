@@ -60,6 +60,10 @@ backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (d
 # anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
 max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
+# arbiter = "claude-sonnet-5-5"   # F10: a stronger model rules on a Dispute no Invariant upholds (or claude-opus-5-5);
+                              # unset, there is no arbitrate node. Its calls count toward the Spend cap
+# arbiter_effort = "medium"   # the Arbiter's effort; default leaves the model's own (Sonnet 5.5 high, Opus 5.5 medium)
+max_arbitrations = 1          # F10: per Behavior; past it a Dispute no Invariant upholds is simply not upheld (ADR 0008)
 # No API key here, ever: the SDK reads ANTHROPIC_API_KEY, else an `ant auth login` profile.
 num_ctx = 16384
 think = false                 # thinking text is dropped, so do not pay for it

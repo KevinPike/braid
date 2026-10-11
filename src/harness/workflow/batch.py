@@ -23,13 +23,13 @@ import anthropic
 from harness.anthropic_api import API_FAULTS, ApiFailure
 from harness.config import Effort
 from harness.usage import ApiCall
-from harness.workflow.model import AnthropicWorkflowModel
+from harness.workflow.model import AnthropicWorkflowModel, Reply
 
 BATCH_DISCOUNT = 0.5  # Message Batches bill every token at half the standard price
 
 # Request options are the SDK's, not the request's; server-side refusal fallbacks are rejected on Batches.
 _REQUEST_OPTIONS = ("extra_headers", "extra_query", "extra_body", "timeout")
-_REJECTED = ("fallbacks",)
+_REJECTED = ("fallbacks", "betas")  # a batched model never sends them (F10's opt-in is per single request)
 
 
 def batch_priced(call: ApiCall) -> ApiCall:
@@ -204,7 +204,7 @@ class BatchedWorkflowModel(AnthropicWorkflowModel):
         super().__init__(cast(anthropic.AsyncAnthropic, lane), model_id, max_tokens=max_tokens, effort=effort)
         self.lane = lane
 
-    def _record(self, response: anthropic.types.Message) -> None:
+    def _record(self, response: Reply) -> None:
         super()._record(response)
         self.calls[-1] = batch_priced(self.calls[-1])
 
