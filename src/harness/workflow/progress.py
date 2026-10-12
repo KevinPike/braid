@@ -155,7 +155,7 @@ def outcome(stats: BehaviorStats) -> str:
     return "stuck" if stats.note == "stuck" else "open"
 
 
-def final_report(rec: Recorder, total_s: float) -> str:
+def final_report(rec: Recorder, total_s: float, *, by_role: bool = False) -> str:
     """The end table. An API-backed run (``rec.cost_usd``) gets a cost column and a token line."""
     api = rec.cost_usd > 0
     rows = [
@@ -167,7 +167,7 @@ def final_report(rec: Recorder, total_s: float) -> str:
     if api:
         head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
                  f"{rec.cache_read_input_tokens} cache-read tokens")
-        if "arbiter" in rec.roles:  # F10: the Arbiter's model costs more, so show where the money went
+        if by_role or "arbiter" in rec.roles:  # F10, F11: Roles on other models cost more, so show where the money went
             head += "\nby role: " + ", ".join(
                 f"{role} ${t['cost_usd']:.4f} ({int(t['calls'])} calls)" for role, t in sorted(rec.roles.items())
             )
