@@ -416,7 +416,21 @@ The F3 open question. When `check_dispute` doesn't uphold a Dispute (no Invarian
 - **Fallbacks.** In SDK 1.13.0, `fallbacks` is a typed param of `client.beta.messages.create`, so `AnthropicWorkflowModel(fallbacks=True)` calls it with `betas=["server-side-fallback-2026-07-01"]` and `fallbacks="default"`, with no `extra_body`. It accepts the `BetaMessage` that comes back. `make_arbiter` sets `fallbacks` only for Sonnet and Opus 5.5; Haiku requests, the tester's and the implementer's, are unchanged. The `arbitrate` log line has `arbiter` (the model asked) and `served_by`, and the Route record names the model that served the request. In a batched bench, `cli.batched_arbiter` puts the Arbiter on the run's own `BatchLane`, which never sends fallbacks, and `batch_params` now strips `betas` as well as `fallbacks`.
 - **Stats.** `arbitrations`, `rulings_test_wrong` and `rulings_test_right` per Behavior and in the summary's totals.
 
-**Live checks: pending the user's approval.** Set `[workflow] arbiter` and run `harness-workflow bench <set> --model claude-haiku-5-5 --repeat 3 --label <label>` for each:
+**Live check 1, Sonnet (2026-10-12): `f10-arbiter-sonnet`**, `disputed-control` on Haiku with `arbiter = "claude-sonnet-5-5"`, `max_cost_usd = 0.30`, 3 repeats, 9 runs, **$0.0964** (bench cap $1). Against `f3-control`:
+
+| pair | f3-control | f10-arbiter-sonnet |
+|---|---|---|
+| bowling/local | 4.7/6 [4–5], 1.3 Stuck, 6.3a, $0.0076 | **6/6** [6–6], 0 Stuck, 2.7a, $0.0134 |
+| word-wrap/claude | 5.3/6 [5–6], 0.7 Stuck, 5.0a, $0.0065 | **6/6** [6–6], 0 Stuck, 2.3a, $0.0103 |
+| word-wrap/local | 4/4, 0 Stuck, 1.0a, $0.0036 | 4/4, 0 Stuck, 1.7a, $0.0084 |
+| total | 14.0/16 [13–15], **2.0 Stuck**, 12.3a, $0.0178 | **16/16** [16–16], **0 Stuck**, 6.7a, $0.0321 |
+
+- **It rescued every Stuck.** There were 7 arbitrations, all `test_wrong`, each sent back to the owner's `write_test` and each followed by Green. Every reason names the rule the test broke ("with width 4 the expected line 'ij yo' is 5 characters"; "[10,3,4] is 17 + 7 = 24, not 17"; "'brown fox' is exactly 9 characters, so at width 9 it fits on one line"). I checked each by hand, and all 7 are right. Implementation attempts halved, since no Behavior ground against a wrong test.
+- **Cost.** One ruling is about 1k input and 200–400 output tokens, about **$0.006**, a quarter of the estimate (short thinking, and the 1k system prefix is cached after the first call). A run costs about 1.8× the control, still under 2¢.
+- **Trace (ADR 0008).** Each ruling wrote a `basis: model` Route record with `field: verdict`, the model, the `request_id`, the reason and the thinking summary. That answered "why did the run go back to `write_test`?" without reading a prompt. There are 4 proposed Invariants in the summaries, none applied.
+- No `test_right` came up, so this check does not measure the false-ruling rate; that is check 2.
+
+**Remaining live checks: pending the user's approval.** Set `[workflow] arbiter` and run `harness-workflow bench <set> --model claude-haiku-5-5 --repeat 3 --label <label>` for each:
 1. `disputed-control` with `arbiter = "claude-sonnet-5-5"`, then `"claude-opus-5-5"` (labels `f10-sonnet-control`, `f10-opus-control`), against `f3-control`.
 2. `claude-plans` with the Sonnet Arbiter (`f10-sonnet-plans`), for the false-ruling rate.
 3. `exotic` with the Sonnet Arbiter (`f10-sonnet-exotic`), against `baseline-exotic` (after F7's `make_katas.py`).
@@ -552,6 +566,11 @@ Each is graded by F7's hidden tests and reports its own token usage.
 - CrewAI: ~$0.02–0.05 (~10–30 calls, every one uncached).
 
 That comes to about **$0.06–0.13**; allow **$0.25**. Run `grade.py` on each output afterwards, which costs nothing, and fill in the README table.
+
+**Live run (2026-10-12):** one run each on `ferry-fare`, Haiku, **$0.0305** in all (under the $1 cap given). The user accepted that runners 2–4 run model-written code outside the Sandbox. Results are in the README's write-up table.
+- **braid scored lowest on hidden tests: 45/46**, failing `test_vehicle_fee[ages3-bike-5]`. It made "a vehicle needs an adult" apply to a bike, while GOAL.md's rule 6 says that only of a car or a van. `baseline-exotic` failed the same single test in all 3 runs, so it is systematic. The cause is likely the fixed `plan.json`: its error Behavior's only example is `fare([12], "van")`, and the implementer generalized it to every vehicle that pays a fee. The three runners that work from the whole GOAL.md got 46/46 and 5/5. On this kata, the Plan's decomposition lost a detail that one pass over the goal kept. The F7 test for the gap is now concrete: a Plan Behavior covering `fare([12], "bike") == 5` should close it.
+- **Cost and calls:** braid $0.0076 (13 calls), Strands $0.0058 (7), CrewAI $0.0065 (7), Agent SDK $0.0107 (11). These are well under the estimates: the other runners wrote one test file and finished in a single handoff.
+- **Agent SDK caveats.** Its JSON line's `output_tokens` (99) and per-Role costs (sum $0.0043) are far below the CLI's `total_cost_usd` ($0.0107). The per-message usage the runner sums is incomplete, so the total is the CLI's figure. The CLI also warned "Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set": `dontAsk` was overridden, though the hook and tool allow-list still confined it and the run succeeded.
 
 ---
 

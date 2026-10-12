@@ -90,19 +90,23 @@ was graded under Seatbelt. Those were smoke checks of the plumbing, not results.
 
 | | braid (LangGraph) | Strands Swarm | Claude Agent SDK | CrewAI |
 |---|---|---|---|---|
-| hidden pass rate | pending live run | pending live run | pending live run | pending live run |
-| mutants killed (own tests) | pending live run | pending live run | pending live run | pending live run |
-| cost | pending live run | pending live run | pending live run | pending live run |
-| calls | pending live run | pending live run | pending live run | pending live run |
+| hidden pass rate ² | 45/46 (fails the child-on-a-bike case) | 46/46 | 46/46 | 46/46 |
+| mutants killed (own tests) | 4/5 (6 test files) | 5/5 (1 file) | 5/5 (1 file) | 5/5 (1 file) |
+| cost | $0.0076 | $0.0058 | $0.0107 (the CLI's total) | $0.0065 (approximate) |
+| calls | 13 (6 tester, 7 implementer), 63 s | 7, one handoff, 34 s | 11 (3 coordinator, 5 tester, 3 implementer), 61 s | 7, 47 s |
 | lines of glue code ¹ | 69 | 86 | 141 | 107 |
 | routing | explicit: the graph routes on test results and Invariants, in code | emergent: `handoff_to_agent`, bounded by `max_handoffs` | emergent: the coordinator model calls the Agent tool | explicit and linear: `Process.sequential`, with no way back to the tester |
-| easy | pending live run | pending live run | pending live run | pending live run |
-| hard | pending live run | pending live run | pending live run | pending live run |
+| easy | per-Role cost, a Route record for every step, the Sandbox, a Plan to bench against | the handoff tool and shared context, with little glue | built-in tools and a cost figure | a sequential pipeline with almost no wiring |
+| hard | a fixed Plan can carry a misreading into every run (the bike rule) | reaching Claude 5.5 needed braid's own model class | restricting it: a hook, an allow-list, an MCP pytest tool; per-message usage under-counts | no prompt caching, and no way back to the tester |
 | where the trace lives | `~/.braid/runs/<run>.jsonl` (every node, route, prompt and call) and `<out>/.trace/summary.json` | `<out>/.trace/swarm.json` (handoff order, each agent's messages) | `<out>/.trace/messages.jsonl`, and the CLI's transcript under `~/.claude/projects/` (session id in the JSON line) | `<out>/.trace/crew.json` (this example's tool log by Role, each task's output) |
 
 ¹ Non-blank, non-comment lines outside docstrings in each runner. Runners 2–4 also share about 90 lines of
 `common.py` (the tools, the Role prompts and the key-free environment), and all four share its kata copy and JSON
 line. braid's own Workflow is not counted: it is the harness.
+
+² One run each on `ferry-fare` with `claude-haiku-5-5`, 2026-10-12, $0.0305 for all four. One run is an anecdote, not
+a measurement. braid's miss is the one `baseline-exotic` makes in all 3 of its runs: its fixed Plan's only error example is
+a van, and the implementer extended "needs an adult" to bikes. The other runners read the whole goal at once.
 
 What is known before a live run:
 
