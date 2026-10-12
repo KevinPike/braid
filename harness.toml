@@ -12,6 +12,13 @@ num_ctx = 32768               # Ollama only
 keep_alive = "30m"            # Ollama only
 system_prompt = "You are a concise, helpful assistant."
 
+[anthropic]
+max_retries = 2               # the SDK retries 408/409/429/5xx (529 included) and dropped connections, honoring retry-after;
+                              # past that a Workflow run stops with status api_error (resumable), a chat turn with a note
+timeout = 600.0               # seconds per request
+thinking_display = "summarized"   # F9: "summarized" returns a readable thinking summary (run log, Inspectors);
+                              # "omitted" is the 5.5 models' default (empty thinking). Billed the same either way
+
 [paths]
 data_dir = "~/.braid"
 
@@ -53,6 +60,11 @@ backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (d
 # anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
 max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
+# arbiter = "claude-sonnet-5-5"   # F10: a stronger model rules on a Dispute no Invariant upholds (or claude-opus-5-5);
+                              # unset, there is no arbitrate node. Its calls count toward the Spend cap
+# arbiter_effort = "medium"   # the Arbiter's effort; default leaves the model's own (Sonnet 5.5 high, Opus 5.5 medium)
+max_arbitrations = 1          # F10: per Behavior; past it a Dispute no Invariant upholds is simply not upheld (ADR 0008)
+                              # F11: [workflow.roles.arbiter] below wins over these two, field by field
 # No API key here, ever: the SDK reads ANTHROPIC_API_KEY, else an `ant auth login` profile.
 num_ctx = 16384
 think = false                 # thinking text is dropped, so do not pay for it
@@ -69,3 +81,17 @@ max_rounds = 3                # Plan loop: draft/review rounds
 critique_angles = ["feasibility", "scope", "testability", "risk", "spacing"]
 # [workflow.critique_prompts]  # a system prompt per angle: a new angle, or a replacement for a built-in one
 # usability = "You review a draft Plan as the person who will use the tool ..."
+
+# F11: Roles. Each takes model, effort and view; unset fields fall back to [workflow] (the run's model, effort, and
+# arbiter/arbiter_effort for the Arbiter). With no [workflow.roles.tester] or [workflow.roles.implementer], every prompt
+# is as before F11. Configuring either gives the tester its own system prompt (failure modes the goal implies).
+# A Role with its own model or effort runs on the Anthropic API; its calls count toward the Spend cap and are reported
+# per Role. In a batched bench every Role rides the run's own lane.
+# [workflow.roles.tester]
+# model = "claude-sonnet-5-5"
+# effort = "medium"
+# view = "interface"          # "full" (the files as they are) or "interface" (signatures, docstrings, type hints; no bodies)
+# [workflow.roles.implementer]
+# model = "claude-haiku-5-5"  # view is always "full": it edits the implementation
+# [workflow.roles.arbiter]
+# model = "claude-sonnet-5-5" # takes no view: the Arbiter never sees the implementation (F10)

@@ -246,7 +246,296 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 - **First skills:** `changelog` (git log → draft entry → review → write `CHANGELOG.md`) and `regex` (examples → model regex → run against examples → retry).
 - **Prototype first** in `examples/graphs/yaml_graph.py` with a scripted model, to check that the format reads well, before it goes into `workflow/`.
 
-**Gates:** each load-time check rejects a bad file with a message naming the node; a valid file compiles and runs to its first interrupt with a scripted model; a condition on a model field is rejected at load time.
+**Gates:** each load-time check rejects a bad file with a message naming the node; a valid file compiles and runs to its first interrupt with a scripted model; a condition on a model field is rejected at load time unless the edge declares `basis: model` and a bound (ADR 0008).
+
+---
+
+# Features after F6: multi-agent Workflows and evals
+
+Planned 2026-10-11. On the API, separate roles, separate models per role and larger repeat counts cost cents. On the frozen Ollama path, each meant a model swap and minutes per call. ADR 0008 amends ADR 0004: a model's claim may route a Workflow when the route is traced and bounded.
+
+**Order:** F7 → F8 → F9 → F10 → F11 → F12 → F13. F7 comes first because every later feature is measured on katas that can't have been memorized, graded by hidden tests. F9 comes before F10 because routing on a claim requires the trace. F7–F9 don't depend on F4–F6; whether they go ahead of F4–F6 is the user's call.
+
+**Context separation today.** Every model call is already a single-turn request with no conversation history: `WorkflowModel.complete(system, prompt, schema)`. What the roles share is the **system prompt** (`prompts.SYSTEM` for both `write_test` and `write_impl`), the **model**, and the **view**: `context()` gives both roles the full contents of every Plan file and every edited file, so the test writer sees the implementation (white-box). F11 separates role, model and view.
+
+---
+
+## F7 — Exotic katas, graded by hidden tests
+
+The five katas are classics that are surely in training data, and the only grade is the model's own tests going Green. An Opus subagent wrote six invented katas under `bench/exotic/` (2 easy, 2 medium, 2 hard), each with `GOAL.md`, a reference implementation, a **hidden test suite**, five mutants that each fail at least one hidden test, and a Plan with Invariants. `bench/exotic/verify.py` checks all of this.
+
+- **Repos:** `make_katas.py` also creates the exotic kata repos, from each kata's `GOAL.md` and `summary.txt`. Hidden tests and reference code are never copied into a kata repo or a Workspace.
+- **Manifest:** a set `exotic` in `bench/katas.toml`. A pair may carry `hidden = "exotic/<kata>/hidden"`.
+- **Grading:** after `finish` and before the Workspace is removed, copy the final non-test files and the hidden tests into a scratch copy, then run pytest there in the Sandbox. The summary and ledger get `hidden_passed` and `hidden_total`. Grading is code, not a model.
+- **Test strength:** run the model-written tests against each mutant, giving `mutants_killed` out of 5. This measures the tests, not the code.
+- **Report:** columns for hidden pass rate, the **self/hidden gap** (Green on its own tests but failing hidden ones) and mutants killed.
+- **Canary:** every hidden file carries `# braid-hidden-canary: <id>`.
+
+**Gates** (`tests/workflow/test_hidden_grade.py`, fakes):
+1. `verify.py` passes: the reference passes every hidden test, each mutant fails one or more, every Invariant holds on every hidden example, and every `plan.json` loads.
+2. No prompt in any run log contains a hidden canary (a scripted run on an exotic kata).
+3. Grading runs in the Sandbox, and the project's own tests directory is not changed by it.
+4. The summary and ledger carry `hidden_passed`, `hidden_total` and `mutants_killed`, and older ledger lines still load.
+
+**Live check:** `exotic` on `claude-haiku-5-5`, 3 repeats, labelled `baseline-exotic`. Report the self/hidden gap next to `baseline-f1`.
+
+**Status (2026-10-11): built and gated** (`tests/workflow/test_hidden_grade.py`, 11 tests).
+
+- **Repos.** `make_katas.py` reads only `GOAL.md` and `summary.txt` from each `bench/exotic/<kata>/` (`exotic_katas()`) and writes GOAL.md as is (it already has its heading). `make(..., sync=False)` skips `uv sync`, for tests.
+- **Manifest.** `[sets.exotic]` holds the six katas with their own `plan.json` and `hidden = "exotic/<kata>/hidden"`. A `Pair` carries `hidden`; the mutants and reference are found beside it.
+- **Grading** (`bench.grade`, called by `run_bench` after the run and before the Workspace is removed; a cancelled run is not graded). Each pytest run gets a fresh scratch copy in the system temp dir, outside the Workspace and the project, with the Workspace's `.venv` linked in so the run's own `test_command` works. The Sandbox may write only in the scratch copy, and the copy is removed afterwards. The grade is added to the summary file (`records.amend_summary`) and the ledger line, and printed on the bench line. Where the spec was silent:
+  - A test file is anything under `tests/` or `test/`, `test_*.py`, `*_test.py` or `conftest.py`; every other final file goes in with the hidden suite.
+  - `hidden_total` is what the hidden suite collects against the reference, in its own scratch copy. Code that does not import scores 0/46, not 0/0.
+  - A mutant replaces `<module>.py` among all the final files, tests included. It is killed when the model-written tests exit 1 on it (as in verify.py). A suite that fails on the run's own code kills none. `mutants_total` is recorded too.
+- **Report.** When a label has graded runs, `report <label>` adds three columns: hidden pass rate, self/hidden gap and mutants killed. `--compare` adds one "hidden · gap · mutants" column per label. The gap follows CONTEXT.md: the count of graded runs Green on every Behavior that still fail a hidden test, shown as "1/3 runs". The total row counts the gap kata by kata, and it is graded only for repeats in which every kata was graded. Tables for older labels are unchanged, and older ledger lines load.
+- **Seatbelt.** A manual offline probe graded a Workspace with a real `.venv` under `SeatbeltSandbox` with the default `.venv/bin/python` test command: 22/46 hidden, 1/5 mutants, the same as the tests' `LocalSandbox`.
+- **Live check: pending user approval.** First run `make_katas.py`, which creates the exotic repos with `uv sync`; then `harness-workflow bench exotic --model claude-haiku-5-5 --repeat 3 --label baseline-exotic`.
+
+---
+
+## F8 — Fault injection for the API path
+
+Nothing in `workflow/` catches `anthropic.APIError` today. A request that still fails after the SDK's own retries escapes the node. The SDK retries 408, 409, 429, 5xx (including 529 overloaded) and connection errors, twice by default. Test the harness's behavior past that point with fakes, at no cost.
+
+- **`FaultyTransport`** in `tests/anthropic_fakes.py`: an `httpx2.MockTransport` that serves a script of responses. These include 429 with `retry-after`, 529, 500, a dropped connection, a stream cut off before `message_stop`, a body that isn't JSON, `stop_reason: max_tokens`, and `refusal`.
+- **Workflow policy:** an API error that survives the SDK's retries ends the run with status `api_error` at that node. The Checkpoint is kept so `/runs` can resume the run, nothing is applied, and the error type and `request_id` are logged. Failed requests have no `usage`, so they add no cost.
+- **Chat policy:** the turn ends with a visible note, and the history is cut back to the last finished turn (as with Ctrl-C).
+- **Bench:** an `api_error` run gets a ledger line, is counted in the report, and is left out of the Green means.
+- **Config:** `[anthropic] max_retries` and `timeout`, passed to the client.
+
+**Gates** (`tests/test_api_faults.py`):
+1. A 429 or 529 followed by success completes, and the request count shows the retries.
+2. Errors past `max_retries` end the run with `api_error`, a Checkpoint and no apply. Resuming from it with a healthy transport finishes the run.
+3. A stream cut mid-turn in chat leaves the session consistent, and the next turn works.
+4. `max_tokens` and `refusal` keep their F1 behavior (retry once, then raise with the category).
+5. No API key appears in any error log line.
+
+**Status (2026-10-11): built and gated** (`tests/test_api_faults.py`; `FaultyTransport` and `InstantRetries` in `tests/anthropic_fakes.py`). No live calls.
+
+- **One failure type.** `harness/anthropic_api.py` has `ApiFailure` (the SDK's error type, HTTP status, `request_id`, and a message cut to 300 characters with any `sk-ant-…` redacted) and `make_client`, which both API paths now use. Whatever the SDK gives up on becomes an `ApiFailure`: its own `APIError`s, an `httpx2.TransportError` raised mid-stream (the SDK wraps transport errors only before the response starts), and a 200 whose body is not JSON (`json.loads` raises a plain `JSONDecodeError`, which the SDK neither wraps nor retries). It is not a `WorkflowModelError`, so no node mistakes it for invalid output, and the Plan loop's per-Critique catch does not swallow it.
+- **Workflows.** The node wrapper (`timed`, in both loops) logs an `api_error` line (node, error, status, `request_id`, and the usage of any call that did succeed in that node) and re-raises. A fanned-out Critique has no wrapper, so it stops the run the same way without a line of its own. `drive_graph` catches it and returns the checkpointed values with `status: "api_error"` and an `api_error` record. The failed node wrote nothing, so the Checkpoint's `next` is that node and a resume runs it again. The CLI exits 4 (`API_ERROR_EXIT`) and says where it stopped, with the Workspace kept. The TUI marks the run `failed` (not `finished`), so `/build --resume` and `/plan --resume` accept it.
+- **Chat.** A failed turn shows `[API error: <type> <status>, request <id>: …; the turn was dropped, send it again]` and is cut back with `settle`, as Ctrl-C does. Any other error in a turn is cut back the same way.
+- **Bench.** An `api_error` run gets its ledger line as usual. `aggregate` leaves it out of every mean (and its repeat out of the total), and the label and comparison tables add a line counting such runs.
+- **Config.** `[anthropic] max_retries` (default 2) and `timeout` (default 600 s, with the SDK's 5 s connect timeout kept).
+- **Bugs the faults found.**
+  1. A chat stream that ended before `message_stop` was accepted as a finished turn: `get_final_message()` returns the partial snapshot with `stop_reason: None`, which the model mapped to `end_turn`. That is now an `IncompleteStream` failure.
+  2. A mid-stream connection reset and a non-JSON 200 raised raw `httpx2`/`json` errors that nothing expected.
+  3. Strands' default retry strategy retried a 429 six more times, from 4 s up to 240 s apart, after the SDK had already given up. `build_api_agent` now passes `retry_strategy=None`, so the SDK's retries are the only ones.
+- **Tests.** Retries are instant: `InstantRetries` overrides the SDK's `_calculate_retry_timeout` to return 0 and records what it would have waited, so the `retry-after: 7` test checks the real value.
+
+---
+
+## F9 — Trace: Route records and thinking summaries
+
+Two things a learner wants to see after a run: why the graph went where it went, and what the model was thinking.
+
+- **Route records** (ADR 0008): `gate()` wraps every conditional edge and writes `{node: "route", from, to, basis, field, value}`. For a model basis it adds `model`, `request_id`, `reason` and `thinking`. The summary gets `routes: {code: n, model: n, human: n}`.
+- **Thinking display:** `thinking.display` is `omitted` by default on Haiku 5.5, Sonnet 5.5 and Opus 5.5, so the text comes back empty. `[anthropic] thinking_display = "summarized" | "omitted"` defaults to `"summarized"`. Display controls visibility only: thinking is billed the same either way.
+  - `AnthropicWorkflowModel` keeps the summary instead of dropping it, and the run log stores it on each model node.
+  - The chat agent shows it in the call Inspector.
+  - Compaction still strips thinking blocks (F1b).
+- **RunInspector:** shows Route records in line with the nodes, and each model node's thinking summary under its reply.
+
+**Gates:**
+1. With `"summarized"`, the request body carries `thinking: {type: "adaptive", display: "summarized"}`. With `"omitted"`, it carries no `display`.
+2. A faked thinking summary reaches the run log and the RunInspector text.
+3. Every conditional edge in a scripted run writes exactly one Route record, and the counts in the summary match the log.
+4. No request carries sampling parameters (F1's gate still holds).
+
+**Status (2026-10-11): built and gated** (`tests/workflow/test_trace.py`, 15 tests). No live calls.
+
+- **Route records.** `records.Route` is what every route function now returns: `to`, the deciding state `field` and its `value`, and a `basis`. Each loop's `gate(source, route)` writes it with `RunLog.route` and counts it on `Recorder.routes` (checkpointed with the rest of the Recorder). Both loops are covered: the Execution loop's 15 conditional edges and the Plan loop's 4 (`research → draft`, the Critique fan-out, `synthesize → human_review`, `after_review`). Where the spec was silent:
+  - A fixed edge that only the Spend cap can divert (`write_test → run_red`, `polish → verify_polish`, and so on) is a conditional edge in the graph, so it writes a record too, with `field: null`. A Spend cap diversion records `field: "cost_usd"` and the cost.
+  - The basis is `human` on the edges an interrupt answer decides (after `clarify`, Stuck, Sign-off and `human_review`; the field is `answer`). In a no-hints run, code answers in the human's place, so those edges are `code`. `human_review → finalize` at the round limit is `code` (`field: "round"`). `finish` goes to END on a plain edge, so it writes none.
+  - The fan-out records one route to `critique` with the angles as its value, not one per `Send`.
+  - String values are cut to 200 characters. Records also carry `behavior` (Execution loop) or `round` (Plan loop).
+  - Route records go to the log only. The RunLog listener, which drives the CLI progress lines and the TUI pane, still sees one record per node.
+  - The summary's `routes` is counted from the run log when there is one. A Checkpoint is taken before the last node's route runs, so a resumed Recorder can be one route short.
+- **F10's hook.** `Route.by_model(to, field, value, *, model, request_id, reason, thinking)`, returned from an `after_arbitrate` route function, writes a model-basis record and counts it under `model`. The arbitrate node gets `request_id` and `thinking` from its `ApiCall` (the model's `calls`) and puts them in the state with the Ruling, where the route function reads them.
+- **Thinking.** `anthropic_api.thinking_param` builds the field: `{type: "adaptive", display: "summarized"}`, or nothing at all for `"omitted"` (the request is then as it was before F9). Both API paths send it. Each `ApiCall` has a `thinking` field, so the summary reaches a node's log line the way its usage does (`Recorder.add_usage`), with no change to the `WorkflowModel` protocol. The Ollama model has no `ApiCall`s and logs none. A retry's summaries are joined.
+- **Inspectors.** The chat Inspector shows the summary above the request body. The session store's `calls` table gains a `thinking` column, added in place to an older store. The RunInspector lists Route records indented under the node they leave (`→ write_impl  code: red_verdict="red"`) and shows `--- thinking summary ---` after a node's reply. A model-basis route shows its model, request id, reason and thinking.
+- **Compaction** still strips thinking blocks. The F1b test now strips a summarized one.
+- **Existing tests changed.** The F1 "no `thinking` key" assertions now expect the summarized field, and four tests that compared the log one-to-one with the node trace now leave Route records out.
+
+---
+
+## F10 — The Arbiter: a stronger model settles uncovered Disputes
+
+The F3 open question. When `check_dispute` doesn't uphold a Dispute (no Invariant is violated), and `[workflow] arbiter` names a model, an `arbitrate` node asks that model for a ruling.
+
+- **Input:** the goal, the Plan with its Invariants, the Behavior, the disputed test's source, the Dispute's reason and the last pytest output. Not the implementation: the question is whether the test matches the goal.
+- **Reply:** `Ruling {verdict: "test_wrong" | "test_right" | "unclear", reason, proposed_invariant: Invariant | null}`.
+  - `test_wrong` takes the same path as an upheld Dispute: back to the `write_test` of the Behavior that owns the test, with the ruling as feedback.
+  - `test_right` puts the ruling in the implementer's next prompt.
+  - `unclear` goes to Stuck and shows the ruling.
+- **Bound:** `max_arbitrations` per Behavior (default 1). Past it, the code route applies (the Dispute is not upheld).
+- **Proposed Invariant:** recorded in the summary and shown at Stuck or Sign-off for the human to add to the Plan. It is never added automatically.
+- **Models and cost:** add `claude-sonnet-5-5` and `claude-opus-5-5` to `PRICING`. `Price` needs an explicit cache-read price, because Opus 5.5's ($0.20) is not 0.1× its input price; check the prices at build time. The arbiter's calls count toward the Spend cap and are reported per role.
+- **Refusals:** Opus and Sonnet 5.5 requests opt in to server-side fallbacks (`fallbacks: "default"` with its beta header). The model that actually served the request is recorded.
+- **Stats:** `arbitrations`, `rulings_test_wrong` and `rulings_test_right`.
+
+**Gates:**
+1. A scripted `test_wrong` ruling sends the work to the right `write_test`, and the corrected test reaches Green.
+2. `test_right` puts the ruling in the next `write_impl` prompt.
+3. The bound holds: a second Dispute in the same Behavior takes the code route.
+4. Every arbitration writes a model-basis Route record with `request_id` and reason.
+5. The arbiter's prompt contains no implementation file.
+6. With no `arbiter` set, the graph is unchanged (the F3 gates still pass).
+
+**Live check:**
+- `disputed-control` (no Invariants) with the arbiter on Sonnet 5.5, then Opus 5.5, against the F3 control. Does it rescue the six Stucks?
+- `claude-plans`, where the tests are right, for the false-ruling rate.
+- `exotic`, against `baseline-exotic`.
+
+**Status (2026-10-11): built and gated** (`tests/workflow/test_arbiter.py`, 20 tests; the F3 gates in `test_execute.py` pass unchanged). No live calls.
+
+- **Config.** `[workflow] arbiter` (an API model id), `arbiter_effort` and `max_arbitrations` (default 1). `config.arbiter_role(wf)` is the one reader of the first two and returns a `RoleModel(model, effort)`; F11 can point it at `[workflow.roles.arbiter]`. `backend.make_arbiter(config)` builds the Arbiter as an `AnthropicWorkflowModel`; an Ollama id or an unpriced model is refused before a run (the bench checks it with the other prices). `build_once` and the TUI build it from config; the summary's `execution` gains `/arbiter=<model>`.
+- **Graph.** `build_execution_graph(..., arbiter=)` adds the `arbitrate` node only when an Arbiter is given; without one the nodes, edges and Route records are exactly F3's. `after_dispute` sends a Dispute no Invariant upheld to `arbitrate` while the state's `arbitrations` (reset when a new Behavior starts) is below the bound, else to `run_green`; both are code-basis Route records with `field: "arbitrations"`. `after_arbitrate` returns `Route.by_model(..., field="verdict")` with the model, `request_id`, reason and thinking summary, which the node copied from its `ApiCall`s (`UsageMeter.peek`).
+- **Ruling.** `test_wrong` goes through `send_back`, the path an upheld Dispute takes (now shared with `check_dispute`): the owner's `write_test`, with a revisit for an earlier Behavior's test, and the attempt not counted. `test_right` replaces the "not upheld" note in the next `write_impl` prompt. `unclear` goes to Stuck, whose payload shows the Ruling under the Dispute; a hint returns to `write_impl`. Where the spec was silent:
+  - The Arbiter gets the whole test file that holds the disputed test (found by path, then by function name), not the function alone, so imports and fixtures come with it. Its prompt has the Plan's Invariants whether or not `show_invariants` is on.
+  - No valid Ruling (invalid JSON twice, or a refusal even after fallbacks) takes the code route (`field: "ruling"`): the Dispute stays not upheld. It still counts toward the bound.
+  - `test_wrong` does not count in `disputes_upheld`, which stays "an Invariant upheld it". It clears the "not upheld" note.
+- **Proposed Invariants** go into `Recorder.proposed_invariants` (checkpointed) and the summary's `proposed_invariants`, and into the Stuck and Sign-off payloads when there are any (the CLI and the TUI print them as "not applied"). Nothing adds them to the Plan.
+- **Prices and cost.** `Price.cache_read` is an explicit cache-read price; None keeps 0.1× input, so Haiku is unchanged. Sonnet 5.5 is $2/$10, Opus 5.5 $4/$20, both with $0.20 cache reads, a 1M window and no long tier. Cache writes stay 1.25× input: neither the SDK nor the repo states a price for them, so that is the existing convention, unverified for these two models. A call is priced as the model that served it (`ApiCall.served_model`, from `response.model`) when that model is priced. The Arbiter's calls go through `add_usage`, so they count toward the Spend cap (a gate stops a run at the Spend cap right after an arbitration). The summary's `roles` has calls and cost per Role, by node: `write_test` is the tester, `arbitrate` the Arbiter, the rest the implementer. The CLI's final report adds a "by role" line when an Arbiter ran.
+- **Fallbacks.** In SDK 1.13.0, `fallbacks` is a typed param of `client.beta.messages.create`, so `AnthropicWorkflowModel(fallbacks=True)` calls it with `betas=["server-side-fallback-2026-07-01"]` and `fallbacks="default"`, with no `extra_body`. It accepts the `BetaMessage` that comes back. `make_arbiter` sets `fallbacks` only for Sonnet and Opus 5.5; Haiku requests, the tester's and the implementer's, are unchanged. The `arbitrate` log line has `arbiter` (the model asked) and `served_by`, and the Route record names the model that served the request. In a batched bench, `cli.batched_arbiter` puts the Arbiter on the run's own `BatchLane`, which never sends fallbacks, and `batch_params` now strips `betas` as well as `fallbacks`.
+- **Stats.** `arbitrations`, `rulings_test_wrong` and `rulings_test_right` per Behavior and in the summary's totals.
+
+**Live checks: pending the user's approval.** Set `[workflow] arbiter` and run `harness-workflow bench <set> --model claude-haiku-5-5 --repeat 3 --label <label>` for each:
+1. `disputed-control` with `arbiter = "claude-sonnet-5-5"`, then `"claude-opus-5-5"` (labels `f10-sonnet-control`, `f10-opus-control`), against `f3-control`.
+2. `claude-plans` with the Sonnet Arbiter (`f10-sonnet-plans`), for the false-ruling rate.
+3. `exotic` with the Sonnet Arbiter (`f10-sonnet-exotic`), against `baseline-exotic` (after F7's `make_katas.py`).
+
+**Estimate.** An arbitration sends about 2–4k input tokens and gets 1–3k output tokens back, including thinking. That is about $0.02–0.04 on Sonnet and $0.04–0.08 on Opus. The F3 control had about two uncovered Disputes per repeat, and Haiku costs $0.018 per repeat, so check 1 is about $0.25 on Sonnet and $0.45 on Opus. Check 2 is about $0.10 of Haiku plus a few arbitrations, about $0.25. Check 3 is about $0.12 of Haiku plus arbitrations, about $0.40. That makes **about $1.35** in all; allow **$2.50**. The default $0.10 Spend cap per run fits one Opus arbitration, but a Behavior that disputes twice could pass it, so use `[workflow] max_cost_usd = 0.25` for the Opus run.
+
+---
+
+## F11 — Roles: separate context, model and view per role (adversarial TDD)
+
+The test writer and the implementer become separate roles. Each has its own system prompt, model, effort and **view** (what context it gets).
+
+- **Config:** `[workflow.roles.tester]`, `[workflow.roles.implementer]` and `[workflow.roles.arbiter]` (F10), each with `model`, `effort` and `view`. Unset fields fall back to `[workflow]`.
+- **Views:**
+  - `full`: today's context.
+  - `interface`: the Plan, the current Behavior, earlier tests, and the implementation's *public interface* only. The interface is extracted with `ast`: signatures, docstrings and type hints, with no function bodies. This is the black-box tester.
+  - The implementer always sees the tests (it must make them pass) but never the tester's rationale.
+- **Prompts:** a tester system prompt about finding failure modes the goal implies, and an implementer prompt as today. Each role gets its own cache prefix.
+- **Records:** `execution` names the roles' models and views. Cost and calls are recorded per role.
+- **Prototype first** in `examples/graphs/roles_proto.py` with a scripted model, then port.
+
+**Gates:**
+1. With `view = "interface"`, no tester prompt contains a function body from the implementation (a canary body in a fake Workspace).
+2. Each role's requests go to its own model (counted per model on the fake transport).
+3. The summary carries cost and calls per role.
+4. With no roles configured, prompts are byte-identical to today's (no regression to the cache prefix).
+
+**Live check** (on `exotic`, 3 repeats each; the measures are hidden pass rate, self/hidden gap and mutants killed):
+- (a) Haiku in both roles, `full` against `interface`.
+- (b) Sonnet or Opus tester with a Haiku implementer.
+- (c) Haiku tester with a Sonnet implementer.
+
+The question: does a stronger or blind tester close the self/hidden gap more cheaply than a stronger implementer?
+
+**Status (2026-10-11): built and gated** (`tests/workflow/test_roles.py`, 14 tests; every earlier test passes). No live calls.
+
+- **Prototype** (`examples/graphs/roles_proto.py`, scripted, no model). It answered two questions. First, the `ast` interface of each exotic reference is 131–184 characters against 577–1160, and no body line survives. The references have no function docstrings, so a blind tester works from the goal and a bare signature. Second, a leak the spec did not name: when a rejected test fails inside the implementation, pytest's traceback quotes the implementation's lines, and the tester reads that output in its rewrite prompt. The port redacts that output.
+- **Config.** `[workflow.roles.tester|implementer|arbiter]` (`RoleConfig`: `model`, `effort`, `view`). `config.role_model` gives the tester and the implementer the run's model (`--model`, or `anthropic_model`) and `[workflow] effort` for any field left unset. `arbiter_role` reads `[workflow.roles.arbiter]` first. F10's `[workflow] arbiter` and `arbiter_effort` still work as a fallback, field by field (**not migrated**). Only the tester takes `view = "interface"`. The implementer's View must be `full`, and the Arbiter takes no `view`, since its prompt is F10's and never has the implementation. Either of those is refused when the config loads.
+- **Views** (`workflow/views.py`). `interface` turns each implementation file (`.py`, not a test file by F7's rule) into its imports, signatures with type hints and decorators, docstrings, and public module or class names. Function bodies and assigned values become `...`, and private names (`_x`, but not dunders) are left out. Test files and non-Python files are shown whole, so earlier tests are there. The context header says which files are interfaces.
+  - **A file that does not parse** shows only `# This file does not parse (line N), so its interface cannot be shown.` and all of its lines go into the redaction set, so a broken file cannot leak.
+  - **Redaction.** The rejected-test output in a tester rewrite prompt has every line that quotes a function-body line of any implementation file in the Workspace replaced by `[implementation line hidden]`. Redaction is line-exact, so a model's paraphrase (for example, a Dispute's reason) is not caught.
+- **Prompts.** `prompts.TESTER_SYSTEM` asks for failure modes the goal implies: boundaries, empty input, ties, ordering, invalid input the goal names, and expected values derived from the goal rather than the code. It is used once the Roles are separated, which means `[workflow.roles.tester]` or `[workflow.roles.implementer]` has a field set. The implementer keeps `prompts.SYSTEM`, so each Role has its own cache prefix. With no Roles configured, both use `SYSTEM` as before. The implementer never saw the tester's rationale, and a gate now holds it to that. The rationale is only logged.
+- **Models.** `build_execution_graph(..., tester=, implementer=, arbiter=)` takes a model for each Role, and each defaults to `model`, so existing callers are unchanged. `backend.make_roles(config, run_model)` returns a `RoleModels` TypedDict that holds only the Roles whose model or effort differs from the run's, plus the Arbiter. A Role that differs must be a priced `claude-` model; an Ollama Role is refused before the run, and so is an unpriced model (`grid_cells` checks prices too). `build_once(roles=)` defaults to `make_roles`, and its `arbiter=` still overrides the Arbiter. The TUI uses `make_roles` as well.
+- **Cost per Role.** `ROLE_OF` is gone. Each node's calls are counted under the Role that made them (`ask(prompt, schema, role)`), with one `UsageMeter` per distinct model object. The summary's `roles` has `calls` and `cost_usd` per Role. The CLI's and the TUI's final report add the "by role" line once the Roles are separated (as before when an Arbiter ran).
+- **Provenance.** With the Roles separated, `execution` becomes `…/tester=<model>[@effort]:<view>/implementer=<model>[@effort]:<view>` with F10's `/arbiter=<model>` after it; otherwise the string is unchanged. The CLI header prints each Role's model and View.
+- **Batches.** A lane belongs to a run, not to a model. A batch may mix models, and a run's calls are sequential whichever Role makes them, so the lockstep is unchanged. `cli.batched_roles` puts each Role that has its own model on the run's `BatchLane`, with one `custom_id` count per run, at batch prices.
+- **Gate 4.** `tests/workflow/roles_baseline.py` captured every `(system, prompt)` of a scripted run at 15b02c0 into `tests/workflow/data/roles_baseline_prompts.json`, before any F11 code. That run covers a rejected test, a Dispute the Arbiter rules on, two Behaviors and Polish. Paths and timings are masked, and pytest's output is cut to its version-independent `E`/result lines. With no Roles configured, and also with the Arbiter set under `[workflow.roles.arbiter]` instead, the prompts are byte-identical to that capture.
+
+**Live checks: pending the user's approval.** Run `harness-workflow bench exotic --model claude-haiku-5-5 --repeat 3 --label <label>` with `harness.toml` set for each variant, after F7's `make_katas.py`, and compare with `report --compare baseline-exotic <labels>` on hidden pass rate, self/hidden gap and mutants killed. Set `[workflow] max_cost_usd = 0.25` for (b) and (c).
+- (a) `[workflow.roles.tester] view = "full"` (`f11-haiku-full`), then `view = "interface"` (`f11-haiku-interface`). Setting `view = "full"` explicitly means both arms use the tester system prompt, so only the View differs; `baseline-exotic` is the no-Roles reference.
+- (b) `[workflow.roles.tester] model = "claude-sonnet-5-5"` (`f11-sonnet-tester`), optionally `"claude-opus-5-5"` (`f11-opus-tester`).
+- (c) `[workflow.roles.implementer] model = "claude-sonnet-5-5"` (`f11-sonnet-implementer`).
+
+**Estimate.** On Haiku, the exotic set costs about $0.040 per repeat (F12's note), so $0.12 per 3-repeat label. F10's per-Role split had the tester at about a quarter to a third of the calls. Taking 30% of the cost as the tester's, with Sonnet at 20× Haiku and Opus at 40×:
+- (a) is two Haiku labels, about $0.25.
+- (b) is about $0.80 with a Sonnet tester and about $1.55 with Opus.
+- (c) is about $1.75.
+
+All of that with the Sonnet tester comes to **about $2.80**, or **about $4.35** with the Opus arm as well. Allow **$6**: the exotic katas have no measured cost yet, and a stronger tester may cause more rewrites.
+
+---
+
+## F12 — Model frontier and Batches
+
+- **Sweeps:** `bench <set> --models a,b,c --effort low,medium,high` runs the grid and labels each cell. `report --frontier <labels>` prints hidden pass rate against cost per kata. An HTML chart is optional.
+- **Batches** (50% off): a Workflow's calls are sequential, so a batch per call would add hours to every node. Instead, `BatchedWorkflowModel` gathers the pending `complete()` calls from N concurrent bench runs, submits them as one batch once every active run is waiting (or after `flush_s`), and resolves each call by `custom_id`.
+  - It fits a large `--repeat` run overnight. Each run's Spend cap uses batch prices.
+  - Server-side fallbacks are rejected on Batches, so batched arbiter calls go without them.
+  - Before building, check with one live request that `output_config.format` works in a batch.
+
+**Gates:**
+1. N scripted runs progress in lockstep through one fake batch endpoint, with results matched by `custom_id` in any order.
+2. An `errored` or `expired` batch result follows F8's `api_error` path for that run only.
+3. Cost is recorded at batch prices.
+4. The sweep writes one label per cell, and the frontier report reads them.
+
+**Live check:** `exotic` × {Haiku, Sonnet 5.5, Opus 5.5} × {low, medium}, 3 repeats, batched. Get the user's approval on the estimate first.
+
+**Status (2026-10-11): built and gated** (`tests/workflow/test_batch.py`, 13 tests; the batch endpoints are faked by `FakeBatches` in `tests/anthropic_fakes.py`). No live calls.
+
+- **Sweep.** `bench <set> --models a,b --effort low,medium` builds one Cell per model × effort (`cli.grid_cells`), labelled `<label>-<model>-<effort>` (the base label defaults to `<set>-<timestamp>`; a Cell with no `--effort` is `default`). Without `--models`/`--effort` the label is as before. Every model must be an Anthropic model with a price in `PRICING`, and every effort a known one: otherwise the bench exits 2 before any run, naming the model. `--max-cost` covers the whole grid. `run_bench` is now the one-Cell case of `run_grid`.
+- **Frontier.** `report --frontier A B C` gives one row per label, cheapest first: model and effort (read from the summaries' provenance), runs, hidden pass rate (the mean over katas of each kata's mean rate) and mean cost per kata run. `*` marks a label no other label beats on both. Below that is a kata × label table of hidden rate · cost. A label with no graded runs shows `-` and is never on the frontier. There is no HTML chart.
+- **Batches** (`workflow/batch.py`). A `BatchLane` stands in for the `AsyncAnthropic` client, so `BatchedWorkflowModel` is `AnthropicWorkflowModel` unchanged: it sends the same params as a single call (a gate compares the two bodies), keeps the retry-once on invalid JSON, and fails in the same way. `model.py` is not touched. The `Batcher` sends a batch once every open lane has a call waiting, or `--flush-s` (default 30 s) after the first waiting call. It polls every 15 s until `ended`, then resolves each call by `custom_id` (`run<k>-<n>`); the fake returns results in reverse order. A run's lane closes when its build ends, before grading, so the others stop waiting for it. A reply's `request_id` is `<batch id>/<custom_id>`.
+  - **Failures.** An `errored`, `expired` or `canceled` result raises `ApiFailure` (`batch_errored:<type>`, `batch_expired`) for that call only, so that run ends with `api_error` at that node (F8) and the others go on. A batch request that fails past the SDK's retries fails every call in it. On Ctrl-C, the batches in flight are cancelled on the server.
+  - **Cost.** Each call is priced by `api_call` and then halved (`batch.batch_priced`, `BATCH_DISCOUNT = 0.5`, not in `PRICING`), so the summary, the ledger and the run's Spend cap all use batch prices.
+  - `batch_params` drops `fallbacks` (and the SDK's request options), so F10's fallbacks cannot reach a batch.
+- **Concurrency.** With `--batch`, every run of the whole grid (all Cells, not one Cell at a time) goes at once, so a batch holds every waiting call. `--parallel N` limits that number; without `--batch` the default is 1, as before. Under concurrency, `--max-cost` still holds: each run starts with a Spend cap of the smaller of `max_cost_usd` and what is left after setting aside the caps of runs already going. A run that would get no cap waits for another run to end.
+- **Merge note.** This touches `cli.py`'s bench (`run_bench` → `run_grid`/`bench_one`) and `bench.py`'s report, not `model.py`. F10 has since added `claude-sonnet-5-5` and `claude-opus-5-5` to `PRICING`, so a sweep naming them runs (it no longer exits 2 with "no pricing"). The estimate below used 20× and 40× Haiku's input and output prices, which the F10 prices confirm; Opus 5.5's cache reads are $0.20, not 40× Haiku's, so cache-heavy Opus runs cost a little less than estimated.
+
+**Live checks: pending the user's approval.**
+1. **`output_config.format` in a batch** (unverified). Send one Haiku request through `BatchedWorkflowModel` with any schema: one batch, about $0.0001. If it comes back `errored`, the batched path needs a different way to get JSON before the sweep.
+2. **The sweep:** `harness-workflow bench exotic --models claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5 --effort low,medium --repeat 3 --batch --label frontier` (after F10's prices and F7's `make_katas.py`), then `report --frontier frontier-claude-haiku-5-5-low ...`. That is 36 runs.
+   - **Estimate.** `baseline-f1` cost $0.0334 per repeat of 5 katas, or $0.0067 per kata run on Haiku. F3's disputed Plans cost $0.0050–0.0059 per run. Six exotic katas therefore cost about $0.040 per repeat on Haiku, or $0.12 per Cell at standard prices. Sonnet 5.5's input and output prices are 20× Haiku's and Opus 5.5's are 40×, so a Cell costs about $2.40 on Sonnet and $4.80 on Opus.
+   - For two efforts that is about $14.6 at standard prices, or **about $7.3 batched**. Allow up to about **$15**: the exotic katas are new and harder (F7 has no cost yet), batch cache hits are best effort, and effort changes thinking tokens.
+   - **Settings needed.** An Opus run would cost about $0.13 batched, which is over the default $0.10 Spend cap. Set `[workflow] max_cost_usd = 0.50`, and pass `--max-cost 20` so that all 36 runs fit under the bench's reservations at once.
+   - **Time.** Each run makes about 20–30 sequential calls, and each call costs one batch round. Plan for it overnight.
+
+---
+
+## F13 — Same task, four frameworks (an example, not a feature)
+
+In `examples/frameworks/`, one exotic kata runs through a test writer and an implementer in four frameworks:
+
+1. braid's LangGraph Workflow (F11 roles).
+2. A Strands `Swarm` with handoffs.
+3. The Claude Agent SDK with subagents.
+4. CrewAI, run with `uv run --with crewai` so it never becomes a project dependency.
+
+Each is graded by F7's hidden tests and reports its own token usage.
+
+- **Write-up:** a table of hidden pass rate, cost, calls and lines of glue code, plus what each framework made easy or hard: explicit routes against emergent handoffs, and where the trace lives.
+- **Isolation:** frameworks 2–4 run their own tool loops, so model-written code runs outside braid's Sandbox. They run in a temporary copy of the kata with the API key kept out of tool environments where the framework allows it. The README says so. This is outside ADR 0005, which covers the harness. Nothing from here goes into `src/`.
+
+**Gate:** only the grading adapter (each runner's output directory → hidden grade) gets a test.
+
+**Status (2026-10-11): built** (`tests/test_frameworks_grade.py`, 5 tests: the reference passes every hidden test, a mutant scores lower, a missing module scores 0/N). No live calls.
+
+- **Layout.** `examples/frameworks/`: `README.md` (the comparison, the isolation warning, how to run, the write-up table with results pending), `grade.py`, `common.py` (the kata copy, both Role prompts, the tools and the JSON line) and one `run_*.py` per framework. Each runner takes `--kata --out [--model]`, defaults to `claude-haiku-5-5`, writes the module and tests into `--out` and its trace into `<out>/.trace/`, and prints one JSON line with calls, tokens and cost, in total and per Role.
+- **Grading adapter.** `grade.py` reuses `bench.grade` unchanged. It wraps a staging copy of the output directory as a `DirWorkspace` (only `path` and `list_files`), linked to a venv with pytest, and gives it the kata repo's `pyproject.toml` when the output has none. Grading runs in the Sandbox. The output also reports `own_tests`, since mutants are killed only by the runner's own tests.
+- **Frameworks and Claude 5.5.**
+  - **braid:** `build_once` with `make_roles`. The tester gets the `interface` View unless `harness.toml` already separates the Roles.
+  - **Strands `Swarm`:** each agent runs on `AnthropicChatModel`, which works around Strands' `anthropic<1.0` pin and never sends sampling parameters. Handoffs are emergent.
+  - **Claude Agent SDK** (0.2.165, `uv run --with`): the bundled CLI builds its own requests, and it supports the 5.5 models. The tools are Read, Write, Edit, Glob, the Agent tool and an MCP `pytest` tool; there is no Bash. A `PreToolUse` hook confines paths and each Role's writes. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is set. Only the options and the hook were checked offline.
+  - **CrewAI** (1.15.27, `uv run --with`): it uses its native Anthropic provider. Its extra pins `anthropic~=0.73`, but it ran on the project's 1.x in an offline mock-transport run, sending no `temperature` or `top_p` (both default to None; the runner refuses to start if either is set). It does no prompt caching, and its route is sequential, with no way back to the tester.
+  - The Strands and CrewAI runners each ran end to end offline on a scripted fake API, and `grade.py` graded the output under Seatbelt.
+- **Isolation.** Runners 2–4 run model-written code outside the Sandbox and ADR 0005, in a temporary kata copy made from `GOAL.md` and `summary.txt` only. pytest runs with every credential-like variable removed. The README has a per-runner table of where the key is. Nothing went into `src/`.
+- **mypy.** `uv run mypy src tests` does not cover `examples/` (as before). `common.py`, `grade.py`, `run_braid.py` and `run_strands_swarm.py` also pass `--strict` with `MYPYPATH=examples/frameworks`. The SDK and CrewAI runners import packages that are not project dependencies.
+
+**Live run: pending the user's approval.** Four runners × one kata (`ferry-fare`) on Haiku. Start from F12's ~$0.0067 per braid kata run and scale by each framework's likely calls and context:
+- braid: ~$0.007–0.010 (20–30 single-turn calls; the exotic katas are new).
+- Strands Swarm: ~$0.015–0.03 (multi-turn tool loops that resend the history, cached by `AnthropicChatModel`; ~15–30 calls).
+- Agent SDK: ~$0.02–0.04 (a coordinator plus two subagents with Claude Code's tool schemas; ~20–40 calls, cached by the CLI). It is capped by `max_budget_usd=0.50`.
+- CrewAI: ~$0.02–0.05 (~10–30 calls, every one uncached).
+
+That comes to about **$0.06–0.13**; allow **$0.25**. Run `grade.py` on each output afterwards, which costs nothing, and fill in the README table.
 
 ---
 
@@ -254,5 +543,6 @@ Small Workflows written as YAML files and run with `/run <name> [args]`. This re
 
 - F1: does Haiku's adaptive thinking need `effort: low` for the katas, or is the default `medium` worth its cost? Measure both on one kata.
 - F1: should the Plan loop default to Haiku once F1 lands, since local Plans are weak? That decision belongs to the user after the live check.
-- F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? That would route on a model's claim, so it needs an ADR 0004 amendment. Another option is an arbiter on a stronger model (a crew). Decide after the F3 replays.
+- F3: when no invariant covers a disputed test, should the work go back to `write_test` once per Behavior anyway? **Decided 2026-10-11:** routing on a model's claim is allowed when it is traced and bounded (ADR 0008). F10 tries an Arbiter first; the Dispute alone can be a bench variant.
+- F7+: should F7–F9 (no dependency on F4–F6) go ahead of F4–F6? **Decided 2026-10-11:** F4–F6 are skipped for now. The work order is F7–F13.
 - Later: `write_change` (test and implementation in one reply). Haiku made 0 out-of-scope edits in 103 write calls, against e4b's 27 in 7 runs, so it only matters if e4b stays a build target. F4's mixed-edit handling covers e4b more cheaply.

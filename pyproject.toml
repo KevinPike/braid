@@ -43,6 +43,7 @@ evals = [
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]  # bench/exotic holds hidden kata tests that run only against kata modules (verify.py)
 
 [tool.mypy]
 strict = true

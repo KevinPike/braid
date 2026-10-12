@@ -1,0 +1,1 @@
+Render Stitch markup (shout, mirror and lead spans).

@@ -12,10 +12,11 @@ import pytest
 from pydantic import BaseModel
 
 from harness.config import WorkflowConfig
-from harness.sandbox import LocalSandbox, Workspace
+from harness.sandbox import LocalSandbox, Sandbox, Workspace
 from harness.workflow.execute import Dispute, Edits, ExecState, FileEdit, ImplEdits, build_execution_graph, drive_graph, initial_state
 from harness.workflow.cli import show
 from harness.workflow.invariants import Invariant
+from harness.workflow.model import WorkflowModel
 from harness.workflow.plan import Assumption, Plan
 from harness.workflow.records import Recorder, RunLog
 
@@ -76,9 +77,10 @@ def tree(root: Path) -> dict[str, str]:
 
 
 async def run_loop(
-    fixture_repo: Path, fixture_venv: Path, tmp_path: Path, model: ScriptedModel, answers: list[str], *,
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path, model: WorkflowModel, answers: list[str], *,
     behaviors: list[str] | None = None, assumptions: list[Assumption] | None = None, hints: bool = True,
-    settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None,
+    settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None, arbiter: WorkflowModel | None = None,
+    sandbox: Sandbox | None = None, tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
 ) -> Run:
     ws = await Workspace.create(fixture_repo, tmp_path / "workspaces", "run1")
     (ws.path / ".venv").symlink_to(fixture_venv)
@@ -89,7 +91,10 @@ async def run_loop(
     )
     rec = Recorder()
     log = RunLog(tmp_path / "runs" / "run1.jsonl")
-    graph = build_execution_graph(model, LocalSandbox(), ws, settings or WorkflowConfig(), hints=hints, recorder=rec, log=log)
+    graph = build_execution_graph(
+        model, sandbox or LocalSandbox(), ws, settings or WorkflowConfig(), hints=hints, recorder=rec, log=log, arbiter=arbiter,
+        tester=tester, implementer=implementer,
+    )
     payloads: list[dict[str, Any]] = []
 
     def ask(payload: dict[str, Any]) -> str:
@@ -271,7 +276,7 @@ async def test_no_hints_mode_skips_a_stuck_behavior_and_restores_the_workspace(
 async def test_the_run_log_has_one_rich_line_per_node(fixture_repo: Path, fixture_venv: Path, tmp_path: Path) -> None:
     model = ScriptedModel([MUL_TEST, MUL_IMPL])
     run = await run_loop(fixture_repo, fixture_venv, tmp_path, model, ["abort"], behaviors=["mul multiplies"])
-    lines = run.log.lines()
+    lines = [line for line in run.log.lines() if line["node"] != "route"]  # Route records are tested in test_trace
     assert [line["node"] for line in lines] == run.rec.trace
     impl = next(line for line in lines if line["node"] == "write_impl")
     assert "mul multiplies" in impl["prompt"] and impl["reply"]["edits"][0]["path"] == "src/mod.py"

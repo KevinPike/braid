@@ -5,12 +5,13 @@ Ollama goes through the guard client (ADR 0004); Claude goes through the Anthrop
 
 from __future__ import annotations
 
-from typing import Protocol, TypeVar
+from typing import Any, Protocol, TypeVar, cast
 
 import anthropic
 from pydantic import BaseModel, ValidationError
 
-from harness.config import Effort
+from harness.anthropic_api import API_FAULTS, ApiFailure, thinking_param, thinking_text
+from harness.config import Effort, ThinkingDisplay
 from harness.guard.ollama_client import OllamaClient
 from harness.usage import PRICING, ApiCall, Price, api_call, require_pricing
 
@@ -18,7 +19,8 @@ T = TypeVar("T", bound=BaseModel)
 
 
 class WorkflowModelError(RuntimeError):
-    """The model did not return a valid reply for the schema, even after one retry."""
+    """The model did not return a valid reply for the schema, even after one retry. A failed request is not this: it
+    raises ``ApiFailure``, which no node catches, so the run stops with status ``api_error`` (F8)."""
 
 
 class WorkflowModel(Protocol):
@@ -69,29 +71,49 @@ class GuardedWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
+# F10: server-side refusal fallbacks, for the models that offer them on the Claude API. Batches reject them.
+FALLBACK_BETA = "server-side-fallback-2026-07-01"
+FALLBACK_MODELS = frozenset({"claude-sonnet-5-5", "claude-opus-5-5"})
+
+Reply = anthropic.types.Message | anthropic.types.beta.BetaMessage
+
+
 class AnthropicWorkflowModel:
-    """Asks the Anthropic API for JSON in ``schema``'s shape (ADR 0006). Never sends sampling parameters."""
+    """Asks the Anthropic API for JSON in ``schema``'s shape (ADR 0006). Never sends sampling parameters.
+
+    Each request's thinking summary (F9, ``thinking_display``) is kept on its ``ApiCall`` in ``calls``, so a node's run
+    log line carries it the way it carries the node's usage. ``fallbacks`` (F10, the Arbiter's Sonnet or Opus 5.5 only)
+    sends the request on the beta endpoint with ``fallbacks: "default"``, so a refusal is retried on the server by a
+    substitute model; each ``ApiCall`` records the model that served it."""
 
     def __init__(
         self, client: anthropic.AsyncAnthropic, model_id: str, *, max_tokens: int = 16000, effort: Effort | None = None,
+        thinking_display: ThinkingDisplay = "summarized", fallbacks: bool = False,
     ) -> None:
         require_pricing(model_id)
         self.client = client
         self.model_id = model_id
         self.max_tokens = max_tokens
         self.effort = effort
+        self.thinking = thinking_param(thinking_display)
+        self.fallbacks = fallbacks
         self.calls: list[ApiCall] = []
 
     @property
     def cost_usd(self) -> float:
         return sum(c.cost_usd for c in self.calls)
 
-    def _record(self, response: anthropic.types.Message) -> None:
+    def _record(self, response: Reply) -> None:
         u = response.usage
         self.calls.append(api_call(
             self.model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
-            response._request_id,
+            response._request_id, thinking=thinking_text(response.content), served_model=str(response.model),
         ))
+
+    async def _create(self, params: dict[str, Any]) -> Reply:
+        if self.fallbacks:  # ``fallbacks`` is a typed param of the beta endpoint in the SDK, so no ``extra_body``
+            return cast(Reply, await self.client.beta.messages.create(**params, betas=[FALLBACK_BETA], fallbacks="default"))
+        return cast(Reply, await self.client.messages.create(**params))
 
     async def complete(self, system: str, prompt: str, schema: type[T]) -> T:
         # `messages.create` rather than `messages.parse`: parse validates inside the HTTP layer, so an invalid or
@@ -101,15 +123,23 @@ class AnthropicWorkflowModel:
         }
         if self.effort is not None:
             output_config["effort"] = self.effort
+        extra: dict[str, Any] = {"thinking": self.thinking} if self.thinking else {}
         error = ""
         for _ in range(2):  # one retry, with the problem appended
-            response = await self.client.messages.create(
-                model=self.model_id,
-                max_tokens=self.max_tokens,
-                system=[{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
-                messages=[{"role": "user", "content": prompt + error}],
-                output_config=output_config,
-            )
+            try:
+                response = await self._create({
+                    "model": self.model_id,
+                    "max_tokens": self.max_tokens,
+                    "system": [{"type": "text", "text": system, "cache_control": {"type": "ephemeral"}}],
+                    "messages": [{"role": "user", "content": prompt + error}],
+                    "output_config": output_config,
+                    **extra,
+                })
+            except API_FAULTS as exc:  # past the SDK's retries: the run stops here, resumable (F8)
+                raise ApiFailure.from_exc(exc) from exc
+            # a 200 whose body is not JSON comes back as text
+            if not isinstance(response, (anthropic.types.Message, anthropic.types.beta.BetaMessage)):
+                raise ApiFailure("UnexpectedBody", f"the reply was not a message: {str(response)[:100]!r}")
             self._record(response)
             if response.stop_reason == "refusal":
                 category = response.stop_details.category if response.stop_details else None
@@ -128,4 +158,7 @@ class AnthropicWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
-__all__ = ["PRICING", "AnthropicWorkflowModel", "ApiCall", "GuardedWorkflowModel", "Price", "WorkflowModel", "WorkflowModelError"]
+__all__ = [
+    "PRICING", "AnthropicWorkflowModel", "ApiCall", "ApiFailure", "GuardedWorkflowModel", "Price", "WorkflowModel",
+    "WorkflowModelError",
+]

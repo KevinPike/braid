@@ -1,0 +1,56 @@
+{
+  "goal": "Implement fare(ages, vehicle) in ferry_fare.py that prices one party's Skelling ferry crossing from age-banded passenger fares and a vehicle fee, with a group waiver, a car carpool reduction, and ValueError for bad ages, unknown vehicles and vehicles without a qualifying passenger.",
+  "behaviors": [
+    "fare([50], \"none\") returns 7 and fare([2], \"none\") returns 0 (an adult pays 7, a child under 4 rides free).",
+    "fare([10, 80], \"none\") returns 7 (ages 4 to 15 pay 3 and ages 65 and over pay 4).",
+    "fare([25], \"van\") returns 25 and fare([25], \"bike\") returns 9 (the vehicle fee is added to the passenger fares).",
+    "fare([25, 25, 9, 9], \"none\") returns 17 and fare([1, 25, 25, 25], \"none\") returns 21 (with 4 or more paying passengers the single lowest fare is waived; free riders do not count).",
+    "fare([25, 40, 1], \"car\") returns 20 and fare([25, 40, 1], \"van\") returns 32 (a car with 3 or more passengers of any age pays 6 instead of 12; a van never does).",
+    "fare([200], \"none\"), fare([25], \"ship\") and fare([12], \"van\") each raise ValueError."
+  ],
+  "assumptions": [
+    {
+      "text": "ferry_fare.py exists at the repo root as the single flat module.",
+      "probe": "test -f ferry_fare.py",
+      "evidence": "ferry_fare.py - listed by git ls-files"
+    },
+    {
+      "text": "The tests/ directory exists for the new test file.",
+      "probe": "test -d tests",
+      "evidence": "tests/.gitkeep - listed by git ls-files"
+    },
+    {
+      "text": "pyproject.toml exists so the project toolchain is configured.",
+      "probe": "test -f pyproject.toml",
+      "evidence": "pyproject.toml - listed by git ls-files"
+    },
+    {
+      "text": "pytest can be run through uv without network access.",
+      "probe": "uv run --offline python -c 'import pytest'",
+      "evidence": null
+    }
+  ],
+  "files": [
+    "ferry_fare.py",
+    "tests/test_ferry_fare.py"
+  ],
+  "demo": "python -c 'from ferry_fare import fare; print(fare([30, 8], \"car\")); print(fare([70, 40, 10, 2], \"car\"))'",
+  "out_of_scope": [
+    "Type checking of arguments (bools, floats, non-list ages)",
+    "Return trips or multiple crossings"
+  ],
+  "open_questions": [],
+  "notes": [],
+  "invariants": [
+    {
+      "text": "a fare is never negative",
+      "fn": "fare",
+      "check": "result >= 0"
+    },
+    {
+      "text": "a fare is at most 7 per passenger plus the largest vehicle fee",
+      "fn": "fare",
+      "check": "result <= 7 * len(args[0]) + 18"
+    }
+  ]
+}

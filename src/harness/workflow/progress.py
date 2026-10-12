@@ -106,6 +106,10 @@ def describe(record: dict[str, Any]) -> str:
         result = "✗ edit refused, nothing to run" if code is None else ("✓ all tests pass" if code == 0 else f"✗ failed (exit {code})")
     elif node == "stuck":
         result = f"answer: {record['answer'][:50]}"
+    elif node == "arbitrate":  # F10
+        reply = record.get("reply")
+        result = (f"ruled {reply['verdict']} ({record.get('served_by')})" if reply
+                  else f"✗ no valid ruling: {record.get('model_error', '')[:50]}")
     elif node == "next_behavior":
         result = "✓ satisfied" if record["satisfied"] else "✓ green"
     elif node == "verify_polish":
@@ -131,6 +135,8 @@ def describe(record: dict[str, Any]) -> str:
         result = f"{record['route']}: {record['answer'][:50]}"
     elif node == "spend_cap":
         result = f"✗ Spend cap: ${record['spent']:.4f} passed ${record['cap']:.2f}; stopped, nothing applied"
+    elif node == "api_error":
+        result = f"✗ API error in {record['at']}: {record['error']} ({record.get('request_id') or 'no request id'}); stopped, nothing applied"
     elif node == "finalize" and "path" in record:
         result = f"{record['outcome']}: saved {record['path']}"
     text = f"  {node:<17} {result}  {record.get('node_seconds', 0.0):.1f}s"
@@ -149,7 +155,7 @@ def outcome(stats: BehaviorStats) -> str:
     return "stuck" if stats.note == "stuck" else "open"
 
 
-def final_report(rec: Recorder, total_s: float) -> str:
+def final_report(rec: Recorder, total_s: float, *, by_role: bool = False) -> str:
     """The end table. An API-backed run (``rec.cost_usd``) gets a cost column and a token line."""
     api = rec.cost_usd > 0
     rows = [
@@ -161,6 +167,10 @@ def final_report(rec: Recorder, total_s: float) -> str:
     if api:
         head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
                  f"{rec.cache_read_input_tokens} cache-read tokens")
+        if by_role or "arbiter" in rec.roles:  # F10, F11: Roles on other models cost more, so show where the money went
+            head += "\nby role: " + ", ".join(
+                f"{role} ${t['cost_usd']:.4f} ({int(t['calls'])} calls)" for role, t in sorted(rec.roles.items())
+            )
     lines = [head, ""]
     lines.append(f"{'Behavior':<{width}}  {'result':<9}  {'attempts':>8}  {'seconds':>7}" + (f"  {'cost':>8}" if api else ""))
     lines += [f"{b:<{width}}  {o:<9}  {a:>8}  {sec:>7}" + (f"  {cost:>8}" if api else "") for b, o, a, sec, cost in rows]

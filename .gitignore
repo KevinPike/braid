@@ -9,3 +9,6 @@ examples/graphs/plan.json
 
 # the chat shell Sandbox's private TMPDIR (M12)
 .tmp/
+
+# subagent worktrees (Claude Code)
+.claude/worktrees/

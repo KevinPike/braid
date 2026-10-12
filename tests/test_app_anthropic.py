@@ -102,7 +102,7 @@ async def test_compaction_against_the_window_strips_thinking_from_the_kept_turns
     big = {"input_tokens": 1500, "output_tokens": 100, "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
     api = (FakeApi()
            .reply(thinking("sig-1"), text("first answer"))
-           .reply(thinking("sig-2"), text("second answer"), usage=big)  # 1600 of a 2000 window: over the 90% ceiling
+           .reply(thinking("sig-2", "a summarized thought (F9)"), text("second answer"), usage=big)  # 1600 of a 2000 window: over the 90% ceiling
            .reply(text("- the user asked two things"))  # the summarizer's (non-streamed) call
            .reply(text("third answer")))
     app = HarnessApp(config(tmp_path, context_window=2000), anthropic_client=api.client())

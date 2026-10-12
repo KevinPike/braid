@@ -1,0 +1,1 @@
+Share a depot's ration stock among a queue of requests.

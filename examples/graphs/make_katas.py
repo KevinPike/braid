@@ -1,6 +1,10 @@
-"""Create the five kata repos in ~/projects/braid-practice/ (M11.2). Skips any that already exist.
+"""Create the five kata repos (M11.2) and the six exotic ones (F7) in ~/projects/braid-practice/. Skips any that
+already exist.
 
     uv run --no-project python examples/graphs/make_katas.py [practice-dir]
+
+An exotic kata repo gets only its ``GOAL.md`` and ``summary.txt`` from ``bench/exotic/<kata>/``: its Hidden tests,
+reference and mutants never enter a kata repo, so they never reach a Workspace or a prompt.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ pythonpath = ["."]
 """
 
 GITIGNORE = ".venv/\n__pycache__/\n.pytest_cache/\nplan.json\nruns/\n"
+EXOTIC = Path(__file__).resolve().parents[2] / "bench" / "exotic"
 
 KATAS: dict[str, tuple[str, str]] = {
     "roman-numerals": (
@@ -84,7 +89,16 @@ def run(*cmd: str, cwd: Path) -> None:
     subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True)
 
 
-def make(root: Path, name: str, summary: str, goal: str) -> None:
+def exotic_katas(exotic: Path = EXOTIC) -> dict[str, tuple[str, str]]:
+    """name -> (summary, GOAL.md text) for each kata under ``bench/exotic``; nothing else is read from there."""
+    return {
+        d.name: ((d / "summary.txt").read_text().strip(), (d / "GOAL.md").read_text())
+        for d in sorted(exotic.iterdir()) if (d / "GOAL.md").is_file()
+    }
+
+
+def make(root: Path, name: str, summary: str, goal_md: str, *, sync: bool = True) -> None:
+    """``goal_md`` is the whole GOAL.md. ``sync=False`` (tests) skips ``uv sync``, so the repo has no uv.lock."""
     repo = root / name
     if repo.exists():
         print(f"{name}: exists, skipped")
@@ -95,9 +109,10 @@ def make(root: Path, name: str, summary: str, goal: str) -> None:
     (repo / f"{module}.py").write_text(f'"""{summary}"""\n')
     (repo / "tests" / ".gitkeep").write_text("")
     (repo / ".gitignore").write_text(GITIGNORE)
-    (repo / "GOAL.md").write_text(f"# {name}\n\n{goal}")
+    (repo / "GOAL.md").write_text(goal_md)
     run("git", "init", "-q", "-b", "main", cwd=repo)
-    run("uv", "sync", cwd=repo)  # writes uv.lock, which the Workspace needs for `uv sync --frozen`
+    if sync:
+        run("uv", "sync", cwd=repo)  # writes uv.lock, which the Workspace needs for `uv sync --frozen`
     run("git", "add", "-A", cwd=repo)
     run("git", "-c", "user.name=braid", "-c", "user.email=braid@localhost", "commit", "-q", "-m", "Empty kata", cwd=repo)
     print(f"{name}: created")
@@ -107,7 +122,9 @@ def main() -> None:
     root = Path(sys.argv[1]).expanduser() if len(sys.argv) > 1 else Path.home() / "projects" / "braid-practice"
     root.mkdir(parents=True, exist_ok=True)
     for name, (summary, goal) in KATAS.items():
-        make(root, name, summary, goal)
+        make(root, name, summary, f"# {name}\n\n{goal}")
+    for name, (summary, goal_md) in exotic_katas().items():
+        make(root, name, summary, goal_md)
 
 
 if __name__ == "__main__":

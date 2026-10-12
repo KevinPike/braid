@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import tomllib
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
+ThinkingDisplay = Literal["summarized", "omitted"]
 
 
 class OllamaConfig(BaseModel):
@@ -104,6 +106,45 @@ class EvalsConfig(BaseModel):
     num_ctx: int = 8192  # modest on purpose: the M4 prompts are short and every model must fit without spilling
 
 
+View = Literal["full", "interface"]
+Role = Literal["tester", "implementer", "arbiter"]
+
+
+class RoleConfig(BaseModel):
+    """One Role's model, effort and View (F11). Unset fields fall back to ``[workflow]``: the run's model and ``effort``
+    (``arbiter`` and ``arbiter_effort`` for the Arbiter), and the ``full`` View."""
+
+    model: str | None = None
+    effort: Effort | None = None
+    view: View | None = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.model or self.effort or self.view)
+
+
+class RolesConfig(BaseModel):
+    """``[workflow.roles.tester|implementer|arbiter]``. Only the tester may be given the ``interface`` View: the
+    implementer edits the implementation, so it sees it whole, and the Arbiter's View is F10's (never the implementation)."""
+
+    tester: RoleConfig = RoleConfig()
+    implementer: RoleConfig = RoleConfig()
+    arbiter: RoleConfig = RoleConfig()
+
+    @model_validator(mode="after")
+    def _views(self) -> RolesConfig:
+        if self.implementer.view not in (None, "full"):
+            raise ValueError("[workflow.roles.implementer] view must be \"full\": the implementer edits the implementation")
+        if self.arbiter.view is not None:
+            raise ValueError("[workflow.roles.arbiter] takes no view: the Arbiter never sees the implementation (F10)")
+        return self
+
+    @property
+    def separated(self) -> bool:
+        """The tester or the implementer is configured, so they run as separate Roles. Unset, every prompt is as before F11."""
+        return self.tester.configured or self.implementer.configured
+
+
 class WorkflowConfig(BaseModel):
     """The Execution loop (M13) and the Plan loop (M14). ``model`` (Ollama) defaults to the Profile's model.
 
@@ -121,6 +162,11 @@ class WorkflowConfig(BaseModel):
     max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
     show_invariants: bool = True  # F3: show the Plan's Invariants to the models (they are checked by code either way)
     check_tests_at_red: bool = True  # F3: check a new test against the Invariants after Red; off leaves only Disputes
+    # F10: a stronger model (an API model id) that rules on a Dispute no Invariant upholds; None leaves the graph as in F3
+    arbiter: str | None = None
+    arbiter_effort: Effort | None = None  # None leaves the Arbiter model's default
+    max_arbitrations: int = 1  # per Behavior; past it a Dispute no Invariant upholds takes the code route (ADR 0008)
+    roles: RolesConfig = RolesConfig()  # F11: a model, effort and View per Role; ``[workflow.roles.arbiter]`` wins over ``arbiter``
     max_polish_rounds: int = 1  # 0 skips Polish
     test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
     lint_commands: list[str] = []  # each must exit 0 after Polish, or Polish is reverted
@@ -132,6 +178,46 @@ class WorkflowConfig(BaseModel):
     max_rounds: int = 3  # Plan loop: draft/review rounds before it finalizes with "stopped at round limit"
     critique_angles: list[str] = ["feasibility", "scope", "testability", "risk", "spacing"]  # one Critique call each per round
     critique_prompts: dict[str, str] = {}  # angle -> system prompt, for a new angle or to replace a built-in one
+
+
+@dataclass(frozen=True)
+class RoleModel:
+    """The model and effort one Role runs on."""
+
+    model: str
+    effort: Effort | None = None
+
+
+def arbiter_role(wf: WorkflowConfig) -> RoleModel | None:
+    """The Arbiter's model and effort, or None when there is no Arbiter. ``[workflow.roles.arbiter]`` (F11) wins field by
+    field over F10's ``[workflow] arbiter`` and ``arbiter_effort``, which still work on their own."""
+    role = wf.roles.arbiter
+    model = role.model or wf.arbiter
+    return RoleModel(model, role.effort or wf.arbiter_effort) if model else None
+
+
+def role_model(wf: WorkflowConfig, role: Literal["tester", "implementer"], run_model: str) -> RoleModel:
+    """The tester's or the implementer's model and effort (F11): its ``[workflow.roles.<role>]`` fields, else the run's
+    model (``--model``, or ``[workflow] anthropic_model``) and ``[workflow] effort``."""
+    r = wf.roles.tester if role == "tester" else wf.roles.implementer
+    return RoleModel(r.model or run_model, r.effort or wf.effort)
+
+
+def role_view(wf: WorkflowConfig, role: Role) -> View:
+    """What ``role`` is shown (F11): ``interface`` only when the tester's View says so."""
+    return (wf.roles.tester.view or "full") if role == "tester" else "full"
+
+
+class AnthropicConfig(BaseModel):
+    """The Anthropic client, for the chat agent and Workflows alike (F8). The SDK retries 408, 409, 429, 5xx and
+    connection errors with backoff and honors ``retry-after``; a request that still fails ends the Workflow run with
+    status ``api_error`` (resumable), or the chat turn with a note."""
+
+    max_retries: int = 2  # the SDK's default
+    timeout: float = 600.0  # seconds per request (connecting has its own 5 s)
+    # F9: the 5.5 models think adaptively and send the thinking back empty ("omitted") unless asked for a summary.
+    # Visibility only: thinking is billed the same either way.
+    thinking_display: ThinkingDisplay = "summarized"
 
 
 class PathsConfig(BaseModel):
@@ -185,6 +271,7 @@ class HarnessConfig(BaseModel):
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
     workflow: WorkflowConfig = WorkflowConfig()
+    anthropic: AnthropicConfig = AnthropicConfig()
     paths: PathsConfig = PathsConfig()
 
 

@@ -55,7 +55,8 @@ async def test_no_sampling_parameters_and_the_system_prompt_and_history_are_cach
     for prompt in ("one", "two"):
         [d async for d in stream_reply(agent, prompt)]
     for body in api.bodies:
-        assert not {"temperature", "top_p", "top_k", "thinking"} & body.keys()
+        assert not {"temperature", "top_p", "top_k"} & body.keys()
+        assert body["thinking"] == {"type": "adaptive", "display": "summarized"}  # F9: the default display
         assert body["system"] == [{"type": "text", "text": "sys", "cache_control": {"type": "ephemeral"}}]
         assert body["cache_control"] == {"type": "ephemeral"}  # automatic caching of the history prefix
         assert body["output_config"] == {"effort": "low"}
