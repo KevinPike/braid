@@ -516,6 +516,27 @@ Each is graded by F7's hidden tests and reports its own token usage.
 
 **Gate:** only the grading adapter (each runner's output directory → hidden grade) gets a test.
 
+**Status (2026-10-11): built** (`tests/test_frameworks_grade.py`, 5 tests: the reference passes every hidden test, a mutant scores lower, a missing module scores 0/N). No live calls.
+
+- **Layout.** `examples/frameworks/`: `README.md` (the comparison, the isolation warning, how to run, the write-up table with results pending), `grade.py`, `common.py` (the kata copy, both Role prompts, the tools and the JSON line) and one `run_*.py` per framework. Each runner takes `--kata --out [--model]`, defaults to `claude-haiku-5-5`, writes the module and tests into `--out` and its trace into `<out>/.trace/`, and prints one JSON line with calls, tokens and cost, in total and per Role.
+- **Grading adapter.** `grade.py` reuses `bench.grade` unchanged. It wraps a staging copy of the output directory as a `DirWorkspace` (only `path` and `list_files`), linked to a venv with pytest, and gives it the kata repo's `pyproject.toml` when the output has none. Grading runs in the Sandbox. The output also reports `own_tests`, since mutants are killed only by the runner's own tests.
+- **Frameworks and Claude 5.5.**
+  - **braid:** `build_once` with `make_roles`. The tester gets the `interface` View unless `harness.toml` already separates the Roles.
+  - **Strands `Swarm`:** each agent runs on `AnthropicChatModel`, which works around Strands' `anthropic<1.0` pin and never sends sampling parameters. Handoffs are emergent.
+  - **Claude Agent SDK** (0.2.165, `uv run --with`): the bundled CLI builds its own requests, and it supports the 5.5 models. The tools are Read, Write, Edit, Glob, the Agent tool and an MCP `pytest` tool; there is no Bash. A `PreToolUse` hook confines paths and each Role's writes. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is set. Only the options and the hook were checked offline.
+  - **CrewAI** (1.15.27, `uv run --with`): it uses its native Anthropic provider. Its extra pins `anthropic~=0.73`, but it ran on the project's 1.x in an offline mock-transport run, sending no `temperature` or `top_p` (both default to None; the runner refuses to start if either is set). It does no prompt caching, and its route is sequential, with no way back to the tester.
+  - The Strands and CrewAI runners each ran end to end offline on a scripted fake API, and `grade.py` graded the output under Seatbelt.
+- **Isolation.** Runners 2–4 run model-written code outside the Sandbox and ADR 0005, in a temporary kata copy made from `GOAL.md` and `summary.txt` only. pytest runs with every credential-like variable removed. The README has a per-runner table of where the key is. Nothing went into `src/`.
+- **mypy.** `uv run mypy src tests` does not cover `examples/` (as before). `common.py`, `grade.py`, `run_braid.py` and `run_strands_swarm.py` also pass `--strict` with `MYPYPATH=examples/frameworks`. The SDK and CrewAI runners import packages that are not project dependencies.
+
+**Live run: pending the user's approval.** Four runners × one kata (`ferry-fare`) on Haiku. Start from F12's ~$0.0067 per braid kata run and scale by each framework's likely calls and context:
+- braid: ~$0.007–0.010 (20–30 single-turn calls; the exotic katas are new).
+- Strands Swarm: ~$0.015–0.03 (multi-turn tool loops that resend the history, cached by `AnthropicChatModel`; ~15–30 calls).
+- Agent SDK: ~$0.02–0.04 (a coordinator plus two subagents with Claude Code's tool schemas; ~20–40 calls, cached by the CLI). It is capped by `max_budget_usd=0.50`.
+- CrewAI: ~$0.02–0.05 (~10–30 calls, every one uncached).
+
+That comes to about **$0.06–0.13**; allow **$0.25**. Run `grade.py` on each output afterwards, which costs nothing, and fill in the README table.
+
 ---
 
 ## Open questions
