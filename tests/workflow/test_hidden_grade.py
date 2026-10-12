@@ -8,7 +8,7 @@ import re
 import subprocess
 import sys
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -168,8 +168,9 @@ async def test_the_summary_and_ledger_carry_the_grade(fixture_venv: Path, tmp_pa
     summary = ledger_line["summary"]
     assert summary["totals"]["green"] == 1 and summary["status"] == "kept"
     # the partial implementation passes the age-band and vehicle-fee cases and fails the rest
-    assert {k: summary[k] for k in bench.GRADE_FIELDS} == FARE_GRADE.fields()
+    assert {k: summary[k] for k in bench.GRADE_FIELDS} == {k: FARE_GRADE.fields()[k] for k in bench.GRADE_FIELDS}
     assert summary["hidden_total"] == collected_count(EXOTIC / "ferry-fare")
+    assert len(summary["hidden_failed"]) == FARE_GRADE.hidden_total - FARE_GRADE.hidden_passed  # which ones, by id
     # the summary file on disk says the same as the ledger
     written = bench.load_summaries(run.repo.parent)[("claude-haiku-5-5", "ferry-fare")]
     assert {k: written[k] for k in bench.GRADE_FIELDS} == {k: summary[k] for k in bench.GRADE_FIELDS}
@@ -246,7 +247,9 @@ async def test_grading_runs_in_the_sandbox_on_scratch_copies(fixture_venv: Path,
         assert (files_under(repo), files_under(ws.path)) == before  # the project's and the Workspace's tests unchanged
     finally:
         await ws.remove()
-    assert graded == FARE_GRADE
+    assert replace(graded, hidden_failed=()) == FARE_GRADE
+    assert len(graded.hidden_failed) == FARE_GRADE.hidden_total - FARE_GRADE.hidden_passed
+    assert all("::" not in t and not t.startswith("test_hidden") for t in graded.hidden_failed)  # bare ids
     # collect (against the reference), hidden suite, the model's suite on its own code, then one run per mutant
     assert len(sandbox.calls) == 3 + 5
     for command, cwd, policy, _seen in sandbox.calls:
@@ -288,6 +291,32 @@ async def test_code_that_does_not_import_scores_zero_of_the_whole_suite(fixture_
         await ws.remove()
     assert graded.hidden_passed == 0 and graded.hidden_total == collected_count(EXOTIC / "ferry-fare")
     assert graded.mutants_killed == 0  # no tests: nothing to kill a mutant with
+
+
+def test_failed_ids_come_from_the_short_summary() -> None:
+    output = (".F.E\n=== short test summary info ===\n"
+              "FAILED test_hidden.py::test_rounds[requests3-5-expected3] - assert [1, 2] == [2, 1]\n"
+              "FAILED test_hidden.py::test_elders_never_greedy\n"
+              "ERROR test_hidden.py::test_errors[requests0-3] - TypeError: boom\n"
+              "FAILED test_hidden.py::test_elders_never_greedy\n"
+              "2 failed, 1 passed, 1 error in 0.10s\n")
+    assert bench.failed_ids(output) == ("test_rounds[requests3-5-expected3]", "test_elders_never_greedy", "test_errors[requests0-3]")
+    assert bench.failed_ids("ERROR test_hidden.py - ImportError: cannot import name 'fare'\n") == ("test_hidden.py",)
+    assert bench.failed_ids("4 passed in 0.02s\n") == ()
+
+
+def test_the_report_lists_which_hidden_tests_failed_and_how_often() -> None:
+    graded = {"hidden_passed": 3, "hidden_total": 5, "mutants_killed": 2, "mutants_total": 5}
+    lines = [
+        line("x", "k", 1, 6, **graded, hidden_failed=["test_a[1]", "test_b"]),
+        line("x", "k", 2, 6, **graded, hidden_failed=["test_a[1]"]),
+        line("x", "k", 3, 6, **graded),  # an older line, graded before the ids were recorded: not counted
+        line("x", "j", 1, 6, **{**graded, "hidden_passed": 5}, hidden_failed=[]),
+    ]
+    table = bench.label_table(lines, "x")
+    assert "Hidden tests failed (runs failing each / runs recorded):\n- k: test_a[1] (2/2), test_b (1/2)" in table
+    assert "- j:" not in table
+    assert bench.hidden_failures([line("x", "k", 1, 6, **graded)], "x") == ""  # nothing recorded: no section
 
 
 def test_test_files_are_told_apart_from_code() -> None:

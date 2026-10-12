@@ -148,9 +148,17 @@ class Grade:
     hidden_total: int  # what the hidden suite collects against the reference, so code that cannot import scores 0/N
     mutants_killed: int  # mutants the model-written tests fail (pytest exit 1), counted only if they pass on the run's code
     mutants_total: int
+    hidden_failed: tuple[str, ...] = ()  # the hidden test ids that failed or errored, e.g. "test_rounds[3]"
 
-    def fields(self) -> dict[str, int]:
-        return asdict(self)
+    def fields(self) -> dict[str, Any]:
+        return {**asdict(self), "hidden_failed": list(self.hidden_failed)}
+
+
+def failed_ids(output: str) -> tuple[str, ...]:
+    """The test ids in pytest's short summary (``FAILED``/``ERROR`` lines, which ``-rfE`` asks for), without the file,
+    in order and without repeats. The output is tail-trimmed, and the summary is at its tail."""
+    found = re.findall(r"^(?:FAILED|ERROR) (?:\S*::)?(\S+?)(?: - .*)?$", output, flags=re.MULTILINE)
+    return tuple(dict.fromkeys(found))
 
 
 def is_test_file(path: str) -> bool:
@@ -207,7 +215,7 @@ async def grade(
 
     reference = kata / "reference" / f"{module}.py"
     collected = await run({**code, f"{module}.py": reference, HIDDEN_FILE: suite}, f"--collect-only {HIDDEN_FILE}")
-    graded = await run({**code, HIDDEN_FILE: suite}, HIDDEN_FILE)
+    graded = await run({**code, HIDDEN_FILE: suite}, f"-rfE {HIDDEN_FILE}")
     mutants = sorted((kata / "mutants").glob(f"{module}_m*.py"))
     killed = 0
     if (await run(finals)).exit_code == 0:  # a suite that fails on the run's own code tells no mutant apart
@@ -215,7 +223,7 @@ async def grade(
             result = await run({**finals, f"{module}.py": mutant})
             killed += result.exit_code == 1  # as in verify.py: a failing test, not a collection error or a timeout
     return Grade(_count(r"(\d+) passed", graded.output), _count(r"(\d+) tests? collected", collected.output),
-                 killed, len(mutants))
+                 killed, len(mutants), failed_ids(graded.output))
 
 
 # --- comparison -------------------------------------------------------------------------------------------------------
@@ -371,7 +379,27 @@ def label_table(lines: Sequence[Mapping[str, Any]], label: str) -> str:
     rows = [f"label {label}: {n} repeat(s)", "", "| kata | runs | result | hidden | self/hidden gap | mutants killed |",
             "|---|---|---|---|---|---|"]
     rows += [f"| {kata} | {s.n} | {_cell(s)} | {' | '.join(_hidden(s))} |" for kata, s in stats.items()]
-    return "\n".join([*rows, *notes, "", LEGEND, HIDDEN_LEGEND])
+    failures = hidden_failures(lines, label)
+    return "\n".join([*rows, *notes, "", LEGEND, HIDDEN_LEGEND, *(["", failures] if failures else [])])
+
+
+def hidden_failures(lines: Iterable[Mapping[str, Any]], label: str) -> str:
+    """Which hidden tests ``label``'s runs failed, per kata, with how many of its graded runs failed each. A test every
+    run fails points at one misreading of the goal (or a kata to fix); one run in three is the model's variance. Ledger
+    lines written before ``hidden_failed`` was recorded are left out of the counts."""
+    runs: dict[str, int] = defaultdict(int)
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for line in lines:
+        summary = line["summary"]
+        if line.get("label") != label or "hidden_failed" not in summary:
+            continue
+        key = line.get("pair", line["kata"])
+        runs[key] += 1
+        for test in summary["hidden_failed"]:
+            counts[key][test] += 1
+    rows = [f"- {kata}: " + ", ".join(f"{test} ({n}/{runs[kata]})" for test, n in sorted(tests.items(), key=lambda t: -t[1]))
+            for kata, tests in sorted(counts.items())]
+    return "\n".join(["Hidden tests failed (runs failing each / runs recorded):", *rows]) if rows else ""
 
 
 def compare_table(lines: Sequence[Mapping[str, Any]], label_a: str, label_b: str) -> str:

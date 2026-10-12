@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import Any
 
 import pytest
 
@@ -73,9 +74,9 @@ def runner_output(root: Path, module_source: Path | None, *, own_test: bool = Tr
     return out
 
 
-async def grade(out: Path, fixture_venv: Path) -> dict[str, int]:
+async def grade(out: Path, fixture_venv: Path) -> dict[str, Any]:
     graded = await grade_module().grade_dir(out, KATA, sandbox=LocalSandbox(), venv=fixture_venv)
-    fields: dict[str, int] = graded.fields()
+    fields: dict[str, Any] = graded.fields()
     return fields
 
 
