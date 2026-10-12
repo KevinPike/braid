@@ -8,6 +8,11 @@ Node names and routing follow ``examples/graphs/exec_graph.py``.
 
 Every conditional edge writes a Route record (F9, ADR 0008): the ``after_*`` functions return a ``Route`` naming the
 state field that decided it, and ``gate`` logs it. An edge an interrupt answer decides has a human basis.
+
+Each model call is made by a Role (F11): ``write_test`` by the tester, ``write_impl`` and ``polish`` by the implementer,
+``arbitrate`` by the Arbiter. Each Role has its own model, system prompt and View (``[workflow.roles]``); with none
+configured, both the tester and the implementer run on the run's model with ``prompts.SYSTEM`` and the ``full`` View, so
+every prompt is as it was before F11.
 """
 
 from __future__ import annotations
@@ -28,11 +33,11 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 
-from harness.config import WorkflowConfig
+from harness.config import Role, WorkflowConfig, arbiter_role, role_model, role_view
 from harness.sandbox import RunResult, Sandbox, Workspace
 from harness.tools.builtin import resolve_inside
 from harness.workflow import invariants as inv
-from harness.workflow import prompts
+from harness.workflow import prompts, views
 from harness.workflow.model import ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.records import Basis, BehaviorStats, Recorder, Route, RunLog, UsageMeter, tail
@@ -40,17 +45,22 @@ from harness.workflow.records import Basis, BehaviorStats, Recorder, Route, RunL
 EXECUTION = "tdd-v2-invariants"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
 
 
-def execution_variant(settings: WorkflowConfig) -> str:
-    """``EXECUTION`` plus the switches that change the graph's behavior, for the summary's provenance."""
-    return (EXECUTION + ("" if settings.check_tests_at_red else "/no-red-check") + ("" if settings.show_invariants else "/hidden-rules")
-            + (f"/arbiter={settings.arbiter}" if settings.arbiter else ""))
+def execution_variant(settings: WorkflowConfig, model: str | None = None) -> str:
+    """``EXECUTION`` plus the switches that change the graph's behavior, for the summary's provenance. Once the Roles are
+    separated (F11), each Role's model, effort and View: ``/tester=<model>[@effort]:<view>``; ``model`` is the run's."""
+    variant = EXECUTION + ("" if settings.check_tests_at_red else "/no-red-check") + ("" if settings.show_invariants else "/hidden-rules")
+    if settings.roles.separated:
+        for role in ("tester", "implementer"):
+            rm = role_model(settings, role, model or settings.anthropic_model)
+            variant += f"/{role}={rm.model}{f'@{rm.effort}' if rm.effort else ''}:{role_view(settings, role)}"
+    arbiter = arbiter_role(settings)
+    return variant + (f"/arbiter={arbiter.model}" if arbiter else "")
 
 
 RESERVED = {".git", ".venv", ".tmp", "__pycache__", ".pytest_cache"}
 PROBE_TIMEOUT_S = 30.0
 LAST: Literal["__end__"] = "__end__"  # equals langgraph END, which is typed as plain str
 YES = {"y", "yes", "ok", "looks good", "lgtm"}
-ROLE_OF = {"write_test": "tester", "arbitrate": "arbiter"}  # the Role whose calls a node makes; any other: implementer
 
 
 class FileEdit(BaseModel):
@@ -159,13 +169,23 @@ class _Loop:
     def __init__(
         self, model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
         hints: bool, recorder: Recorder, log: RunLog | None, arbiter: WorkflowModel | None = None,
+        tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
     ) -> None:
-        self.model, self.sandbox, self.ws, self.cfg = model, sandbox, workspace, settings
+        self.sandbox, self.ws, self.cfg = sandbox, workspace, settings
         self.hints, self.rec, self.runlog = hints, recorder, log
-        self.meter = UsageMeter(model)
         self.arbiter = arbiter  # F10: None leaves the graph as it was (no ``arbitrate`` node)
-        self.arbiter_meter = UsageMeter(arbiter) if arbiter is not None and arbiter is not model else None
-        self.arbiter_id = str(getattr(arbiter, "model_id", None) or settings.arbiter or "arbiter")
+        self.models: dict[Role, WorkflowModel | None] = {
+            "tester": tester or model, "implementer": implementer or model, "arbiter": arbiter,
+        }
+        # one meter per model object, so a model two Roles share is counted once
+        self.meters = {id(m): UsageMeter(m) for m in self.models.values() if m is not None}
+        self.asked: Role | None = None  # the Role of this node's model calls: its cost is counted under it
+        self.systems: dict[Role, str] = {
+            "tester": prompts.TESTER_SYSTEM if settings.roles.separated else prompts.SYSTEM,
+            "implementer": prompts.SYSTEM, "arbiter": prompts.ARBITER_SYSTEM,
+        }
+        role = arbiter_role(settings)
+        self.arbiter_id = str(getattr(arbiter, "model_id", None) or (role.model if role else None) or "arbiter")
         self.node_started = time.monotonic()
         venv_bin = workspace.path / ".venv" / "bin"
         self.env = {
@@ -176,9 +196,10 @@ class _Loop:
     # --- helpers -------------------------------------------------------------------------------------------
     def log(self, node: str, state: ExecState, **fields: Any) -> None:
         self.rec.trace.append(node)
-        calls = self.meter.take() + (self.arbiter_meter.take() if self.arbiter_meter else [])  # this node's API calls
-        usage = self.rec.add_usage(calls, state.get("idx"))  # the Arbiter's count toward the Spend cap too
-        self.rec.add_role(ROLE_OF.get(node, "implementer"), calls)
+        calls = [c for meter in self.meters.values() for c in meter.take()]  # this node's API calls
+        usage = self.rec.add_usage(calls, state.get("idx"))  # every Role's count toward the Spend cap
+        self.rec.add_role(self.asked or "implementer", calls)
+        self.asked = None
         if self.runlog:
             self.runlog.write(node, behavior=state.get("idx"), node_seconds=round(time.monotonic() - self.node_started, 2), **fields, **usage)
 
@@ -218,22 +239,35 @@ class _Loop:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(data)
 
-    async def context(self, state: ExecState) -> str:
+    async def context(self, state: ExecState, role: Role = "implementer") -> str:
+        """The Plan, the Behaviors so far and the files that matter, in ``role``'s View (F11): with ``interface``, each
+        implementation file is shown as its public interface only; tests and other files are shown whole."""
         plan = self.plan(state)
         files: dict[str, str] = {}
         for rel in dict.fromkeys([*plan.files, *state.get("edited", [])]):
             if (self.ws.path / rel).is_file():
                 files[rel] = (self.ws.path / rel).read_text(errors="replace")
-        return prompts.context(plan, state.get("idx", 0), await self.ws.list_files(), files, rules=self.cfg.show_invariants)
+        interface = role_view(self.cfg, role) == "interface"
+        if interface:
+            files = {rel: views.shown(rel, text) for rel, text in files.items()}
+        return prompts.context(plan, state.get("idx", 0), await self.ws.list_files(), files, rules=self.cfg.show_invariants,
+                               interface=interface)
 
-    async def ask[E: (Edits, ImplEdits, Ruling)](
-        self, prompt: str, schema: type[E], system: str = prompts.SYSTEM, model: WorkflowModel | None = None,
-    ) -> tuple[E | None, float, str]:
+    async def body_lines(self) -> set[str]:
+        """The lines of every function body in the Workspace's implementation files: what the ``interface`` View hides."""
+        rels = [rel for rel in await self.ws.list_files() if views.is_implementation(rel)]
+        return views.body_lines({rel: (self.ws.path / rel).read_text(errors="replace") for rel in rels})
+
+    async def ask[E: (Edits, ImplEdits, Ruling)](self, prompt: str, schema: type[E], role: Role) -> tuple[E | None, float, str]:
+        """One model call by ``role``: its model and its system prompt (F11)."""
         start = time.monotonic()
         edits: E | None = None
         error = ""
+        model = self.models[role]
+        assert model is not None
+        self.asked = role
         try:
-            edits = await (model or self.model).complete(system, prompt, schema)
+            edits = await model.complete(self.systems[role], prompt, schema)
         except WorkflowModelError as exc:
             error = str(exc)
         elapsed = time.monotonic() - start
@@ -366,8 +400,12 @@ class _Loop:
                        arbitrations=0)
         elif not state.get("revisit"):  # a rewrite starts from the Workspace as the Behavior found it
             await self.restore(state["snapshot"])  # so a rejected test file cannot linger
-        prompt = prompts.write_test(await self.context(cast(ExecState, {**state, **out})), idx, plan.behaviors[idx], state.get("hint", ""), "" if fresh else state.get("last_run", ""))
-        edits, elapsed, error = await self.ask(prompt, Edits)
+        rejected = "" if fresh else state.get("last_run", "")
+        if rejected and role_view(self.cfg, "tester") == "interface":  # pytest's tracebacks quote the implementation
+            rejected = views.redact(rejected, await self.body_lines())
+        prompt = prompts.write_test(await self.context(cast(ExecState, {**state, **out}), "tester"), idx, plan.behaviors[idx],
+                                    state.get("hint", ""), rejected)
+        edits, elapsed, error = await self.ask(prompt, Edits, "tester")
         written, refused = self.apply(edits, "tests")
         out["test_paths"] = [*written]
         out["test_owner"] = {**state.get("test_owner", {}), **{rel: idx for rel in written}}
@@ -468,7 +506,7 @@ class _Loop:
         prompt = prompts.write_impl(
             await self.context(state), behavior, state.get("hint", ""), state.get("last_run", ""), state.get("dispute_note", ""),
         )
-        edits, elapsed, error = await self.ask(prompt, ImplEdits)
+        edits, elapsed, error = await self.ask(prompt, ImplEdits, "implementer")
         written, refused = self.apply(edits, "impl")
         dispute = edits.dispute if edits is not None else None
         if edits is not None and not written and not refused and dispute is None:
@@ -559,8 +597,8 @@ class _Loop:
         path, source = self.disputed_file(state, test)
         prompt = prompts.arbitrate(plan, state["idx"], path or test, source or "(the test file was not found)", reason,
                                    state.get("last_run", ""))
-        ruling, elapsed, error = await self.ask(prompt, Ruling, prompts.ARBITER_SYSTEM, self.arbiter)
-        calls = (self.arbiter_meter or self.meter).peek()  # still this node's: ``log`` takes them below
+        ruling, elapsed, error = await self.ask(prompt, Ruling, "arbiter")
+        calls = self.meters[id(self.arbiter)].peek()  # still this node's: ``log`` takes them below
         served = calls[-1].served_model if calls and calls[-1].served_model else self.arbiter_id
         claim = {"model": served, "request_id": calls[-1].request_id if calls else None,
                  "thinking": "\n\n".join(c.thinking for c in calls if c.thinking)}
@@ -698,7 +736,7 @@ class _Loop:
     async def polish(self, state: ExecState) -> dict[str, Any]:
         round_ = state.get("polish_round", 0) + 1
         prompt = prompts.polish(await self.context(state), state.get("polish_feedback", ""))
-        edits, elapsed, error = await self.ask(prompt, Edits)
+        edits, elapsed, error = await self.ask(prompt, Edits, "implementer")
         before: dict[str, bytes | None] = {}
         written, refused = self.apply(edits, "impl", before)
         self.log(
@@ -826,12 +864,15 @@ class _Loop:
 def build_execution_graph(
     model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
     hints: bool = True, recorder: Recorder | None = None, log: RunLog | None = None, arbiter: WorkflowModel | None = None,
+    tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
 ) -> StateGraph[ExecState]:
     """The Execution loop as a LangGraph ``StateGraph``. ``hints=False`` is the baseline mode: Stuck skips the
     Behavior, ``clarify`` waives and Sign-off says yes (``finish`` still asks). ``recorder`` and ``log`` collect results.
-    ``arbiter`` (F10, ``backend.make_arbiter``) adds the ``arbitrate`` node; without it the graph is as in F3."""
+    ``arbiter`` (F10) adds the ``arbitrate`` node; without it the graph is as in F3. ``tester`` and ``implementer`` (F11)
+    are those Roles' models; each defaults to ``model``. ``backend.make_roles`` builds all three from config."""
     return _Loop(
         model, sandbox, workspace, settings, hints=hints, recorder=recorder or Recorder(), log=log, arbiter=arbiter,
+        tester=tester, implementer=implementer,
     ).graph()
 
 

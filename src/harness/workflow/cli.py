@@ -20,12 +20,12 @@ from pathlib import Path
 from typing import Any, TextIO, cast, get_args
 
 from harness.anthropic_api import make_client
-from harness.config import Effort, HarnessConfig, arbiter_role, load_config
+from harness.config import Effort, HarnessConfig, arbiter_role, load_config, role_view
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
 from harness.workflow import bench
-from harness.workflow.backend import Choice, choose, make_arbiter, make_model
+from harness.workflow.backend import Choice, RoleModels, choose, make_model, make_roles, own_models
 from harness.workflow.batch import BatchedWorkflowModel, Batcher
 from harness.workflow.execute import Ask, execution_variant, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
@@ -180,12 +180,15 @@ async def build_once(
     plan: Plan, project: Path, *, model: WorkflowModel, model_id: str, sandbox: Sandbox, config: HarnessConfig,
     hints: bool, ask: Ask, out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic,
     tty: bool | None = None, plan_path: Path | None = None, backend: str | None = None, bench_label: str | None = None,
-    run_id: str | None = None, arbiter: WorkflowModel | None = None,
+    run_id: str | None = None, arbiter: WorkflowModel | None = None, roles: RoleModels | None = None,
 ) -> BuildResult:
     """One Execution loop run; its summary carries the provenance (F2). ``backend`` defaults to the model id's.
-    ``arbiter`` defaults to the one ``[workflow] arbiter`` names (F10), if any."""
+    ``roles`` (F11) defaults to the Role models config names (``backend.make_roles``), the Arbiter (F10) among them;
+    ``arbiter`` replaces the Arbiter."""
     cfg = config.workflow
-    arbiter = arbiter if arbiter is not None else make_arbiter(config)
+    roles = RoleModels(**roles) if roles is not None else make_roles(config, model_id)
+    if arbiter is not None:
+        roles["arbiter"] = arbiter
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     run_id = run_id or f"{stamp}-{re.sub(r'[^A-Za-z0-9._-]', '_', model_id)}"
     backend = backend or choose(config, model=model_id).backend
@@ -194,15 +197,19 @@ async def build_once(
     log = RunLog(cfg.runs_dir.expanduser() / f"{run_id}.jsonl", listener=lambda record: progress.end(describe(record)))
     workspace = await Workspace.create(project, cfg.workspaces_dir.expanduser(), run_id)
     out.write(f"plan: {plan.goal}\nmodel: {model_id}\nworkspace: {workspace.path}\nrun log: {log.path}\n")
-    if arbiter is not None:
-        out.write(f"arbiter: {cfg.arbiter}, at most {cfg.max_arbitrations} per Behavior\n")
+    if cfg.roles.separated:  # F11
+        for role in ("tester", "implementer"):
+            used = roles.get(role)
+            out.write(f"{role}: {getattr(used, 'model_id', None) or model_id}, {role_view(cfg, role)} view\n")
+    if (judge := roles.get("arbiter")) is not None:
+        out.write(f"arbiter: {getattr(judge, 'model_id', None) or cfg.arbiter}, at most {cfg.max_arbitrations} per Behavior\n")
     if workspace.warning:
         out.write(f"warning: {workspace.warning}\n")
     synced = await workspace.sync_deps()
     if synced.exit_code != 0:
         err.write(f"uv sync --frozen failed:\n{synced.output}\n")
         return BuildResult(1, None, workspace, 0.0, None)
-    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log, arbiter=arbiter)
+    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log, **roles)
     seen ={"idx": 0, "total": len(plan.behaviors)}
 
     def on_start(node: str) -> None:
@@ -240,7 +247,7 @@ async def build_once(
         planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path, name=run_id,
         provenance=bench.provenance(
             plan, plan_path=plan_path, backend=backend, effort=cfg.effort if backend == "anthropic" else None,
-            max_attempts=cfg.max_attempts, execution=execution_variant(cfg), bench=bench_label,
+            max_attempts=cfg.max_attempts, execution=execution_variant(cfg, model_id), bench=bench_label,
         ),
     )
     status = final.get("status")
@@ -248,7 +255,7 @@ async def build_once(
         out.write(f"\ncancelled; Workspace kept at {workspace.path}\nsummary: {summary}\n")
         out.flush()
         return BuildResult(CANCELLED_EXIT, summary, workspace, rec.cost_usd, status)
-    out.write(final_report(rec, clock() - started) + f"\n\nstatus: {status}; polish {rec.polish}\nsummary: {summary}\n")
+    out.write(final_report(rec, clock() - started, by_role=cfg.roles.separated) + f"\n\nstatus: {status}; polish {rec.polish}\nsummary: {summary}\n")
     if status == "api_error":
         out.write(api_error_note(final["api_error"]) + f"; Workspace kept at {workspace.path}\n")
     out.flush()
@@ -410,7 +417,7 @@ async def bench_one(
         result = await build_once(
             plan, pair.project, model=model, model_id=cell.choice.model_id, sandbox=sandbox, config=run_config, hints=False,
             ask=lambda _p: "no", out=log_out, err=log_out, clock=clock, tty=False, plan_path=pair.plan,
-            backend=cell.choice.backend, bench_label=cell.label, run_id=run_id, arbiter=batched_arbiter(model, run_config),
+            backend=cell.choice.backend, bench_label=cell.label, run_id=run_id, roles=batched_roles(model, run_config),
         )
     finally:
         if isinstance(model, BatchedWorkflowModel):
@@ -446,6 +453,20 @@ def batched_arbiter(model: WorkflowModel, config: HarnessConfig) -> WorkflowMode
     if role is None or not isinstance(model, BatchedWorkflowModel):
         return None
     return BatchedWorkflowModel(model.lane, role.model, effort=role.effort)
+
+
+def batched_roles(model: WorkflowModel, config: HarnessConfig) -> RoleModels | None:
+    """A batched run's Role models (F11): each Role with a model or effort of its own, and the Arbiter, go through the
+    run's own lane. A lane is per run, not per model: a batch may mix models, and a run's calls are sequential whatever
+    Role makes them, so the lockstep is unchanged. None for an unbatched run: ``build_once`` makes the usual ones."""
+    if not isinstance(model, BatchedWorkflowModel):
+        return None
+    roles = RoleModels()
+    for role, rm in own_models(config.workflow, model.model_id).items():
+        roles[role] = BatchedWorkflowModel(model.lane, rm.model, effort=rm.effort)
+    if (arbiter := batched_arbiter(model, config)) is not None:
+        roles["arbiter"] = arbiter
+    return roles
 
 
 def hidden_note(summary: dict[str, Any]) -> str:
@@ -631,6 +652,9 @@ def grid_cells(
         efforts = [cast(Effort, e) for e in asked]
     if role := arbiter_role(config.workflow):
         require_pricing(role.model)  # F10: the Arbiter's calls count toward the Spend cap, so it needs a price too
+    for own in (config.workflow.roles.tester.model, config.workflow.roles.implementer.model):
+        if own:  # F11: so do the tester's and the implementer's
+            require_pricing(own)
     cells: list[Cell] = []
     for model in models:
         choice = choose(config, model=model, backend=args.backend)

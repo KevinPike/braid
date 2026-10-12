@@ -36,7 +36,7 @@ from harness.hooks import ApprovalRequested, ApprovalResolved, WorkflowInterrupt
 from harness.inspector import RunInspector
 from harness.sandbox import RunResult, Sandbox, SandboxPolicy, SeatbeltSandbox, Workspace
 from harness.status import StatusBar
-from harness.workflow.backend import choose, make_arbiter, make_model
+from harness.workflow.backend import choose, make_model, make_roles
 from harness.workflow.cli import api_error_note, cost_note, plan_id_for, show
 from harness.workflow.execute import build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel
@@ -596,12 +596,12 @@ class WorkflowPane:
                 workspace = await Workspace.attach(Path(info.project), Path(info.workspace))
                 await app.note(f"resuming {info.run_id} in {workspace.path}; run log: {log.path}")
             graph = build_execution_graph(
-                model, sandbox, workspace, wf, hints=info.hints, recorder=rec, log=log, arbiter=make_arbiter(app.config),
+                model, sandbox, workspace, wf, hints=info.hints, recorder=rec, log=log, **make_roles(app.config, info.model),
             )
 
             def finish(final: dict[str, Any], total: float) -> tuple[str, str]:
                 status = str(final.get("status"))
-                return final_report(rec, total) + f"\n\nstatus: {status}; polish {rec.polish}", status
+                return final_report(rec, total, by_role=wf.roles.separated) + f"\n\nstatus: {status}; polish {rec.polish}", status
 
             return _Setup(graph, initial_state(plan) if plan is not None else None, finish)
 
