@@ -289,7 +289,22 @@ The five katas are classics that are surely in training data, and the only grade
   - A mutant replaces `<module>.py` among all the final files, tests included. It is killed when the model-written tests exit 1 on it (as in verify.py). A suite that fails on the run's own code kills none. `mutants_total` is recorded too.
 - **Report.** When a label has graded runs, `report <label>` adds three columns: hidden pass rate, self/hidden gap and mutants killed. `--compare` adds one "hidden · gap · mutants" column per label. The gap follows CONTEXT.md: the count of graded runs Green on every Behavior that still fail a hidden test, shown as "1/3 runs". The total row counts the gap kata by kata, and it is graded only for repeats in which every kata was graded. Tables for older labels are unchanged, and older ledger lines load.
 - **Seatbelt.** A manual offline probe graded a Workspace with a real `.venv` under `SeatbeltSandbox` with the default `.venv/bin/python` test command: 22/46 hidden, 1/5 mutants, the same as the tests' `LocalSandbox`.
-- **Live check: pending user approval.** First run `make_katas.py`, which creates the exotic repos with `uv sync`; then `harness-workflow bench exotic --model claude-haiku-5-5 --repeat 3 --label baseline-exotic`.
+- **Live check (2026-10-12): `baseline-exotic`**, `claude-haiku-5-5`, 3 repeats, 18 runs, **$0.1249** ($0.0069 per kata run, matching `baseline-f1`'s $0.0067), about 1.1 minutes per run.
+
+  | kata | Green | hidden | self/hidden gap | mutants killed |
+  |---|---|---|---|---|
+  | ferry-fare | 6/6 | 45/46 (98%) | 3/3 runs | 4/5 |
+  | velm-calendar | 6/6 | 34/34 (100%) | 0/3 | 4/5 |
+  | rune-seal | 6/6 | 41/45 (91%) | 3/3 | 4/5 |
+  | orchard-score | 6/6 | 35/37 (95%) | 3/3 | 5/5 |
+  | ration-queue | 6/6 | 27/32 (84%) | 3/3 | 3/5 |
+  | stitch-markup | 6/6 | 39/39 (100%) | 0/3 | 5/5 |
+  | total | 36/36 | 95% | 12/18 runs | 25/30 |
+
+  - Every run went Green on every Behavior, with none Stuck, so self-tests alone would score this set as solved. The hidden tests disagree in 12 of 18 runs: Haiku's own tests pass while code it believes correct fails 1–5 hidden cases. This is the gap F7 was built to show. The "hard" label did not predict it: stitch-markup (hard) is clean, while ration-queue (hard) and rune-seal (medium) are the weakest.
+  - **Hidden scores are identical across repeats** (for example, ration-queue 27/32 in all three), though attempts and self-test counts vary. The likely cause is that, from the same GOAL.md and fixed `plan.json`, Haiku makes the same misreading each time. It is not confirmed: the summary keeps counts only, and the Workspace is removed after grading. Recording the failing hidden test ids in the summary would settle it for free.
+  - No run was Stuck, so on this set the Arbiter (F10) would never be called. Its live check needs Plans where Haiku gets Stuck (F3's disputed Plans), not the exotic set.
+  - Batch probe (F12 live check 1) passed the same day; see F12.
 
 ---
 
@@ -490,12 +505,12 @@ All of that with the Sonnet tester comes to **about $2.80**, or **about $4.35** 
 - **Concurrency.** With `--batch`, every run of the whole grid (all Cells, not one Cell at a time) goes at once, so a batch holds every waiting call. `--parallel N` limits that number; without `--batch` the default is 1, as before. Under concurrency, `--max-cost` still holds: each run starts with a Spend cap of the smaller of `max_cost_usd` and what is left after setting aside the caps of runs already going. A run that would get no cap waits for another run to end.
 - **Merge note.** This touches `cli.py`'s bench (`run_bench` → `run_grid`/`bench_one`) and `bench.py`'s report, not `model.py`. F10 has since added `claude-sonnet-5-5` and `claude-opus-5-5` to `PRICING`, so a sweep naming them runs (it no longer exits 2 with "no pricing"). The estimate below used 20× and 40× Haiku's input and output prices, which the F10 prices confirm; Opus 5.5's cache reads are $0.20, not 40× Haiku's, so cache-heavy Opus runs cost a little less than estimated.
 
-**Live checks: pending the user's approval.**
-1. **`output_config.format` in a batch** (unverified). Send one Haiku request through `BatchedWorkflowModel` with any schema: one batch, about $0.0001. If it comes back `errored`, the batched path needs a different way to get JSON before the sweep.
-2. **The sweep:** `harness-workflow bench exotic --models claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5 --effort low,medium --repeat 3 --batch --label frontier` (after F10's prices and F7's `make_katas.py`), then `report --frontier frontier-claude-haiku-5-5-low ...`. That is 36 runs.
+**Live checks.**
+1. **`output_config.format` in a batch: passed (2026-10-12).** One Haiku request through `BatchedWorkflowModel` with a two-field schema parsed cleanly. It took 1 batch and 75 s of wall time, used 260 input and 17 output tokens, and cost $0.000017 at batch prices; the `request_id` was `msgbatch_…/run1-1`. The batched path needs no other way to get JSON.
+2. **The sweep (pending the user's approval):** `harness-workflow bench exotic --models claude-haiku-5-5,claude-sonnet-5-5,claude-opus-5-5 --effort low,medium --repeat 3 --batch --label frontier` (after F10's prices and F7's `make_katas.py`), then `report --frontier frontier-claude-haiku-5-5-low ...`. That is 6 Cells × 6 katas × 3 repeats = 108 runs.
    - **Estimate.** `baseline-f1` cost $0.0334 per repeat of 5 katas, or $0.0067 per kata run on Haiku. F3's disputed Plans cost $0.0050–0.0059 per run. Six exotic katas therefore cost about $0.040 per repeat on Haiku, or $0.12 per Cell at standard prices. Sonnet 5.5's input and output prices are 20× Haiku's and Opus 5.5's are 40×, so a Cell costs about $2.40 on Sonnet and $4.80 on Opus.
    - For two efforts that is about $14.6 at standard prices, or **about $7.3 batched**. Allow up to about **$15**: the exotic katas are new and harder (F7 has no cost yet), batch cache hits are best effort, and effort changes thinking tokens.
-   - **Settings needed.** An Opus run would cost about $0.13 batched, which is over the default $0.10 Spend cap. Set `[workflow] max_cost_usd = 0.50`, and pass `--max-cost 20` so that all 36 runs fit under the bench's reservations at once.
+   - **Settings needed.** An Opus run would cost about $0.13 batched, which is over the default $0.10 Spend cap. Set `[workflow] max_cost_usd = 0.50`, and pass `--max-cost 20` so that all 108 runs fit under the bench's reservations at once.
    - **Time.** Each run makes about 20–30 sequential calls, and each call costs one batch round. Plan for it overnight.
 
 ---
