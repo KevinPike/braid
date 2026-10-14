@@ -2,6 +2,8 @@
 
 Planned 2026-10-13. This spec lets the chat agent, a skill (see `specs/skills-and-mcp.md`, a separate plan) and a **Workflow** node ask the human 1–4 structured questions and get the answers back. It is modelled on Claude Code's AskUserQuestion. Terms are from `CONTEXT.md`. Every gate is a pytest test with fakes: no network, no Ollama, no spend.
 
+
+**Status (2026-10-13): C1-C3 built, with the C4 parts the build pulled forward (ChoiceLog, `/choices`, `[ask]`, refused calls logged) and F17's hookups (MCP elicitation, skills).** Not built: the C4 stdin prompt, C5 (Workflow interrupt: `app.ask_choice(request, source="workflow:<run_id>")` is ready) and C6. Known limits: only 2-4 option enums and yes/no forms can be elicited; the secret-word check is a plain list (it refuses "which password hash").
 ## New term (to add to `CONTEXT.md` in C1)
 
 **Choice**:

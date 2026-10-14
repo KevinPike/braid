@@ -27,4 +27,4 @@ braid connects to MCP servers (stdio and Streamable HTTP) listed in `harness.tom
 - Some real servers need `paths` (an interpreter or cache under `~`) or `network = true` before they start under Seatbelt; the failure note says the command failed, and the log file says why.
 - `/mcp restart` and `/mcp trust` change the agent's tool list, which is part of the cached request prefix, so they cost a cache miss on the next turn. The set never changes otherwise.
 - The pin file is per user, not per project, and a server is identified by its name in `harness.toml`.
-- MCP tools are not available to **Workflows** (ADR 0004). Elicitation (a server asking the user a question) and braid as an MCP server are later milestones (F17, F18).
+- MCP tools are not available to **Workflows** (ADR 0004). Elicitation (a server asking the user a question) goes through a Choice (F17, ADR 0010), and braid as an MCP server is ADR 0013 (F18).

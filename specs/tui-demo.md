@@ -4,6 +4,8 @@ Drafted 2026-10-13 on the `openrouter` branch. Terms are from `CONTEXT.md`; one 
 
 Skills used while planning: `domain-modeling` (the Tape term, no new ADR needed), `codebase-design` (the replay seam), `prototype` (UI branch, for the per-call line), `tdd` (each gate is one test at an agreed seam).
 
+
+**Status (2026-10-13): D1 built** (`src/harness/replay.py`, `tests/demo/test_replay.py`; the `Tape` term is in CONTEXT.md). The offline `--demo choice` (src/harness/demo.py) exists from the Choice work, and the TUI now runs the OpenRouter catalog check before a run. D2-D7 are not started; D8 still needs an ADR 0009 amendment.
 ## 1. What the viewer walks away knowing
 
 1. **Any model, one flag.** A Workflow runs on Anthropic or on any OpenRouter `vendor/model` id, and the **Catalog** says beforehand what each costs and whether it can return structured output. If it can't, the run is refused before any call.

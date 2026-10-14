@@ -10,6 +10,8 @@ Skills loaded: `mattpocock-skills:writing-for-agents` (used for the SKILL.md and
 
 ---
 
+**Status (2026-10-13): F14-F18 built and gated** (ADRs 0011-0013; tests in `tests/skills`, `tests/mcp`). Not done: the status-bar flag for an unsandboxed MCP server, a real-server Ctrl-C check, the Seatbelt spike against real third-party MCP servers (needs network), a real MCP-client check of `harness-mcp` (needs the user's approval), and the daily spend total counts only MCP-started runs. Register the server with `claude mcp add braid -- uv run --directory <repo> --env-file .env harness-mcp`.
+
 ## Goals
 
 1. The chat agent sees every discovered skill as one line (name + description) and loads a body only when it, or the user with `/skill-name`, activates it.
