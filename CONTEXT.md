@@ -204,6 +204,14 @@ _Avoid_: Exception, override
 The model that runs the main loop: `claude-haiku-5-5` on the Anthropic API (ADR 0007); `gemma4:e4b` on the frozen Ollama path.
 _Avoid_: Main model, default model
 
+**Catalog**:
+The cached list of OpenRouter models (`~/.braid/openrouter-models.json`, 24 h) with their prices and supported parameters; a model without structured output is refused against it before any call (ADR 0009).
+_Avoid_: Model list, registry
+
+**Thinking sample**:
+The share of Workflow calls that keep thinking on (`[anthropic] thinking_sample`); the others send thinking disabled. Each call's draw is logged as `thinking_on`.
+_Avoid_: Thinking rate, debug mode
+
 **Decision layer**:
 The tev1 models that answer routing, compaction-trigger, policy and done-or-continue questions. Advisory only; never the sole check on a risky action.
 _Avoid_: Router, classifier
