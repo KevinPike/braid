@@ -186,4 +186,3 @@ class ProjectSandbox(NotASandboxLocalEnvironment):
 
 def build_shell(root: Path, *, network: bool = False) -> DecoratedFunctionTool[Any, Any]:
     return make_shell(sandbox=ProjectSandbox(root, network=network))
-
