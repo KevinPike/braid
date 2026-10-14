@@ -63,7 +63,7 @@ The SQLite record of what was dropped or summarized, when and why.
 _Avoid_: Compaction history
 
 **Prompt queue**:
-Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active, an approval is pending, or a **Workflow** run is active or waiting on a human.
+Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active, an approval is pending, a **Choice** is open, or a **Workflow** run is active or waiting on a human.
 _Avoid_: Backlog, pending messages
 
 **Approval**:

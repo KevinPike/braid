@@ -54,6 +54,12 @@ shell = true                  # every command needs TUI approval (ADR 0003) and 
 shell_network = false         # allow network access to sandboxed shell commands
 write = true                  # write_file; every write needs TUI approval
 approve = ["shell", "write_file"]   # tools gated by approval; these two are always gated
+ask = true                    # ask_user_question: the chat agent may put a Choice to you; it acts on nothing (ADR 0010)
+
+[ask]
+calls_per_turn = 3            # Choices the chat agent may open per prompt; later calls are refused
+refusals_per_turn = 2         # refused calls (bad shape, a confirmation) before the tool stops for the turn
+timeout_s = 0                 # 0 waits as an Approval does; otherwise the Choice times out and nothing is chosen
 
 [decide]
 enabled = true                # tev1 runs on Ollama, so the decision layer is off on the anthropic backend

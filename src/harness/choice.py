@@ -60,7 +60,7 @@ class Question(BaseModel):
 
 class ChoiceRequest(BaseModel):
     model_config = _STRICT
-    questions: Annotated[tuple[Question, ...], Field(min_length=1, max_length=4)]
+    questions: Annotated[tuple[Question, ...], Field(min_length=1, max_length=4, description="One to four questions, asked together.")]
 
     @model_validator(mode="after")
     def _deterministic_checks(self, info: ValidationInfo) -> Self:

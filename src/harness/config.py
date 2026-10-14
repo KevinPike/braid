@@ -81,11 +81,20 @@ class ToolsConfig(BaseModel):
     # Tools that need approval. `shell` and `write_file` are always in it, whatever the file says.
     approve: list[str] = ["shell", "write_file"]
     max_read_chars: int = 20_000
+    ask: bool = True  # ask_user_question: the chat agent may put a Choice to the user (ADR 0010); it acts on nothing
 
     @field_validator("approve")
     @classmethod
     def _always_gate_shell_and_write(cls, names: list[str]) -> list[str]:
         return list(dict.fromkeys([*names, "shell", "write_file"]))
+
+
+class AskConfig(BaseModel):
+    """Limits on Choices (ADR 0010): what the chat agent may ask the human per turn."""
+
+    calls_per_turn: int = 3  # past it the call is refused: "ask limit for this turn reached; decide or stop"
+    refusals_per_turn: int = 2  # after this many refusals the tool stops for the turn, without showing anything
+    timeout_s: float = 0.0  # 0 waits as an Approval does; past it the status is timed_out and nothing is chosen for the user
 
 
 class DecideConfig(BaseModel):
@@ -284,6 +293,10 @@ class PathsConfig(BaseModel):
         return self.resolved_data_dir / "decisions.db"
 
     @property
+    def choices_file(self) -> Path:
+        return self.resolved_data_dir / "choices.db"
+
+    @property
     def sessions_file(self) -> Path:
         return self.resolved_data_dir / "sessions.db"
 
@@ -315,6 +328,7 @@ class HarnessConfig(BaseModel):
     profile: ProfileConfig = ProfileConfig()
     context: ContextConfig = ContextConfig()
     tools: ToolsConfig = ToolsConfig()
+    ask: AskConfig = AskConfig()
     decide: DecideConfig = DecideConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
