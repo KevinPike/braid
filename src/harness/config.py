@@ -110,6 +110,16 @@ class AskConfig(BaseModel):
     timeout_s: float = 0.0  # 0 waits as an Approval does; past it the status is timed_out and nothing is chosen for the user
 
 
+class McpServerSideConfig(BaseModel):
+    """braid as an MCP server (F18, ADR 0013), the side ``harness-mcp`` serves. The client-side ``[mcp]`` is ``McpConfig``.
+    Spending tools ask a human through MCP elicitation; both ceilings clamp every run's Spend cap."""
+
+    max_cost_usd: float = Field(default=0.10, gt=0)  # per started run; a request above it is clamped and the clamp reported
+    daily_cost_usd: float = Field(default=1.00, ge=0)  # across all MCP-started runs, from the run index
+    confirm: Literal["elicit", "token"] = "elicit"  # "token": a quote, then a second call (the client's agent confirms; weaker)
+    backends: list[Literal["anthropic", "openrouter"]] = ["anthropic"]  # add "openrouter" to allow it
+
+
 class DecideConfig(BaseModel):
     """The tev1 decision layer (M4). Advisory only."""
 
@@ -344,6 +354,7 @@ class HarnessConfig(BaseModel):
     skills: SkillsConfig = SkillsConfig()
     ask: AskConfig = AskConfig()
     mcp: McpConfig = McpConfig()
+    mcp_server: McpServerSideConfig = McpServerSideConfig()
     decide: DecideConfig = DecideConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
