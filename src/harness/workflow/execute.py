@@ -379,8 +379,8 @@ class _Loop:
         return {"waived": state["failed"], "plan": plan.model_dump(), "answer": answer}
 
     def answered(self) -> Basis:
-        """An interrupt answer is a human's, except in a no-hints run, where code answers in their place."""
-        return "human" if self.hints else "code"
+        """An interrupt answer is a human's (or an MCP client's, ADR 0013), except in a no-hints run, where code answers."""
+        return self.rec.human if self.hints else "code"
 
     def after_clarify(self, state: ExecState) -> Route:
         to = LAST if state.get("status") == "aborted" else "check_assumptions"

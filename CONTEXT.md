@@ -161,7 +161,7 @@ A stronger model that rules on a **Dispute** no **Invariant** upholds: test wron
 _Avoid_: Judge, referee
 
 **Route record**:
-The run-log line every conditional edge writes: from, to, and the basis (code, model or human), with the deciding field and value. For a model basis it also has the model, request id, reason and thinking summary.
+The run-log line every conditional edge writes: from, to, and the basis (code, model, human or mcp-client), with the deciding field and value. For a model basis it also has the model, request id, reason and thinking summary.
 _Avoid_: Transition log, decision (that is the Decision log)
 
 **Role**:
@@ -215,6 +215,18 @@ _Avoid_: Lock, whitelist, signature
 **MCP prompt**:
 A prompt template an **MCP server** offers, run by the user as `/<server>:<prompt> key=value`; the rendered messages become the user turn. The model cannot call one.
 _Avoid_: Command, skill
+
+**braid as an MCP server**:
+`harness-mcp` (stdio), which offers the **Workflows** to a client such as Claude Code as `braid_*` tools. Reads are free; a started run needs a human's yes through MCP elicitation (or, in the weaker `confirm = "token"` mode, a quote the client's agent confirms) and is clamped by the **MCP ceilings**. A run that needs a human reports `waiting`; **Sign-off** and applying a diff are never possible over MCP (ADR 0013).
+_Avoid_: Braid API, remote control
+
+**MCP ceilings**:
+`[mcp_server] max_cost_usd` (per started run) and `daily_cost_usd` (all MCP-started runs since midnight, from the run index): a client's requested cost is clamped to the smaller figure, which becomes the run's **Spend cap**.
+_Avoid_: Budget (that is the `num_ctx` limit), quota
+
+**mcp-client**:
+The **Route record** basis for a route that a client's `braid_run_answer` decided, beside `code`, `model` and `human` (ADR 0008, 0013).
+_Avoid_: remote
 
 ### Isolation
 
