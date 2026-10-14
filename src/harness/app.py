@@ -37,6 +37,10 @@ from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
 from harness.decide.questions import check_policy, route, should_compact
 from harness.decide.tev import TevClient
+from harness.sandbox import SeatbeltSandbox
+from harness.skills.catalog import SkillCatalog, discover, skill_roots, tokens_of
+from harness.skills.plugin import SKILL_BODY_TOKENS, SKILL_TOOLS, SkillsPlugin, invocation_turn
+from harness.skills.scripts import SCRIPT_TOOL, build_run_skill_script
 from harness.tools.builtin import build_shell, build_tools, build_write_file
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, PreflightResult, run_preflight, system_gpu_limit
@@ -100,6 +104,9 @@ COMMANDS: dict[str, Command] = {
     "plan": Command("/plan <goal> | /plan --resume <run-id>", immediate=False),  # takes the GPU, so it waits for the running turn
     "build": Command("/build [plan-id] [--no-hints] [--model m] | /build --resume <run-id>", immediate=False),
     "runs": Command("/runs [run-id]", immediate=True),  # read-only
+    "skills": Command("/skills", immediate=True),  # read-only
+    # /skill-name works too: parse_command's fallback is the skill table, and the built-ins above win a clash (D8)
+    "skill": Command("/skill <name> [args]", immediate=False),  # a user turn, so it waits its turn in the Prompt queue
 }
 
 
@@ -157,6 +164,8 @@ class HarnessApp(App[None]):
         self.tev = tev
         self.store = store or SessionStore(config.paths.sessions_file if replier is None else ":memory:")
         self._startup_notes: list[str] = []
+        self.skills: SkillCatalog | None = self._discover_skills() if config.skills.enabled else None
+        self._skills_plugin: SkillsPlugin | None = None
         # The Anthropic backend (ADR 0007): no Guard, Preflight, Calibration or model swap; usage and cost come from the API.
         self._api = replier is None and config.profile.chat_backend == "anthropic"
         self._anthropic: anthropic.AsyncAnthropic | None = None
@@ -378,14 +387,26 @@ class HarnessApp(App[None]):
                 pass
         self.query_one(StatusBar).show_loading(None)
 
+    def _discover_skills(self) -> SkillCatalog:
+        cfg = self.config.skills
+        roots = skill_roots(cfg.roots, self.config.tools.root.resolve(), Path.home(), claude=cfg.claude_roots)
+        return discover(roots, max_index_tokens=cfg.max_index_tokens)
+
     def _make_agent(self, model: str) -> Agent:
         """An agent whose history is managed by the configured strategy (never Strands' silent default)."""
         cfg = self.config.context
         est = self.ledger.estimator
-        offloader = build_offloader(cfg, self.config.paths, self.trimlog, est)
-        gate = ApprovalGate(self.ask_approval, self._advise_policy, gated=self.config.tools.approve, hooks=self.hooks)
+        offloader = build_offloader(
+            cfg, self.config.paths, self.trimlog, est, keep=SKILL_TOOLS, keep_tokens=SKILL_BODY_TOKENS,
+        )
+        gate = ApprovalGate(
+            self.ask_approval, self._advise_policy, gated=self.config.tools.approve, hooks=self.hooks,
+            annotate=self._annotate_approval,
+        )
+        self._skills_plugin = SkillsPlugin(self.skills, trimlog=self.trimlog, estimator=est) if self.skills else None
+        plugins = [p for p in (offloader, self._skills_plugin) if p is not None]
         common: dict[str, Any] = dict(
-            plugins=[offloader] if offloader is not None else None,
+            plugins=plugins or None,
             tools=self._tools(),
             hooks=[gate],  # the write and shell tools are only ever registered on an agent that has this gate
         )
@@ -419,7 +440,19 @@ class HarnessApp(App[None]):
             tools.append(build_write_file(cfg.root))
         if cfg.shell:
             tools.append(build_shell(cfg.root, network=cfg.shell_network))
+        if self.skills:  # no skills, no tool schemas on every call
+            tools.append(build_run_skill_script(self.skills, SeatbeltSandbox(), cfg.root, timeout_s=self.config.skills.script_timeout_s))
         return tools
+
+    def _annotate_approval(self, tool: str, tool_input: Mapping[str, Any]) -> str:
+        """Provenance for an Approval prompt: where the skill came from, and what it declares (shown, never honoured)."""
+        if tool != SCRIPT_TOOL or self.skills is None or not self.skills.has(str(tool_input.get("name"))):
+            return ""
+        entry = self.skills.entry(str(tool_input["name"]))
+        lines = [f"skill source: {entry.tier} ({entry.dir})"]
+        if entry.allowed_tools:
+            lines.append(f"the skill declares allowed-tools: {' '.join(entry.allowed_tools)} (display only; it skips no Approval)")
+        return "\n".join(lines)
 
     @property
     def approval_pending(self) -> bool:
@@ -587,6 +620,8 @@ class HarnessApp(App[None]):
         if parsed is not None:
             name, _ = parsed
             command = COMMANDS.get(name)
+            if command is None and self.skills is not None and self.skills.has(name):
+                command = Command(f"/{name}", immediate=False)  # a skill, queued like any user turn
             if command is None:
                 await self._note(f"unknown command: /{name} (commands: {', '.join(c.usage for c in COMMANDS.values())})")
                 return
@@ -625,6 +660,47 @@ class HarnessApp(App[None]):
             await self._inspect_command(args)
         elif name in ("plan", "build", "runs"):
             await self.workflows.command(name, args)
+        elif name == "skills":
+            await self._skills_command()
+        elif name == "skill":  # reached only when the name did not resolve: a good one became a user turn in _generate
+            await self._note(f"/skill: no skill named {args.split(maxsplit=1)[0] if args else ''!r}; /skills lists them")
+
+    def _skill_turn(self, name: str, args: str) -> str | None:
+        """The user turn for ``/skill-name args`` or ``/skill name args``, or None if no skill by that name exists. A
+        built-in command of the same name never gets here: ``/skill`` is the only way to reach such a skill."""
+        if self.skills is None:
+            return None
+        if name == "skill":
+            name, _, args = args.partition(" ")
+        elif name in COMMANDS:
+            return None
+        if not self.skills.has(name):
+            return None
+        self.skills.reload()
+        if not self.skills.has(name):
+            return None
+        if self._agent is not None and self._skills_plugin is not None:
+            self._skills_plugin.activate(self._agent, name)
+        return invocation_turn(self.skills, name, args.strip())
+
+    async def _skills_command(self) -> None:
+        if self.skills is None:
+            await self._note("/skills: skills are off ([skills] enabled = false)")
+            return
+        self.skills.reload()
+        entries = self.skills.all_entries()
+        if not entries and not self.skills.notes:
+            await self._note("no skills found in " + ", ".join(str(r.path) for r in self.skills.roots))
+            return
+        index = tokens_of(len(self.skills.index_block()))
+        lines = [f"skills ({len(self.skills.index())} in effect, index ~{index} tokens of {self.skills.max_index_tokens}):"]
+        for e in entries:
+            body = f"~{self.ledger.estimator.tokens(e.body_chars)} tokens"
+            tools = f"  allowed-tools: {' '.join(e.allowed_tools)} (display only)" if e.allowed_tools else ""
+            state = f"shadowed by {e.shadowed_by}" if e.shadowed_by else body
+            lines.append(f"  {e.name}  [{e.tier}]  {state}{tools}")
+        lines += [f"  note: {n}" for n in self.skills.notes]
+        await self._note("\n".join(lines))
 
     async def _compact_command(self) -> None:
         if self.compactor is None:
@@ -897,7 +973,14 @@ class HarnessApp(App[None]):
 
     async def _generate(self, prompt: str, run_id: int) -> None:
         chat = self.query_one("#chat", VerticalScroll)
-        if parse_command(prompt) is not None:  # a queued slash command
+        sent = prompt  # what the model gets; a skill invocation expands to the skill's body and arguments
+        parsed = parse_command(prompt)
+        if parsed is not None:
+            skill_turn = self._skill_turn(*parsed)
+            if skill_turn is not None:
+                sent = skill_turn
+                parsed = None
+        if parsed is not None:  # a queued slash command
             try:
                 await self._run_command(prompt)
             except Exception as exc:
@@ -914,7 +997,7 @@ class HarnessApp(App[None]):
             await chat.mount(Static(f"you: {prompt}", classes="user", markup=False), reply)
             chat.scroll_end(animate=False)
             try:
-                async for delta in self._replier(prompt):
+                async for delta in self._replier(sent):
                     reply.feed(delta)
                     chat.scroll_end(animate=False)
             except Exception as exc:  # surface backend errors in the pane, don't crash the UI
@@ -929,7 +1012,7 @@ class HarnessApp(App[None]):
                 await reply.finish()
             if self._agent is None:  # test mode: the replier adds no messages itself
                 self.fake_messages.extend([
-                    {"role": "user", "content": [{"text": prompt}]},
+                    {"role": "user", "content": [{"text": sent}]},
                     {"role": "assistant", "content": [{"text": reply.text}]},
                 ])
             try:

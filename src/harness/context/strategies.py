@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from typing import Any
 
 import anthropic
@@ -78,12 +78,24 @@ class LoggedFileStorage:
         return await self._inner.retrieve(reference)
 
 
-def build_offloader(cfg: ContextConfig, paths: PathsConfig, trimlog: TrimLog, estimator: TokenEstimator) -> Plugin | None:
+def build_offloader(
+    cfg: ContextConfig, paths: PathsConfig, trimlog: TrimLog, estimator: TokenEstimator,
+    *, keep: Collection[str] = (), keep_tokens: int = 0,
+) -> Plugin | None:
+    """The offloader. Results of the ``keep`` tools stay in context up to ``keep_tokens`` (F15: a skill's body is the
+    instructions the model is working from, and a normal one is larger than ``offload_tokens``)."""
     if cfg.offload_tokens <= 0:
         return None
     preview = max(1, cfg.offload_tokens // 4)
     storage = LoggedFileStorage(str(paths.offload_dir), trimlog, estimator, preview)
-    return ContextOffloader(storage=storage, max_result_tokens=cfg.offload_tokens, preview_tokens=preview)
+
+    def should_offload(tool_name: str, token_count: int, **_: Any) -> bool:
+        return not (tool_name in keep and token_count <= keep_tokens)
+
+    return ContextOffloader(
+        storage=storage, max_result_tokens=cfg.offload_tokens, preview_tokens=preview,
+        should_offload=should_offload if keep else None,
+    )
 
 
 def build_conversation_manager(
