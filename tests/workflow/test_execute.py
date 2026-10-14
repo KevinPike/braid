@@ -18,6 +18,7 @@ from harness.workflow.cli import show
 from harness.workflow.invariants import Invariant
 from harness.workflow.model import WorkflowModel
 from harness.workflow.plan import Assumption, Plan
+from harness.workflow.triage import Triage
 from harness.workflow.records import Recorder, RunLog
 
 T = TypeVar("T", bound=BaseModel)
@@ -81,6 +82,7 @@ async def run_loop(
     behaviors: list[str] | None = None, assumptions: list[Assumption] | None = None, hints: bool = True,
     settings: WorkflowConfig | None = None, invariants: list[Invariant] | None = None, arbiter: WorkflowModel | None = None,
     sandbox: Sandbox | None = None, tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
+    triage: Triage | None = None,
 ) -> Run:
     ws = await Workspace.create(fixture_repo, tmp_path / "workspaces", "run1")
     (ws.path / ".venv").symlink_to(fixture_venv)
@@ -93,7 +95,7 @@ async def run_loop(
     log = RunLog(tmp_path / "runs" / "run1.jsonl")
     graph = build_execution_graph(
         model, sandbox or LocalSandbox(), ws, settings or WorkflowConfig(), hints=hints, recorder=rec, log=log, arbiter=arbiter,
-        tester=tester, implementer=implementer,
+        tester=tester, implementer=implementer, triage=triage,
     )
     payloads: list[dict[str, Any]] = []
 

@@ -70,7 +70,7 @@ async def test_a_text_reply_and_a_tool_round_trip_reach_the_chat_with_no_ollama_
     app = HarnessApp(config(tmp_path), anthropic_client=api.client())
     async with app.run_test() as pilot:
         await until(pilot, lambda: app._agent is not None)
-        assert app._client is None and app.tev is None and app.guard_state is None  # no Guard on this backend
+        assert app._client is None and app.decider is None and app.guard_state is None  # no Guard on this backend
         await send(app, pilot, "hi")
         await send(app, pilot, "what is in hello.txt?")
         replies = [r.text for r in app.query(Reply)]
@@ -162,3 +162,26 @@ async def test_a_resumed_api_session_is_adopted_once_and_continues_on_its_model(
         sent = api.bodies[0]["messages"]
         assert [m["role"] for m in sent] == ["user", "assistant", "user"]
         assert sent[1]["content"][0] == {"type": "thinking", "thinking": "", "signature": "s"}  # unedited history keeps it
+
+
+async def test_jev_is_opt_in_and_off_without_a_key(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from harness.decide.jev import JevDecider
+
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    off = HarnessApp(config(tmp_path), anthropic_client=FakeApi().client())
+    async with off.run_test() as pilot:
+        await until(pilot, lambda: off._agent is not None)
+        assert off.decider is None  # the default is "auto": nothing on the Anthropic backend
+
+    cfg = config(tmp_path)
+    cfg.decide.backend = "openrouter"
+    nokey = HarnessApp(cfg, anthropic_client=FakeApi().client())
+    async with nokey.run_test() as pilot:
+        await until(pilot, lambda: nokey._agent is not None)
+        assert nokey.decider is None
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-fake")  # gitleaks:allow
+    on = HarnessApp(cfg, anthropic_client=FakeApi().client())
+    async with on.run_test() as pilot:
+        await until(pilot, lambda: on._agent is not None)
+        assert isinstance(on.decider, JevDecider) and on.decider.model == "~typesafe/jev-latest"

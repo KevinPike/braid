@@ -41,6 +41,7 @@ from harness.workflow import prompts, views
 from harness.workflow.model import ApiFailure, WorkflowModel, WorkflowModelError
 from harness.workflow.plan import Plan
 from harness.workflow.records import Basis, BehaviorStats, Recorder, Route, RunLog, UsageMeter, tail
+from harness.workflow.triage import Triage
 
 EXECUTION = "tdd-v2-invariants"  # the graph variant, recorded in every summary (F2): change it when the graph's shape changes
 
@@ -120,6 +121,7 @@ class ExecState(TypedDict, total=False):
     dispute: dict[str, Any] | None  # the last Dispute on this Behavior and how the check went: shown at Stuck
     dispute_raised: dict[str, str] | None  # the Dispute in the last write_impl reply, until check_dispute reads it
     dispute_note: str  # a Dispute not upheld, for the next write_impl prompt
+    triage_note: str  # ADR 0014: the canned note for the kind of error the last Green run showed, for the next write_impl prompt
     revisit: dict[str, int] | None  # {"idx": earlier Behavior whose test is being fixed, "back": the one to return to}
     arbitrations: int  # F10: arbitrations for this Behavior, against ``max_arbitrations``
     ruling: dict[str, Any] | None  # the Arbiter's last Ruling with its model, request id and thinking: what its route reads
@@ -169,8 +171,9 @@ class _Loop:
     def __init__(
         self, model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
         hints: bool, recorder: Recorder, log: RunLog | None, arbiter: WorkflowModel | None = None,
-        tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
+        tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None, triage: Triage | None = None,
     ) -> None:
+        self.triage = triage  # ADR 0014: None leaves a failed run's output as the only thing the implementer sees
         self.sandbox, self.ws, self.cfg = sandbox, workspace, settings
         self.hints, self.rec, self.runlog = hints, recorder, log
         self.arbiter = arbiter  # F10: None leaves the graph as it was (no ``arbitrate`` node)
@@ -505,6 +508,7 @@ class _Loop:
         behavior = self.plan(state).behaviors[state["idx"]]
         prompt = prompts.write_impl(
             await self.context(state), behavior, state.get("hint", ""), state.get("last_run", ""), state.get("dispute_note", ""),
+            state.get("triage_note", ""),
         )
         edits, elapsed, error = await self.ask(prompt, ImplEdits, "implementer")
         written, refused = self.apply(edits, "impl")
@@ -647,8 +651,13 @@ class _Loop:
             self.log("run_green", state, attempt=state["attempts"], skipped="edit refused", exit_code=None)
             return {"passed": False}
         r = await self.pytest()  # the whole suite, so earlier Behaviors cannot regress
-        self.log("run_green", state, attempt=state["attempts"], **self.ran(r))
-        return {"passed": r.exit_code == 0 and not r.timed_out, "last_run": tail(r.output)}
+        passed = r.exit_code == 0 and not r.timed_out
+        triaged = await self.triage.classify("(the run timed out)\n" + r.output if r.timed_out else r.output) if self.triage and not passed else None
+        if triaged:
+            self.rec.add_decider_cost(triaged.cost_usd, state["idx"])
+        extra = {"triage": {"kind": triaged.kind, "p": round(triaged.p, 3), "noted": bool(triaged.note), "cost_usd": triaged.cost_usd}} if triaged else {}
+        self.log("run_green", state, attempt=state["attempts"], **self.ran(r), **extra)
+        return {"passed": passed, "last_run": tail(r.output), "triage_note": triaged.note if triaged else ""}
 
     def after_green(self, state: ExecState) -> Route:
         if state["passed"]:
@@ -697,7 +706,7 @@ class _Loop:
         stats.green = True
         stats.seconds = time.monotonic() - self.rec.behavior_started
         self.log("next_behavior", state, satisfied=stats.satisfied, seconds=round(stats.seconds, 2))
-        return {"idx": state["idx"] + 1, "attempts": 0, "phase": "impl", "hint": "", "last_run": "", "dispute": None, "dispute_note": ""}
+        return {"idx": state["idx"] + 1, "attempts": 0, "phase": "impl", "hint": "", "last_run": "", "dispute": None, "dispute_note": "", "triage_note": ""}
 
     def after_next(self, state: ExecState) -> Route:
         return Route("write_test" if state["idx"] < len(self.plan(state).behaviors) else "sign_off", "idx", state["idx"])
@@ -864,15 +873,16 @@ class _Loop:
 def build_execution_graph(
     model: WorkflowModel, sandbox: Sandbox, workspace: Workspace, settings: WorkflowConfig, *,
     hints: bool = True, recorder: Recorder | None = None, log: RunLog | None = None, arbiter: WorkflowModel | None = None,
-    tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None,
+    tester: WorkflowModel | None = None, implementer: WorkflowModel | None = None, triage: Triage | None = None,
 ) -> StateGraph[ExecState]:
     """The Execution loop as a LangGraph ``StateGraph``. ``hints=False`` is the baseline mode: Stuck skips the
     Behavior, ``clarify`` waives and Sign-off says yes (``finish`` still asks). ``recorder`` and ``log`` collect results.
     ``arbiter`` (F10) adds the ``arbitrate`` node; without it the graph is as in F3. ``tester`` and ``implementer`` (F11)
-    are those Roles' models; each defaults to ``model``. ``backend.make_roles`` builds all three from config."""
+    are those Roles' models; each defaults to ``model``. ``backend.make_roles`` builds all three from config. ``triage``
+    (ADR 0014) adds a canned note about the kind of error to the next implementation prompt; it never routes."""
     return _Loop(
         model, sandbox, workspace, settings, hints=hints, recorder=recorder or Recorder(), log=log, arbiter=arbiter,
-        tester=tester, implementer=implementer,
+        tester=tester, implementer=implementer, triage=triage,
     ).graph()
 
 

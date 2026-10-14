@@ -121,13 +121,22 @@ class McpServerSideConfig(BaseModel):
 
 
 class DecideConfig(BaseModel):
-    """The tev1 decision layer (M4). Advisory only."""
+    """The Decision layer (ADR 0003, 0014): a Decider answers typed questions with probabilities.
+
+    ``auto`` is tev1 on the Ollama backend and off elsewhere. ``openrouter`` is the opt-in Jev path: an API call that
+    costs a fraction of a cent, capped at ``max_cost_usd`` a session. Chat-side answers are advisory only; a Workflow
+    node may act on one only inside its own rules (ADR 0014)."""
 
     enabled: bool = True
-    model: str = "tev1:0.8b"
-    max_input_tokens: int = 1500
+    backend: Literal["auto", "ollama", "openrouter"] = "auto"
+    model: str = "tev1:0.8b"  # the Ollama Decider (frozen path)
+    openrouter_model: str = "~typesafe/jev-latest"
+    ask: list[Literal["policy", "compaction"]] = ["policy", "compaction"]  # what the chat asks an API Decider
+    max_input_tokens: int = 1500  # tev1's window; Jev's own cap is in decide/jev.py
     keep_alive: str = "5m"
-    compaction_advice_from: float = 0.8  # ask tev1 once the window is this full; the ceiling still decides alone
+    compaction_advice_from: float = 0.8  # ask once the window is this full; the ceiling still decides alone
+    timeout_s: float = Field(default=4.0, gt=0, le=10.0)  # an API Decider; under approval.ADVICE_TIMEOUT_S
+    max_cost_usd: float = Field(default=0.05, ge=0)  # per session; past it the API Decider turns itself off
 
 
 class TelemetryConfig(BaseModel):
@@ -209,6 +218,10 @@ class WorkflowConfig(BaseModel):
     arbiter_effort: Effort | None = None  # None leaves the Arbiter model's default
     max_arbitrations: int = 1  # per Behavior; past it a Dispute no Invariant upholds takes the code route (ADR 0008)
     roles: RolesConfig = RolesConfig()  # F11: a model, effort and View per Role; ``[workflow.roles.arbiter]`` wins over ``arbiter``
+    # ADR 0014: a Decider (Jev, `[decide] openrouter_model`) sorts a failed run into a kind of error and the implementer gets a
+    # canned note for it. Code still routes. Off by default; needs OPENROUTER_API_KEY, else the run goes without.
+    triage: bool = False
+    triage_min_p: float = Field(default=0.6, ge=0, le=1)  # below this probability there is no note
     max_polish_rounds: int = 1  # 0 skips Polish
     test_command: str = ".venv/bin/python -m pytest -q --no-header -p no:cacheprovider"
     lint_commands: list[str] = []  # each must exit 0 after Polish, or Polish is reverted

@@ -62,9 +62,15 @@ refusals_per_turn = 2         # refused calls (bad shape, a confirmation) before
 timeout_s = 0                 # 0 waits as an Approval does; otherwise the Choice times out and nothing is chosen
 
 [decide]
-enabled = true                # tev1 runs on Ollama, so the decision layer is off on the anthropic backend
-model = "tev1:0.8b"
+# ADR 0003, 0014: a Decider answers typed questions with probabilities. Advisory in the chat; error triage in a run picks a note.
+enabled = true
+backend = "auto"              # "auto": tev1 on the ollama backend, off elsewhere. "openrouter": Jev, an API call (needs OPENROUTER_API_KEY)
+model = "tev1:0.8b"          # the Ollama Decider (frozen path)
 max_input_tokens = 1500
+openrouter_model = "~typesafe/jev-latest"
+ask = ["policy", "compaction"]   # what the chat asks an API Decider
+timeout_s = 4.0               # per API call; advice is awaited before an Approval prompt shows
+max_cost_usd = 0.05           # per chat session; past it the API Decider stops
 
 [telemetry]
 enabled = false               # OTLP/HTTP traces and metrics; see harness/telemetry.py for a local collector
@@ -82,6 +88,8 @@ backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (d
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
 slow_call_s = 60.0           # warn once on stderr when one API request takes this long (0: never)
 max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
+# triage = true              # ADR 0014: Jev sorts a failed Green run into an error kind and the implementer gets a canned note (needs
+                              # OPENROUTER_API_KEY; the CLI and bench only for now). Code still routes. triage_min_p = 0.6 sets the cutoff.
 # arbiter = "claude-sonnet-5-5"   # F10: a stronger model rules on a Dispute no Invariant upholds (or claude-opus-5-5);
                               # unset, there is no arbitrate node. Its calls count toward the Spend cap
 # arbiter_effort = "medium"   # the Arbiter's effort; default leaves the model's own (Sonnet 5.5 high, Opus 5.5 medium)

@@ -28,16 +28,17 @@ PREVIEW_CHARS = 600
 
 @dataclass(frozen=True)
 class Advice:
-    """tev1's policy check: probability the action is safe, or why there is none. Advisory only."""
+    """A Decider's policy check (tev1 or Jev): probability the action is safe, or why there is none. Advisory only."""
 
     p_safe: float | None = None
     error: str = ""
+    source: str = "tev1"
 
     def line(self) -> str:
         if self.p_safe is None:
-            return f"tev1: unavailable ({self.error})" if self.error else "tev1: unavailable"
+            return f"{self.source}: unavailable ({self.error})" if self.error else f"{self.source}: unavailable"
         verdict = "safe" if self.p_safe >= 0.5 else "risky"
-        return f"tev1: {verdict} p={self.p_safe:.2f} (advisory)"
+        return f"{self.source}: {verdict} p={self.p_safe:.2f} (advisory)"
 
 
 @dataclass(frozen=True)
@@ -109,7 +110,9 @@ class ApprovalGate(HookProvider):
         advice_timeout: float = ADVICE_TIMEOUT_S,
         annotate: Annotator | None = None,
         requires_approval: Callable[[str], bool] | None = None,
+        advisor_name: Callable[[], str] = lambda: "tev1",
     ) -> None:
+        self.advisor_name = advisor_name
         self.approver = approver
         self.advisor = advisor
         self.gated = frozenset(gated) | ALWAYS_GATED  # configuration can add tools, never drop the two
@@ -127,8 +130,8 @@ class ApprovalGate(HookProvider):
         try:
             p = await asyncio.wait_for(self.advisor(tool, tool_input), self.advice_timeout)
         except Exception as exc:  # advice is optional: any failure just means "unavailable"
-            return Advice(error=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__)
-        return Advice(p_safe=p)
+            return Advice(error=f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__, source=self.advisor_name())
+        return Advice(p_safe=p, source=self.advisor_name())
 
     def _rule(self, *names: str) -> bool:
         return self.requires_approval is not None and any(self.requires_approval(n) for n in names)

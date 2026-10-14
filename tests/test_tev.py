@@ -11,15 +11,19 @@ from harness.context.compaction import Compactor
 from harness.context.ledger import CallRecord, Ledger
 from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
-from harness.decide.questions import ROUTER, check_policy, compaction_state, policy_state, route, should_compact
+from harness.decide.questions import POLICY, check_policy, compaction_state, policy_state, should_compact
 from harness.decide.tev import Noul, Score, TevClient, TevInputTooLarge, estimate_tokens
 from textual.widgets import Input, Static
 
 HOST = "http://ollama.test"
 URL = f"{HOST}/v1/systemone"
 
-ROUTE_REPLY = {"model": "tev1:0.8b", "usage": {"input_tokens": 120, "output_tokens": 3}, "answers": {
-    "route": {"type": "choice", "choice": "tool", "probabilities": {"chat": 0.2, "tool": 0.8}, "confidence": 0.4}}}
+ROUTE_REPLY = {"model": "tev1:0.8b", "usage": {"input_tokens": 120, "output_tokens": 3}, "answers": {"safe": {"type": "noul", "noul": 0.8}}}
+
+
+async def route(tev: TevClient, text: str) -> float:
+    """One policy question about ``text``: the state is the thing the tests make big, small or fail."""
+    return await check_policy(tev, "shell", {"command": text})
 
 
 @respx.mock
@@ -27,14 +31,13 @@ async def test_ask_sends_the_documented_shape_and_logs_probabilities() -> None:
     r = respx.post(URL).mock(return_value=httpx.Response(200, json=ROUTE_REPLY))
     log = DecisionLog()
     tev = TevClient(HOST, log=log)
-    choice, p = await route(tev, "list my files")
-    assert (choice, p) == ("tool", 0.8)
+    assert await route(tev, "ls") == 0.8
     body = json.loads(r.calls.last.request.content)
-    assert body["model"] == "tev1:0.8b" and body["state"] == "User request: list my files"
-    assert body["questions"]["route"]["type"] == "choice" and set(body["questions"]["route"]["criteria"]) == {"chat", "tool"}
+    assert body["model"] == "tev1:0.8b" and body["state"] == "Action: shell\ncommand: ls"
+    assert body["questions"]["safe"]["type"] == "noul"
     [d] = log.entries()
-    assert d.kind == "router" and d.input_tokens == 120 and d.answers["route"]["probabilities"] == {"chat": 0.2, "tool": 0.8}
-    assert "route=tool (0.80)" in d.line()
+    assert d.kind == "policy" and d.input_tokens == 120 and d.answers["safe"] == {"type": "noul", "noul": 0.8}
+    assert "safe=true@0.80" in d.line()
 
 
 @respx.mock
@@ -57,10 +60,10 @@ async def test_input_over_the_cap_is_summarized_first_never_sent_raw() -> None:
     log = DecisionLog()
     tev = TevClient(HOST, log=log, summarize=shorten)
     huge = "word " * 5000
-    await route(tev, huge)
+    await tev.ask("policy", huge, POLICY)
     sent = json.loads(r.calls.last.request.content)["state"]
     assert sent == "short version of the request" and seen and "word word" not in sent
-    questions_tokens = estimate_tokens(json.dumps({n: q.to_json() for n, q in ROUTER.items()}))
+    questions_tokens = estimate_tokens(json.dumps({n: q.to_json() for n, q in POLICY.items()}))
     assert estimate_tokens(sent) + questions_tokens <= 1500
     assert log.entries()[0].summarized
 
@@ -70,7 +73,7 @@ async def test_without_a_summarizer_oversized_input_is_refused_not_sent() -> Non
     r = respx.post(URL).mock(return_value=httpx.Response(200, json=ROUTE_REPLY))
     log = DecisionLog()
     with pytest.raises(TevInputTooLarge):
-        await route(TevClient(HOST, log=log), "word " * 5000)
+        await TevClient(HOST, log=log).ask("policy", "word " * 5000, POLICY)
     assert r.call_count == 0 and "TevInputTooLarge" in log.entries()[0].error
 
 
@@ -82,7 +85,7 @@ async def test_a_summary_that_is_still_too_long_is_refused() -> None:
         return text
 
     with pytest.raises(TevInputTooLarge, match="still"):
-        await route(TevClient(HOST, summarize=useless), "word " * 5000)
+        await TevClient(HOST, summarize=useless).ask("policy", "word " * 5000, POLICY)
     assert r.call_count == 0
 
 
@@ -178,18 +181,6 @@ async def test_slash_decisions_lists_the_log() -> None:
         await pilot.pause(0.2)
         shown = " ".join(str(w.render()) for w in app.query(Static))
     assert "router: route=chat (0.70)" in shown
-
-
-@respx.mock
-async def test_each_prompt_is_routed_and_logged_without_blocking_the_reply() -> None:
-    respx.post(URL).mock(return_value=httpx.Response(200, json=ROUTE_REPLY))
-    log = DecisionLog()
-    app = HarnessApp(HarnessConfig(), replier=_one, decisions=log, tev=TevClient(HOST, log=log))
-    async with app.run_test() as pilot:
-        app.query_one(Input).value = "list my files"
-        await pilot.press("enter")
-        await pilot.pause(0.3)
-    assert [d.kind for d in log.entries()] == ["router"]
 
 
 @respx.mock

@@ -37,8 +37,9 @@ from harness.context.ledger import Ledger
 from harness.context.strategies import build_conversation_manager, build_offloader, make_api_summarizer, make_summarizer
 from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
-from harness.decide.questions import check_policy, route, should_compact
-from harness.decide.tev import TevClient
+from harness.decide.questions import check_policy, should_compact
+from harness.decide.jev import JevDecider
+from harness.decide.tev import Decider, TevClient
 from harness.mcp.elicit import Elicitor
 from harness.mcp.hub import McpHub
 from harness.sandbox import SeatbeltSandbox
@@ -148,7 +149,7 @@ class HarnessApp(App[None]):
         trimlog: TrimLog | None = None,
         compactor: Compactor | None = None,
         decisions: DecisionLog | None = None,
-        tev: TevClient | None = None,
+        decider: Decider | None = None,
         store: SessionStore | None = None,
         resume: str | None = None,
         continue_last: bool = False,
@@ -171,7 +172,7 @@ class HarnessApp(App[None]):
         self.trimlog = trimlog or TrimLog(config.paths.trim_log_file if replier is None else ":memory:")
         self.compactor = compactor
         self.decisions = decisions or DecisionLog(config.paths.decisions_file if replier is None else ":memory:")
-        self.tev = tev
+        self.decider = decider
         self.choices = ChoiceLog(config.paths.choices_file if replier is None else ":memory:")
         self.store = store or SessionStore(config.paths.sessions_file if replier is None else ":memory:")
         self._startup_notes: list[str] = []
@@ -378,17 +379,34 @@ class HarnessApp(App[None]):
         self._pump()
 
     def _build_api_helpers(self, model: str) -> None:
-        """Compaction summarizes with the chat model on the API; the tev1 decision layer runs on Ollama, so it is off."""
+        """Compaction summarizes with the chat model on the API. The tev1 Decider runs on Ollama, so it is off here unless
+        ``[decide] backend = "openrouter"`` opts in to Jev (ADR 0014)."""
         assert self._anthropic is not None and self.meter is not None
         meter, cfg = self.meter, self.config.context
-        self.tev = None
+        self.decider = self._build_jev()
         self.compactor = None
         if cfg.strategy != "summarize":
             return
+        dec = self.config.decide
         self.compactor = Compactor(
             trimlog=self.trimlog, ledger=self.ledger, num_ctx=lambda: meter.state.context_window,
             summarize=make_api_summarizer(self._anthropic, model, meter),
             policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first), strip_thinking=True,
+            advisor=self._advise_compaction if self.decider is not None and "compaction" in dec.ask else None,
+            advise_from=dec.compaction_advice_from,
+        )
+
+    def _build_jev(self) -> JevDecider | None:
+        """The opt-in API Decider; off, with a note, when the key is missing. Never fails the boot (advice is optional)."""
+        dec = self.config.decide
+        if not dec.enabled or dec.backend != "openrouter":
+            return None
+        key = os.environ.get("OPENROUTER_API_KEY", "")
+        if not key:
+            self.run_worker(self._note("decision layer off: OPENROUTER_API_KEY is not set"), group="decide")
+            return None
+        return JevDecider(
+            key, dec.openrouter_model, log=self.decisions, timeout_s=dec.timeout_s, max_cost_usd=dec.max_cost_usd,
         )
 
     def _on_api_request(self, model: str, body: Mapping[str, Any]) -> None:
@@ -428,6 +446,7 @@ class HarnessApp(App[None]):
         gate = ApprovalGate(
             self.ask_approval, self._advise_policy, gated=self.config.tools.approve, hooks=self.hooks,
             annotate=self._annotate_approval, requires_approval=self.mcp.requires_approval if self.mcp else None,
+            advisor_name=lambda: "jev" if isinstance(self.decider, JevDecider) else "tev1",
         )
         self._skills_plugin = SkillsPlugin(self.skills, trimlog=self.trimlog, estimator=est) if self.skills else None
         plugins = [p for p in (offloader, self._skills_plugin) if p is not None]
@@ -597,7 +616,9 @@ class HarnessApp(App[None]):
 
     async def _advise_policy(self, tool: str, tool_input: Mapping[str, Any]) -> float | None:
         """tev1's policy check, as advice for the approval prompt only (None when the decision layer is off)."""
-        return await check_policy(self.tev, tool, tool_input) if self.tev is not None else None
+        if self.decider is None or ("policy" not in self.config.decide.ask and isinstance(self.decider, JevDecider)):
+            return None
+        return await check_policy(self.decider, tool, tool_input)
 
     async def _build_helpers(self, driver: str) -> None:
         """Summarizer (compaction and oversized tev1 input) and the tev1 client, each only when its model is pulled."""
@@ -612,7 +633,7 @@ class HarnessApp(App[None]):
             self._watchdog.mark_helper(model)
         summarizer = make_summarizer(client, model, num_ctx, self.ledger.estimator, unload_after=helper)
 
-        self.tev = None
+        self.decider = None
         dec = self.config.decide
         if dec.enabled and dec.model in pulled:
             async def shorten(text: str, budget: int) -> str:
@@ -620,7 +641,7 @@ class HarnessApp(App[None]):
 
             if self._watchdog is not None:
                 self._watchdog.mark_helper(dec.model)
-            self.tev = TevClient(
+            self.decider = TevClient(
                 self.config.ollama.host, dec.model, log=self.decisions, summarize=shorten,
                 max_input_tokens=dec.max_input_tokens, keep_alive=dec.keep_alive,
             )
@@ -635,20 +656,12 @@ class HarnessApp(App[None]):
         self.compactor = Compactor(
             trimlog=self.trimlog, ledger=self.ledger, num_ctx=lambda: client.pinned(driver) or 0,
             summarize=summarizer, policy=CompactionPolicy(cfg.ceiling, cfg.target, cfg.preserve_recent, cfg.pin_first),
-            advisor=self._advise_compaction if self.tev is not None else None, advise_from=dec.compaction_advice_from,
+            advisor=self._advise_compaction if self.decider is not None else None, advise_from=dec.compaction_advice_from,
         )
 
     async def _advise_compaction(self, used: int, num_ctx: int, growth: int, turns: int) -> float:
-        assert self.tev is not None
-        return await should_compact(self.tev, used=used, num_ctx=num_ctx, growth=growth, turns=turns)
-
-    async def _route(self, prompt: str) -> None:
-        """Advisory: the router's answer is logged (and shown); nothing acts on it until model routing in M10."""
-        assert self.tev is not None
-        try:
-            await route(self.tev, prompt)
-        except Exception:
-            pass  # TevClient.ask already put the failure in the Decision log
+        assert self.decider is not None
+        return await should_compact(self.decider, used=used, num_ctx=num_ctx, growth=growth, turns=turns)
 
     @property
     def _messages(self) -> list[Message]:
@@ -1186,8 +1199,6 @@ class HarnessApp(App[None]):
         if self._attached:  # resources pulled in with /mcp read ride on this turn
             sent = "\n\n".join([*self._attached, sent])
             self._attached.clear()
-        if self.tev is not None:
-            self.run_worker(self._route(prompt), name="route", group="decide")
         reply = Reply()
         try:
             await chat.mount(Static(f"you: {prompt}", classes="user", markup=False), reply)

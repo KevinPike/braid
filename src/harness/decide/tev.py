@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Protocol
 
 import httpx
 
@@ -21,6 +21,17 @@ CHARS_PER_TOKEN = 3.0
 MAX_QUESTIONS = 64
 
 Summarize = Callable[[str, int], Awaitable[str]]  # (text, budget in tokens) -> shorter text
+
+
+class Decider(Protocol):
+    """Anything that answers typed questions about a state with probabilities: tev1 on Ollama, or Jev on OpenRouter
+    (ADR 0014). Every call, failed ones too, lands in the Decision log, and a failure is re-raised."""
+
+    model: str
+
+    async def ask(
+        self, kind: str, state: str | Mapping[str, Any] | list[Any], questions: Mapping[str, Question]
+    ) -> dict[str, Answer]: ...
 
 
 class TevInputTooLarge(RuntimeError):

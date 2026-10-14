@@ -1,4 +1,4 @@
-"""Decision log: every tev1 question, the state it saw and the probabilities it returned."""
+"""Decision log: every Decider question, the state it saw and the probabilities it returned."""
 
 from __future__ import annotations
 
@@ -19,14 +19,15 @@ CREATE TABLE IF NOT EXISTS decisions (
     summarized INTEGER NOT NULL,
     input_tokens INTEGER,
     answers TEXT NOT NULL,
-    error TEXT NOT NULL DEFAULT ''
+    error TEXT NOT NULL DEFAULT '',
+    cost_usd REAL
 )
 """
 
 
 @dataclass(frozen=True)
 class Decision:
-    kind: str  # router | compaction | policy | ...
+    kind: str  # compaction | policy | a Workflow node's question
     model: str
     state: str
     answers: dict[str, dict[str, object]]
@@ -35,6 +36,7 @@ class Decision:
     error: str = ""
     at: datetime | None = None
     id: int | None = None
+    cost_usd: float | None = None  # the API deciders report it; tev1 runs locally
 
     def line(self) -> str:
         when = self.at.astimezone().strftime("%H:%M:%S") if self.at else "--:--:--"
@@ -52,6 +54,8 @@ class Decision:
             elif "score" in a:
                 parts.append(f"{name}=score {float(a['score']):.2f}")  # type: ignore[arg-type]
         text = f"{head}: {', '.join(parts)}"
+        if self.cost_usd is not None:
+            text += f" ${self.cost_usd:.6f}"
         if self.summarized:
             text += " [state summarized]"
         preview = self.state.replace("\n", " ")
@@ -68,6 +72,8 @@ class DecisionLog:
             path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(path))
         self._db.execute(_SCHEMA)
+        if "cost_usd" not in {row[1] for row in self._db.execute("PRAGMA table_info(decisions)")}:
+            self._db.execute("ALTER TABLE decisions ADD COLUMN cost_usd REAL")  # a log from before the API deciders
         self._now = now
         self._listeners: list[Callable[[Decision], None]] = []
 
@@ -77,22 +83,22 @@ class DecisionLog:
     def record(self, d: Decision) -> Decision:
         at = d.at or self._now()
         cur = self._db.execute(
-            "INSERT INTO decisions (at, kind, model, state, summarized, input_tokens, answers, error)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (at.isoformat(), d.kind, d.model, d.state, int(d.summarized), d.input_tokens, json.dumps(d.answers), d.error),
+            "INSERT INTO decisions (at, kind, model, state, summarized, input_tokens, answers, error, cost_usd)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (at.isoformat(), d.kind, d.model, d.state, int(d.summarized), d.input_tokens, json.dumps(d.answers), d.error, d.cost_usd),
         )
         self._db.commit()
-        saved = Decision(d.kind, d.model, d.state, d.answers, d.summarized, d.input_tokens, d.error, at, cur.lastrowid)
+        saved = Decision(d.kind, d.model, d.state, d.answers, d.summarized, d.input_tokens, d.error, at, cur.lastrowid, d.cost_usd)
         for listener in self._listeners:
             listener(saved)
         return saved
 
     def entries(self, limit: int | None = None) -> list[Decision]:
         rows = self._db.execute(
-            "SELECT id, at, kind, model, state, summarized, input_tokens, answers, error FROM decisions ORDER BY id"
+            "SELECT id, at, kind, model, state, summarized, input_tokens, answers, error, cost_usd FROM decisions ORDER BY id"
         ).fetchall()
         out = [
-            Decision(r[2], r[3], r[4], json.loads(r[7]), bool(r[5]), r[6], r[8], datetime.fromisoformat(r[1]), r[0])
+            Decision(r[2], r[3], r[4], json.loads(r[7]), bool(r[5]), r[6], r[8], datetime.fromisoformat(r[1]), r[0], r[9])
             for r in rows
         ]
         return out if limit is None else out[-limit:]

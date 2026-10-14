@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, TextIO, cast, get_args
 
 from harness.anthropic_api import make_client
+from harness.workflow.triage import make_triage
 from harness.config import Effort, HarnessConfig, arbiter_role, load_config, role_view, is_openrouter_id
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
@@ -233,7 +234,10 @@ async def build_once(
     if synced.exit_code != 0:
         err.write(f"uv sync --frozen failed:\n{synced.output}\n")
         return BuildResult(1, None, workspace, 0.0, None)
-    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log, **roles)
+    triage = make_triage(config)
+    if triage is not None:
+        out.write(f"triage: {config.decide.openrouter_model}, a note when p >= {cfg.triage_min_p}\n")
+    graph = build_execution_graph(model, sandbox, workspace, cfg, hints=hints, recorder=rec, log=log, triage=triage, **roles)
     seen ={"idx": 0, "total": len(plan.behaviors)}
 
     def on_start(node: str) -> None:

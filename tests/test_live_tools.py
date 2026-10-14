@@ -1,7 +1,7 @@
 """Validation gates M4.1 and M4.2 against a real Ollama (HARNESS_LIVE=1).
 
 Gate 1: on 20 prompts the daily driver picks the right tool (or none) in at least 16.
-Gate 2: the tev1 router agrees with the hand labels on at least 16, and every decision is logged.
+Gate 2 (the tev1 router eval) went with the route question (ADR 0014).
 """
 
 import json
@@ -13,9 +13,6 @@ import pytest
 from strands import Agent
 
 from harness.agent import GuardedOllamaModel
-from harness.decide.log import DecisionLog
-from harness.decide.questions import route
-from harness.decide.tev import TevClient
 from harness.guard.ollama_client import OllamaClient
 from harness.tools.builtin import build_tools
 
@@ -44,21 +41,3 @@ async def test_driver_picks_the_right_tool() -> None:
     await client.aclose()
     print(f"\ntool selection: {correct}/20")
     assert correct >= 16, f"{correct}/20 correct; misses: {misses}"
-
-
-async def test_tev1_router_agrees_with_hand_labels_and_logs_every_decision() -> None:
-    log = DecisionLog()
-    tev = TevClient(HOST, os.environ.get("HARNESS_TEV", "tev1:0.8b"), log=log)
-    correct, misses = 0, []
-    for case in PROMPTS:
-        label = "chat" if case["tool"] is None else "tool"
-        choice, _ = await route(tev, case["prompt"])
-        if choice == label:
-            correct += 1
-        else:
-            misses.append((case["prompt"], label, choice))
-    await tev.aclose()
-    entries = log.entries()
-    assert len(entries) == 20 and all(e.answers["route"]["probabilities"] for e in entries)
-    print(f"\nrouter agreement: {correct}/20")
-    assert correct >= 16, f"{correct}/20 agree; misses: {misses}"

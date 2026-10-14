@@ -113,6 +113,17 @@ class Recorder:
             tally["calls"] += len(calls)
             tally["cost_usd"] += sum(c.cost_usd for c in calls)
 
+    def add_decider_cost(self, cost: float, behavior: int | None = None) -> None:
+        """A Decider's cost (ADR 0014): it counts toward the Spend cap and the Behavior, under the role ``decider``."""
+        if cost <= 0:
+            return
+        tally = self.roles.setdefault("decider", {"calls": 0, "cost_usd": 0.0})
+        tally["calls"] += 1
+        tally["cost_usd"] += cost
+        self.cost_usd += cost
+        if behavior is not None and 0 <= behavior < len(self.behaviors):
+            self.behaviors[behavior].cost_usd += cost
+
     def add_usage(self, calls: Sequence[ApiCall], behavior: int | None = None) -> dict[str, Any]:
         """Count API ``calls`` toward the totals (and Behavior ``behavior``'s cost); returns the run-log fields for the
         node that made them. Empty (so the line is unchanged) when there were none, as in every Ollama run. ``thinking``

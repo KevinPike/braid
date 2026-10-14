@@ -75,7 +75,7 @@ A set of one to four questions that a model or a **Workflow** node puts to the h
 _Avoid_: Question (taken by the Plan's open questions and tev1's), confirmation, prompt
 
 **Policy check**:
-The tev1 question "is this action safe to run in the project folder?", shown on the **Approval** prompt as advice and logged in the Decision log. Never skips the **Approval**.
+The **Decider** question "is this action safe to run in the project folder?", shown on the **Approval** prompt as advice and logged in the Decision log. Never skips the **Approval**.
 _Avoid_: Safety check, guardrail
 
 **Hook events**:
@@ -261,8 +261,16 @@ The share of Workflow calls that keep thinking on (`[anthropic] thinking_sample`
 _Avoid_: Thinking rate, debug mode
 
 **Decision layer**:
-The tev1 models that answer routing, compaction-trigger, policy and done-or-continue questions. Advisory only; never the sole check on a risky action.
+The **Deciders** the harness asks typed questions: policy and compaction-trigger in the chat, error triage in an Execution run (ADR 0014). In the chat advisory only; never the sole check on a risky action. In a **Workflow** a Decider picks from a fixed list and code still routes.
 _Avoid_: Router, classifier
+
+**Decider**:
+A model that answers Choice, Noul and Score questions about a state with probabilities and no free text: tev1 on Ollama (frozen path) or Jev on OpenRouter (opt-in). Every question and answer lands in the Decision log, with its cost.
+_Avoid_: Router, classifier, judge (the Arbiter judges)
+
+**Error triage**:
+A **Decider** sorts a failed Green run into one of a fixed set of error kinds, and the kind picks a canned note for the next implementation prompt. Never routes; below the probability threshold, or on a failure, there is no note.
+_Avoid_: Diagnosis, auto-fix
 
 **Profile**:
 The set of models, roles and starting `num_ctx` values in `braid.toml`.

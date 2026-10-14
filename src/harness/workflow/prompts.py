@@ -89,7 +89,7 @@ DISPUTE_RULE = (
 )
 
 
-def write_impl(ctx: str, behavior: str, hint: str, last_run: str, dispute_note: str = "") -> str:
+def write_impl(ctx: str, behavior: str, hint: str, last_run: str, dispute_note: str = "", triage_note: str = "") -> str:
     prompt = (
         f"{ctx}\n\nTask: make the tests pass by editing the implementation (not the tests). Current behavior: {behavior}\n"
         "Write the SMALLEST change that makes the tests pass. Do not handle cases no test covers yet; later behaviors will "
@@ -98,6 +98,8 @@ def write_impl(ctx: str, behavior: str, hint: str, last_run: str, dispute_note: 
     )
     if dispute_note:
         prompt += f"\n\n{dispute_note}"
+    if triage_note:
+        prompt += f"\n\n{triage_note}"
     if hint:
         prompt += f"\n\nA human hint: {hint}"
     return prompt
