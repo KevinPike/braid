@@ -202,6 +202,20 @@ _Avoid_: Skill list, skill catalog (the catalog is the code that builds it)
 A small **Workflow** written as YAML in `.braid/graphs/` and run with `/run` (F6, not built yet). Renamed from "skills" on 2026-10-13 so that **Skill** means only a `SKILL.md` directory.
 _Avoid_: Skill (for a YAML graph), script
 
+### MCP
+
+**MCP server**:
+A third-party process (stdio, run in the **Sandbox**) or endpoint (Streamable HTTP) that `harness.toml` lists under `[mcp.servers.*]` and whose tools reach the chat agent as `mcp__<server>__<tool>`. Its descriptions and results are untrusted text: every call needs an **Approval** unless the server's `allow` names the tool, its environment is built from scratch (no harness key), and its stderr goes to a log file. A failure is a note, not a crash. `/mcp` shows the state.
+_Avoid_: Plugin, extension, connector
+
+**Pin**:
+The hash of an **MCP server** tool's name, description and input schema, stored in `~/.braid/mcp-pins.json` the first time the tool is seen. A later connect that finds a different hash disables the tool until `/mcp trust <server>`.
+_Avoid_: Lock, whitelist, signature
+
+**MCP prompt**:
+A prompt template an **MCP server** offers, run by the user as `/<server>:<prompt> key=value`; the rendered messages become the user turn. The model cannot call one.
+_Avoid_: Command, skill
+
 ### Isolation
 
 **Workspace**:
