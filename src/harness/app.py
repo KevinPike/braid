@@ -7,6 +7,7 @@ import argparse
 import asyncio
 import json
 import os
+import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,7 +29,8 @@ from textual.worker import Worker
 from harness.agent import AnthropicChatModel, build_agent, build_api_agent, stream_reply
 from harness.anthropic_api import find_failure, make_client
 from harness.approval import APPLY_WORKSPACE, ApprovalGate, ApprovalRequest
-from harness.chat import AlertBanner, ApprovalPrompt, ContextPanel, Reply
+from harness.chat import AlertBanner, ApprovalPrompt, ChoicePrompt, ContextPanel, Reply
+from harness.choice import ChoiceLog, ChoiceRecord, ChoiceRequest, ChoiceResult
 from harness.config import HarnessConfig, load_config
 from harness.context.compaction import CompactionPolicy, Compactor, message_text
 from harness.context.ledger import Ledger
@@ -41,12 +43,13 @@ from harness.sandbox import SeatbeltSandbox
 from harness.skills.catalog import SkillCatalog, discover, skill_roots, tokens_of
 from harness.skills.plugin import SKILL_BODY_TOKENS, SKILL_TOOLS, SkillsPlugin, invocation_turn
 from harness.skills.scripts import SCRIPT_TOOL, build_run_skill_script
+from harness.tools.ask import AskLimits, build_ask_tool
 from harness.tools.builtin import build_shell, build_tools, build_write_file
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, PreflightResult, run_preflight, system_gpu_limit
 from harness.guard.watchdog import GuardState, Level, Watchdog
 from harness.hooks import (
-    CallRecorded, DecisionRecorded, GuardStateChanged, HarnessHooks, ModelCallCompleted,
+    CallRecorded, ChoiceRequested, ChoiceResolved, DecisionRecorded, GuardStateChanged, HarnessHooks, ModelCallCompleted,
     ModelRequestSent, QueueChanged, TrimRecorded,
 )
 from harness.debuglog import DebugLog
@@ -96,6 +99,7 @@ COMMANDS: dict[str, Command] = {
     "trims": Command("/trims", immediate=True),  # read-only
     "tools": Command("/tools", immediate=True),
     "decisions": Command("/decisions", immediate=True),
+    "choices": Command("/choices", immediate=True),  # read-only
     "sessions": Command("/sessions", immediate=True),  # read-only
     "resume": Command("/resume <id>", immediate=False),  # swaps the history, so it waits for the running turn
     "fork": Command("/fork [id]", immediate=False),
@@ -154,7 +158,9 @@ class HarnessApp(App[None]):
         self._telemetry = setup_telemetry(config.telemetry, self.hooks)  # None unless [telemetry] enabled
         self._approvals_waiting = 0
         self._pauses_waiting = 0  # Workflow questions open in the chat log; like an Approval, each holds the Prompt queue
-        self._approval_lock = asyncio.Lock()
+        self._choices_waiting = 0  # Choices open in the chat log; like an Approval, each holds the Prompt queue (ADR 0010)
+        self._human_lock = asyncio.Lock()  # one human widget at a time, an Approval or a Choice, in call order
+        self._clock: Callable[[], float] = time.monotonic  # the Choice log's latency; a test sets a fake
         self.workflows = WorkflowPane(self, workflows)
         self.debug_log = debug_log or (DebugLog(config.paths.status_log_file) if replier is None else None)
         self.workflows.debug = self.debug_log
@@ -162,6 +168,7 @@ class HarnessApp(App[None]):
         self.compactor = compactor
         self.decisions = decisions or DecisionLog(config.paths.decisions_file if replier is None else ":memory:")
         self.tev = tev
+        self.choices = ChoiceLog(config.paths.choices_file if replier is None else ":memory:")
         self.store = store or SessionStore(config.paths.sessions_file if replier is None else ":memory:")
         self._startup_notes: list[str] = []
         self.skills: SkillCatalog | None = self._discover_skills() if config.skills.enabled else None
@@ -224,6 +231,7 @@ class HarnessApp(App[None]):
         self.hooks.add_callback(ModelCallCompleted, self._on_call_done)
         self.hooks.add_callback(TrimRecorded, self._on_trim)
         self.hooks.add_callback(DecisionRecorded, self._on_decision)
+        self.hooks.add_callback(ChoiceResolved, self._on_choice)
 
     def compose(self) -> ComposeResult:
         yield StatusBar("")
@@ -271,6 +279,9 @@ class HarnessApp(App[None]):
             await self._boot_api()
         if self._client is None and not self._api and self._resume_info is not None:  # real mode adopts it once the model is loaded
             await self._adopt(self._resume_info)
+
+    def _on_choice(self, event: ChoiceResolved) -> None:
+        self.choices.add(event.record)
 
     def _on_trim(self, event: TrimRecorded) -> None:
         self.call_later(self._note, f"trim {event.entry.line()}")
@@ -442,6 +453,10 @@ class HarnessApp(App[None]):
             tools.append(build_shell(cfg.root, network=cfg.shell_network))
         if self.skills:  # no skills, no tool schemas on every call
             tools.append(build_run_skill_script(self.skills, SeatbeltSandbox(), cfg.root, timeout_s=self.config.skills.script_timeout_s))
+        if cfg.ask:  # acts on nothing, so it needs no Approval (ADR 0010)
+            ask = self.config.ask
+            tools.append(build_ask_tool(
+                self.ask_choice, AskLimits(ask.calls_per_turn, ask.refusals_per_turn), turn=lambda: self._run_id))
         return tools
 
     def _annotate_approval(self, tool: str, tool_input: Mapping[str, Any]) -> str:
@@ -464,7 +479,7 @@ class HarnessApp(App[None]):
         self._approvals_waiting += 1
         self._refresh_queue_label()
         try:
-            async with self._approval_lock:  # one prompt at a time, so several tool calls from one turn line up
+            async with self._human_lock:  # one prompt at a time, so several tool calls from one turn line up
                 prompt = ApprovalPrompt(request)
                 outcome = "cancelled"
                 previous = self.focused
@@ -480,6 +495,48 @@ class HarnessApp(App[None]):
                     await self._collapse(prompt, f"{'✓' if outcome == 'approved' else '✗'} {request.label()}? {outcome}", previous)
         finally:
             self._approvals_waiting -= 1
+            self._pump()
+
+    async def ask_choice(self, request: ChoiceRequest, source: str = "chat") -> ChoiceResult:
+        """The TUI Asker (ADR 0010): mount a Choice in the chat log and wait for the human. While it is open the queue is
+        held, and it shares the human lock with Approvals, so the two never show together and neither answers the other.
+        A user outcome (declined, cancelled, timed out) is a result, never an exception; the one-line record replaces the
+        widget and the Choice log gets a row."""
+        from_workflow = source.startswith("workflow:")
+        model = "code" if from_workflow else self._model_name
+        if not from_workflow and not self.generating:  # Ctrl-C raced the end of the stream: nobody is waiting for it
+            return ChoiceResult(status="cancelled", reason="the turn was cancelled")
+        self._choices_waiting += 1
+        self._refresh_queue_label()
+        try:
+            async with self._human_lock:
+                if not from_workflow and not self.generating:  # cancelled while it queued behind another widget
+                    return ChoiceResult(status="cancelled", reason="the turn was cancelled")
+                prompt = ChoicePrompt(request, model, source)
+                previous = self.focused
+                chat = self.query_one("#chat", VerticalScroll)
+                await chat.mount(prompt)
+                chat.scroll_end(animate=False)
+                prompt.focus()
+                self.hooks.publish(ChoiceRequested(request, source, model))
+                started = self._clock()
+                result = ChoiceResult(status="cancelled")
+                try:
+                    timeout = self.config.ask.timeout_s or None
+                    try:
+                        result = await asyncio.wait_for(prompt.answer(), timeout)
+                    except TimeoutError:
+                        result = ChoiceResult(status="timed_out", reason=f"no answer within {timeout:g} s; nothing was chosen")
+                    return result
+                finally:
+                    seconds = self._clock() - started
+                    try:
+                        self.hooks.publish(ChoiceResolved(ChoiceRecord(source, model, request, result, seconds)))
+                    except Exception:  # a listener must not stop the widget collapsing
+                        pass
+                    await asyncio.shield(self._collapse(prompt, prompt.record(result, seconds), previous))  # a second cancel must not skip the record
+        finally:
+            self._choices_waiting -= 1
             self._pump()
 
     async def _collapse(self, widget: Widget, record: str, previous: Widget | None) -> None:
@@ -594,6 +651,8 @@ class HarnessApp(App[None]):
             label = f"paused · {n} queued · Enter resumes, Esc clears"
         elif n and self.approval_pending:
             label = f"{n} queued · held by approval"
+        elif n and self._choices_waiting:
+            label = f"{n} queued · held by a choice"
         elif n and self._pauses_waiting:
             label = f"{n} queued · held by workflow question"
         elif n and self.held_by_alert:
@@ -648,6 +707,8 @@ class HarnessApp(App[None]):
             await self._tools_command()
         elif name == "decisions":
             await self._decisions_command()
+        elif name == "choices":
+            await self._choices_command()
         elif name == "sessions":
             await self._sessions_command()
         elif name == "resume":
@@ -725,6 +786,13 @@ class HarnessApp(App[None]):
         costs = {name: est.tokens(len(json.dumps(spec, sort_keys=True))) for name, spec in specs.items()}
         lines = [f"{name}: ~{n} tokens" for name, n in sorted(costs.items(), key=lambda kv: -kv[1])]
         await self._note(f"tool schemas cost ~{sum(costs.values())} tokens on every call:\n" + "\n".join(lines))
+
+    async def _choices_command(self) -> None:
+        rows = self.choices.entries(limit=20)
+        if not rows:
+            await self._note("choice log is empty")
+            return
+        await self._note("choice log (most recent last):\n" + "\n".join(r.line() for r in rows))
 
     async def _decisions_command(self) -> None:
         entries = self.decisions.entries(limit=20)
@@ -959,7 +1027,7 @@ class HarnessApp(App[None]):
 
     def _pump(self) -> None:
         """Start the next queued prompt if idle, not paused, no approval is pending and no red Alert is active."""
-        if self._busy or self.approval_pending or self._pauses_waiting or self.workflows.running or self.held_by_alert or ((self._client is not None or self._api) and self._agent is None):
+        if self._busy or self.approval_pending or self._choices_waiting or self._pauses_waiting or self.workflows.running or self.held_by_alert or ((self._client is not None or self._api) and self._agent is None):
             self._refresh_queue_label()
             return
         prompt = self.queue.pop()
@@ -1037,6 +1105,9 @@ class HarnessApp(App[None]):
         for prompt in self.query(ApprovalPrompt):
             if prompt.request.tool != APPLY_WORKSPACE:  # a Workflow's own Approval is cancelled with its run, never answered
                 prompt.decide(False)
+        for choice in self.query(ChoicePrompt):  # a Workflow's own Choice is cancelled with its run, which pauses at a Checkpoint
+            if not choice.source.startswith("workflow:"):
+                choice.resolve("cancelled", "the user cancelled the turn")
         if self.generating and self._worker is not None:
             self.queue.pause()
             self._worker.cancel()
@@ -1055,5 +1126,11 @@ def main(argv: list[str] | None = None) -> None:
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--resume", metavar="ID", help="resume the session with this id (or unambiguous prefix)")
     which.add_argument("--continue", dest="continue_last", action="store_true", help="resume the most recent session")
+    parser.add_argument("--demo", metavar="NAME", help="run an offline scripted demo (choice); needs no key and no network")
     args = parser.parse_args(argv)
+    if args.demo:
+        from harness.demo import demo_app
+
+        demo_app(args.demo, args.config).run()
+        return
     HarnessApp(load_config(args.config), resume=args.resume, continue_last=args.continue_last).run()
