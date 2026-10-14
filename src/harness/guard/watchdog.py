@@ -274,4 +274,3 @@ class Watchdog:
         for listener in self._listeners:
             listener(self.state)
         return self.state
-

@@ -200,12 +200,16 @@ class BatchedWorkflowModel(AnthropicWorkflowModel):
     """``AnthropicWorkflowModel`` through a ``BatchLane``: the same requests, sent in batches, recorded at batch prices
     (so the run's Spend cap counts batch prices too). ``close`` it when the run ends."""
 
-    def __init__(self, lane: BatchLane, model_id: str, *, max_tokens: int = 16000, effort: Effort | None = None) -> None:
-        super().__init__(cast(anthropic.AsyncAnthropic, lane), model_id, max_tokens=max_tokens, effort=effort)
+    def __init__(
+        self, lane: BatchLane, model_id: str, *, max_tokens: int = 16000, effort: Effort | None = None, thinking_sample: float = 1.0,
+    ) -> None:
+        super().__init__(
+            cast(anthropic.AsyncAnthropic, lane), model_id, max_tokens=max_tokens, effort=effort, thinking_sample=thinking_sample,
+        )
         self.lane = lane
 
-    def _record(self, response: Reply) -> None:
-        super()._record(response)
+    def _record(self, response: Reply, thinking_on: bool | None = None, seconds: float | None = None) -> None:
+        super()._record(response, thinking_on, seconds)
         self.calls[-1] = batch_priced(self.calls[-1])
 
     def close(self) -> None:

@@ -55,6 +55,11 @@ class ApiCall:
     request_id: str | None
     thinking: str = ""  # empty when the display is "omitted", or the model did not think
     served_model: str = ""  # ``response.model``: another model than the one asked for after a server-side fallback (F10)
+    thinking_on: bool | None = None  # set only when thinking is sampled: did this request leave thinking on?
+    stop_reason: str = ""  # why the reply ended: end_turn, max_tokens (cut at the token cap), refusal, ...
+    seconds: float | None = None  # wall time of the request, from sending it to having the whole reply
+    provider: str = ""  # OpenRouter: the upstream that served it (Parasail, Cohere, ...)
+    task_type: str = ""  # OpenRouter auto: how its classifier typed the prompt (code:general_impl, ...)
 
     @property
     def prompt_tokens(self) -> int:
@@ -64,16 +69,21 @@ class ApiCall:
 
 def api_call(
     model_id: str, input_tokens: int, output_tokens: int, cache_read: int | None, cache_write: int | None,
-    request_id: str | None, *, thinking: str = "", served_model: str = "",
+    request_id: str | None, *, thinking: str = "", served_model: str = "", cost_usd: float | None = None,
+    thinking_on: bool | None = None, stop_reason: str = "", seconds: float | None = None,
+    provider: str = "", task_type: str = "",
 ) -> ApiCall:
-    """Price one request's usage counters, at the prices of the model that served it when that one is priced."""
+    """Price one request's usage counters, at the prices of the model that served it when that one is priced. A
+    ``cost_usd`` the API reported itself (OpenRouter, ADR 0009) is used as it is."""
+    if cost_usd is not None:
+        return ApiCall(input_tokens, output_tokens, cache_read or 0, cache_write or 0, cost_usd, request_id, thinking, served_model, thinking_on, stop_reason, seconds, provider, task_type)
     price = PRICING.get(served_model) or require_pricing(model_id)
     read, write = cache_read or 0, cache_write or 0
     long = input_tokens + read + write > price.long_over
     price_in, price_out = (price.long_input, price.long_output) if long else (price.input, price.output)
     price_read = price.cache_read if price.cache_read is not None else price_in * 0.1
     cost = (input_tokens * price_in + read * price_read + write * price_in * 1.25 + output_tokens * price_out) / 1_000_000
-    return ApiCall(input_tokens, output_tokens, read, write, cost, request_id, thinking, served_model)
+    return ApiCall(input_tokens, output_tokens, read, write, cost, request_id, thinking, served_model, thinking_on, stop_reason, seconds, provider, task_type)
 
 
 @dataclass(frozen=True)

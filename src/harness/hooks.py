@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 from strands.hooks import BaseHookEvent, HookCallback, HookProvider, HookRegistry
 from strands.hooks.registry import TEvent
 
+from harness.choice import ChoiceRecord, ChoiceRequest
 from harness.context.ledger import CallRecord, Ledger
 from harness.context.trimlog import TrimEntry, TrimLog
 from harness.decide.log import Decision, DecisionLog
@@ -88,6 +89,22 @@ class ApprovalResolved(BaseHookEvent):
 
 
 @dataclass
+class ChoiceRequested(BaseHookEvent):
+    """A Choice widget was mounted (ADR 0010); ``source`` is chat, skill:<name> or workflow:<run_id>."""
+
+    request: ChoiceRequest
+    source: str
+    model: str
+
+
+@dataclass
+class ChoiceResolved(BaseHookEvent):
+    """A Choice ended: answered, declined, cancelled or timed out (a refusal never reaches the human, and is not here)."""
+
+    record: ChoiceRecord
+
+
+@dataclass
 class WorkflowNodeFinished(BaseHookEvent):
     """A Workflow node finished (every graph update). ``attempt`` is the node's attempt number within its Behavior."""
 
@@ -103,6 +120,15 @@ class WorkflowInterrupted(BaseHookEvent):
 
     run_id: str
     kind: str
+
+
+@dataclass
+class McpServerChanged(BaseHookEvent):
+    """An MCP server connected, failed, was restarted or had a tool disabled or trusted (F16)."""
+
+    server: str
+    status: str
+    detail: str = ""
 
 
 class HarnessHooks:
@@ -155,7 +181,7 @@ class HarnessHooks:
 
 
 __all__ = [
-    "ApprovalRequested", "ApprovalResolved", "CallRecorded", "DecisionRecorded", "GuardStateChanged",
+    "ApprovalRequested", "ApprovalResolved", "CallRecorded", "ChoiceRequested", "ChoiceResolved", "DecisionRecorded", "GuardStateChanged",
     "HarnessHooks", "ModelCallCompleted", "ModelRequestSent", "QueueChanged", "TrimRecorded", "WorkflowInterrupted",
     "WorkflowNodeFinished",
 ]

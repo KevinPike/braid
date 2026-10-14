@@ -17,8 +17,8 @@ from harness.workflow.model import ApiCall
 TAIL_LINES = 40
 VALUE_CHARS = 200  # a Route record's value is cut to this (a hint or a pytest tail can be long)
 
-Basis = Literal["code", "model", "human"]
-BASES: tuple[Basis, ...] = ("code", "model", "human")
+Basis = Literal["code", "model", "human", "mcp-client"]  # "mcp-client": an MCP client answered an interrupt (ADR 0013)
+BASES: tuple[Basis, ...] = ("code", "model", "human")  # always counted; "mcp-client" appears only in runs a client answered
 
 
 def tail(text: str, limit: int = TAIL_LINES) -> str:
@@ -99,6 +99,9 @@ class Recorder:
     routes: dict[str, int] = field(default_factory=lambda: dict.fromkeys(BASES, 0))  # Route records by basis (F9)
     roles: dict[str, dict[str, float]] = field(default_factory=dict)  # Role -> {calls, cost_usd}, API calls only (F10)
     proposed_invariants: list[dict[str, Any]] = field(default_factory=list)  # F10: from rulings, for a human to add
+    served: dict[str, int] = field(default_factory=dict)  # OpenRouter: calls per served model (ADR 0009)
+    task_types: dict[str, int] = field(default_factory=dict)  # openrouter/auto: calls per classifier task type
+    human: Basis = "human"  # the basis of a route an interrupt answer decides; "mcp-client" in runs started over MCP (ADR 0013)
 
     def add_route(self, route: Route) -> None:
         self.routes[route.basis] = self.routes.get(route.basis, 0) + 1
@@ -127,6 +130,23 @@ class Recorder:
             fields["request_ids"] = [c.request_id for c in calls]
         if thinking := "\n\n".join(c.thinking for c in calls if c.thinking):
             fields["thinking"] = thinking
+        for c in calls:  # OpenRouter replies name their provider; a count per model and per task type goes in the summary
+            if c.provider:
+                self.served[c.served_model] = self.served.get(c.served_model, 0) + 1
+            if c.task_type:
+                self.task_types[c.task_type] = self.task_types.get(c.task_type, 0) + 1
+        if any(c.provider for c in calls):
+            fields["served_model"], fields["provider"] = calls[-1].served_model, calls[-1].provider
+            if task := next((c.task_type for c in reversed(calls) if c.task_type), ""):
+                fields["task_type"] = task
+        if any(c.stop_reason for c in calls):  # why each reply ended, and the requests' wall time (a slow call shows here)
+            fields["stop_reason"] = calls[-1].stop_reason
+            if len(calls) > 1:
+                fields["stop_reasons"] = [c.stop_reason for c in calls]
+        if any(c.seconds is not None for c in calls):
+            fields["call_seconds"] = round(sum(c.seconds or 0.0 for c in calls), 1)
+        if any(c.thinking_on is not None for c in calls):  # thinking is sampled: how many of this node's requests thought
+            fields["thinking_on"] = sum(1 for c in calls if c.thinking_on)
         self.cost_usd += cost
         self.input_tokens += fields["input_tokens"]
         self.output_tokens += fields["output_tokens"]
@@ -255,6 +275,8 @@ def write_summary(
         "routes": route_counts(read_log(run_log)) if run_log else dict(rec.routes),
         "roles": {k: {"calls": int(v["calls"]), "cost_usd": round(v["cost_usd"], 8)} for k, v in rec.roles.items()},
         "proposed_invariants": rec.proposed_invariants,
+        **({"served_models": dict(rec.served)} if rec.served else {}),
+        **({"task_types": dict(rec.task_types)} if rec.task_types else {}),
         "stuck": rec.stuck, "polish": rec.polish, "trace": rec.trace, "workspace": str(workspace),
         "run_log": str(run_log) if run_log else None,
         **(provenance or {}),

@@ -270,10 +270,10 @@ class _PlanLoop:
     def after_review(self, state: PlanState) -> Route:
         answer = state["feedback"][-1]
         if is_approval(answer):
-            return Route("finalize", "answer", answer, "human")
+            return Route("finalize", "answer", answer, self.rec.human)
         if state["round"] >= self.cfg.max_rounds:  # the round limit overrides the human's request for another round
             return Route("finalize", "round", state["round"])
-        return Route("research" if research_text(answer) is not None else "draft", "answer", answer, "human")
+        return Route("research" if research_text(answer) is not None else "draft", "answer", answer, self.rec.human)
 
     # --- finalize ------------------------------------------------------------------------------------------
     async def finalize(self, state: PlanState) -> dict[str, Any]:

@@ -220,4 +220,3 @@ class Compactor:
         except ContextWindowOverflowException:
             return None
         return count if count > 0 else None
-

@@ -115,6 +115,14 @@ async def test_the_chat_shell_cannot_see_the_anthropic_api_key(project: Path, mo
 
 
 @darwin_only
+async def test_the_chat_shell_cannot_see_the_openrouter_api_key(project: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ADR 0009: the OpenRouter key stays out of model-written commands too."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test-should-not-leak")
+    out = await ProjectSandbox(project).execute("env")
+    assert "PATH=" in out.stdout and "OPENROUTER" not in out.stdout and "sk-or" not in out.stdout
+
+
+@darwin_only
 async def test_shell_timeout_raises_the_strands_error(project: Path) -> None:
     from strands.sandbox.errors import SandboxTimeoutError
 

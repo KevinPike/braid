@@ -20,16 +20,17 @@ from pathlib import Path
 from typing import Any, TextIO, cast, get_args
 
 from harness.anthropic_api import make_client
-from harness.config import Effort, HarnessConfig, arbiter_role, load_config, role_view
+from harness.config import Effort, HarnessConfig, arbiter_role, load_config, role_view, is_openrouter_id
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, run_preflight, system_gpu_limit
+from harness.openrouter import Catalog, OpenRouterError, load_catalog, load_notes, render_models
 from harness.sandbox import Sandbox, SeatbeltSandbox, Workspace
 from harness.workflow import bench
-from harness.workflow.backend import Choice, RoleModels, choose, make_model, make_roles, own_models
+from harness.workflow.backend import Choice, RoleModels, choose, make_model, make_roles, openrouter_ids, own_models, prepare_openrouter
 from harness.workflow.batch import BatchedWorkflowModel, Batcher
 from harness.workflow.execute import Ask, execution_variant, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
-from harness.workflow.plan import Plan
+from harness.workflow.plan import Plan, PlanAuthor
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
 from harness.workflow.progress import PLAN_NODES, Progress, describe, final_report
 from harness.workflow.records import Recorder, RunLog, amend_summary, write_summary
@@ -48,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("goal", help="what to build, in a sentence or two")
     g.add_argument("--project", type=Path, default=Path("."), help="the project to research (default .)")
     g.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
-    g.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    g.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default [workflow] backend, or by the model id: claude- anthropic, vendor/model openrouter)")
     g.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
     g.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     g.add_argument("--unload", action="store_true", help="unload the model at the end")
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--plan", type=Path, required=True, help="Plan JSON")
     b.add_argument("--project", type=Path, default=Path("."), help="the git project to build in (default .)")
     b.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
-    b.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    b.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default [workflow] backend, or by the model id: claude- anthropic, vendor/model openrouter)")
     b.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
     b.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     b.add_argument("--no-hints", action="store_true", help="baseline: Stuck skips the Behavior, clarify waives, Sign-off says yes")
@@ -64,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     n = sub.add_parser("bench", help="run a manifest set of (kata, Plan) pairs N times, --no-hints, into the ledger")
     n.add_argument("set", help="a set in the manifest (bench/katas.toml): claude-plans, local-plans, exotic, ...")
     n.add_argument("--model", help="model id (default: the backend's model from config)")
-    n.add_argument("--backend", choices=["ollama", "anthropic"], help="model backend (default [workflow] backend, or by the model id)")
+    n.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default [workflow] backend, or by the model id: claude- anthropic, vendor/model openrouter)")
     n.add_argument("--repeat", type=int, default=1, help="runs per pair (default 1)")
     n.add_argument("--label", help="the ledger label (default: <set>-<model>-<timestamp>)")
     n.add_argument("--max-cost", type=float, default=1.0, metavar="USD",
@@ -80,10 +81,33 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--parallel", type=int, metavar="N", help="runs at a time (default 1; with --batch, every run)")
     n.add_argument("--flush-s", type=float, default=30.0, metavar="S",
                    help="with --batch: send a batch S seconds after its first call even if some runs are not waiting (default 30)")
+    pf = sub.add_parser("plans-for", help="write a Plan per kata of a bench set with one model as planner (no human review)")
+    pf.add_argument("set", help="a set in the manifest; its katas' goals and projects are used, its Plans only for the goal")
+    pf.add_argument("--model", help="the planner's model id")
+    pf.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default by the model id)")
+    pf.add_argument("--only", metavar="KATA,KATA", help="plan only these katas of the set")
+    pf.add_argument("--out", type=Path, help="where to write <kata>.json (default <data_dir>/plans/<set>-<model>)")
+    pf.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for each Plan loop (default [workflow] max_cost_usd)")
+    pf.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
+    pf.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    n.add_argument("--plans-dir", type=Path, metavar="DIR", help="build the Plans in DIR/<kata>.json (from plans-for) instead of the set's own")
+    for sp in (g, b, n, pf):
+        sp.add_argument("--thinking-sample", type=float, metavar="P", help="share of calls that think (0-1); the rest run with thinking "
+                        "disabled, which is faster and cheaper (default [anthropic] thinking_sample)")
+    m = sub.add_parser("models", help="list OpenRouter models (ADR 0009): price, context, structured output, free")
+    m.add_argument("pattern", nargs="?", help="only ids matching this wildcard, e.g. 'anthropic/*' or '*coder*'")
+    m.add_argument("--free", action="store_true", help="only free models (a :free id, or priced at zero)")
+    m.add_argument("--max-price", type=float, metavar="USD", help="only models whose input costs at most this per million tokens")
+    m.add_argument("--all", action="store_true", help="include models without structured output (Workflows refuse them)")
+    m.add_argument("--json", action="store_true", help="machine-readable output")
+    m.add_argument("--refresh", action="store_true", help="refetch the catalog instead of using the 24 h cache")
+    m.add_argument("--notes", type=Path, default=Path("bench/model-notes.toml"), help="ranking notes to show (default bench/model-notes.toml)")
+    m.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
     r = sub.add_parser("report", help="the benchmark ledger: one label, a comparison of two, or the latest summary per kata")
     r.add_argument("labels", nargs="*", help="a label to show (none: list the labels)")
     r.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare label B against label A")
     r.add_argument("--frontier", nargs="+", metavar="LABEL", help="F12: hidden pass rate against cost per kata, per label")
+    r.add_argument("--pairs", nargs="+", metavar="LABEL", help="planner x coder: hidden pass rate and cost per cell, for these labels")
     r.add_argument("--summaries", type=Path, metavar="PRACTICE_DIR", help="the latest summary per model x kata under DIR/*/runs/")
     r.add_argument("--all", action="store_true", help="with --summaries: include hinted runs")
     r.add_argument("--ledger", type=Path, help="the ledger (default <data_dir>/bench.jsonl)")
@@ -246,8 +270,9 @@ async def build_once(
         project / "runs", model=model_id, project=project, no_hints=not hints, status=final.get("status"),
         planned=len(final["plan"]["behaviors"]), rec=rec, workspace=workspace.path, run_log=log.path, name=run_id,
         provenance=bench.provenance(
-            plan, plan_path=plan_path, backend=backend, effort=cfg.effort if backend == "anthropic" else None,
+            plan, plan_path=plan_path, backend=backend, effort=cfg.effort if backend in ("anthropic", "openrouter") else None,
             max_attempts=cfg.max_attempts, execution=execution_variant(cfg, model_id), bench=bench_label,
+            thinking_sample=config.anthropic.thinking_sample,
         ),
     )
     status = final.get("status")
@@ -496,8 +521,10 @@ def plan_id_for(goal: str, stamp: str) -> str:
 async def run_plan(
     goal: str, project: Path, *, model: WorkflowModel, model_id: str, config: HarnessConfig, ask: Ask,
     out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic, tty: bool | None = None,
+    on_saved: Callable[[Path], None] | None = None,
 ) -> int:
-    """Run the Plan loop on ``goal``, researching ``project``; prints the Plan as Markdown and the path it was saved to."""
+    """Run the Plan loop on ``goal``, researching ``project``; prints the Plan as Markdown and the path it was saved to.
+    The saved Plan records its author (model, backend, effort) for the planner x coder report; ``on_saved`` gets its path."""
     cfg = config.workflow
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     plan_id = plan_id_for(goal, stamp)
@@ -544,6 +571,14 @@ async def run_plan(
         out.flush()
         return SPEND_CAP_EXIT
     path = final["plan_path"]
+    authored = Plan.load(Path(path))
+    authored.author = PlanAuthor(
+        model=model_id, backend=choose(config, model=model_id).backend, effort=cfg.effort,
+        written_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    authored.save(Path(path))
+    if on_saved is not None:
+        on_saved(Path(path))
     out.write(
         f"\n{final['markdown']}\ntotal wall time {clock() - started:.1f}s, model time {rec.model_seconds:.1f}s over "
         f"{rec.model_calls} calls{cost_note(rec)}, {final['round']} round(s), status: {final['status']}\n"
@@ -558,7 +593,22 @@ async def with_model(
 ) -> int:
     """Build the model for ``--backend``/``--model``/config, then run ``body`` with it. An Ollama model is preflighted and
     pinned the way ``evals/runner.py`` does; an API run skips that, the Guard has nothing to watch (ADR 0006)."""
-    choice = choose(config, model=args.model, backend=args.backend)
+    try:
+        choice = choose(config, model=args.model, backend=args.backend)
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    if choice.backend == "openrouter":
+        try:
+            catalog, key = await prepare_openrouter(config, openrouter_ids(config, choice.model_id))
+        except (ValueError, OpenRouterError) as exc:  # a model without structured output is refused here (ADR 0009)
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        credit = "no key limit" if key.limit_remaining is None else f"${key.limit_remaining:.2f} of key credit left"
+        sys.stdout.write(f"model {choice.model_id} on OpenRouter; spend cap ${config.workflow.max_cost_usd:.2f}; {credit}\n")
+        model = make_model(config, choice, None, catalog)
+        assert model is not None
+        return await body(model, choice.model_id)
     if choice.backend == "anthropic":
         model = make_model(config, choice, None)
         assert model is not None
@@ -604,13 +654,33 @@ async def live_bench(args: argparse.Namespace, config: HarnessConfig) -> int:
         config.workflow.check_tests_at_red = False
     if args.hide_rules:
         config.workflow.show_invariants = False
+    asked = [m.strip() for m in args.models.split(",") if m.strip()] if args.models else [args.model]
+    try:
+        wanted = [c.model_id for m in asked if (c := choose(config, model=m, backend=args.backend)).backend == "openrouter"]
+    except ValueError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 2
+    catalog: Catalog | None = None
+    if wanted or openrouter_ids(config, None):
+        if args.batch:
+            sys.stderr.write("--batch is for the Anthropic API; OpenRouter has no Message Batches\n")
+            return 2
+        try:
+            catalog, key = await prepare_openrouter(config, list(dict.fromkeys([*wanted, *openrouter_ids(config, None)])))
+        except (ValueError, OpenRouterError) as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
+        left = "no key limit" if key.limit_remaining is None else f"${key.limit_remaining:.2f} of key credit left"
+        sys.stdout.write(f"OpenRouter: {left}; bench cap ${args.max_cost:.2f}\n")
     batcher = Batcher(make_client(config.anthropic), flush_s=args.flush_s) if args.batch else None
 
     def maker(cell_config: HarnessConfig, choice: Choice) -> Callable[[], WorkflowModel]:
         def make() -> WorkflowModel:
             if batcher is not None:
-                return BatchedWorkflowModel(batcher.lane(), choice.model_id, effort=cell_config.workflow.effort)
-            model = make_model(cell_config, choice, None)
+                return BatchedWorkflowModel(
+                    batcher.lane(), choice.model_id, effort=cell_config.workflow.effort, thinking_sample=cell_config.anthropic.thinking_sample,
+                )
+            model = make_model(cell_config, choice, None, catalog)
             assert model is not None
             return model
 
@@ -622,6 +692,12 @@ async def live_bench(args: argparse.Namespace, config: HarnessConfig) -> int:
         sys.stderr.write(f"{exc}\n")
         return 2
     bench_set = sets[args.set]
+    if args.plans_dir is not None:  # a planner x coder run: the same katas, the Plans another model wrote
+        try:
+            bench_set = bench.with_plans_dir(bench_set, args.plans_dir.expanduser())
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
     parallel = args.parallel or (len(cells) * len(bench_set.pairs) * args.repeat if args.batch else 1)
     try:
         return await run_grid(
@@ -650,17 +726,18 @@ def grid_cells(
         if bad := [e for e in asked if e not in known]:
             raise ValueError(f"unknown effort {', '.join(bad)} (known: {', '.join(known)})")
         efforts = [cast(Effort, e) for e in asked]
-    if role := arbiter_role(config.workflow):
+    if (role := arbiter_role(config.workflow)) and not is_openrouter_id(role.model):
         require_pricing(role.model)  # F10: the Arbiter's calls count toward the Spend cap, so it needs a price too
     for own in (config.workflow.roles.tester.model, config.workflow.roles.implementer.model):
-        if own:  # F11: so do the tester's and the implementer's
+        if own and not is_openrouter_id(own):  # F11: so do the tester's and the implementer's
             require_pricing(own)
     cells: list[Cell] = []
     for model in models:
         choice = choose(config, model=model, backend=args.backend)
-        if choice.backend != "anthropic":
-            raise ValueError("bench runs on the Anthropic API; the Ollama path is frozen (ADR 0007)")
-        require_pricing(choice.model_id)  # a sweep fails here, not one cell in
+        if choice.backend == "ollama":
+            raise ValueError("bench runs on the Anthropic API or OpenRouter; the Ollama path is frozen (ADR 0007)")
+        if choice.backend == "anthropic":
+            require_pricing(choice.model_id)  # a sweep fails here, not one cell in (OpenRouter prices come from the reply)
         for effort in efforts:
             cell_config = config.model_copy(deep=True)
             cell_config.workflow.effort = effort
@@ -679,7 +756,9 @@ def report(args: argparse.Namespace, config: HarnessConfig, out: TextIO = sys.st
         return 0
     ledger = args.ledger or config.paths.bench_ledger
     lines = bench.read_ledger(ledger)
-    if args.frontier:
+    if args.pairs:
+        out.write(bench.pairs_table(lines, args.pairs) + "\n")
+    elif args.frontier:
         out.write(bench.frontier_table(lines, args.frontier) + "\n")
     elif args.compare:
         out.write(bench.compare_table(lines, *args.compare) + "\n")
@@ -691,6 +770,56 @@ def report(args: argparse.Namespace, config: HarnessConfig, out: TextIO = sys.st
                   if rows else f"the ledger {ledger} is empty")
         out.write("\n")
     return 0
+
+
+async def show_models(args: argparse.Namespace, config: HarnessConfig, out: TextIO = sys.stdout) -> int:
+    """``models``: the OpenRouter catalog (cached 24 h), filtered; no model call, no spend."""
+    try:  # --refresh: max_age 0 refetches, and a failed fetch still falls back to the cache
+        catalog = await load_catalog(
+            api_key=os.environ.get("OPENROUTER_API_KEY"), cache_path=config.paths.openrouter_models_file,
+            max_age_s=0.0 if args.refresh else 86400.0,
+        )
+    except OpenRouterError as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+    out.write(render_models(
+        catalog, free=args.free, structured_only=not args.all, max_input_usd_per_m=args.max_price,
+        notes=load_notes(args.notes), as_json=args.json, pattern=args.pattern,
+    ) + "\n")
+    return 0
+
+
+async def live_plans_for(args: argparse.Namespace, config: HarnessConfig) -> int:
+    """``plans-for``: the Plan loop on each kata's goal with one planner, approving each Plan unseen; the Plans (each carrying
+    its author) land in ``--out`` for ``bench --plans-dir``. A Plan that fails (Spend cap, API error) is reported and skipped."""
+    sets = bench.load_manifest(args.manifest)
+    if args.set not in sets:
+        sys.stderr.write(f"no set {args.set!r} in {args.manifest} (sets: {', '.join(sets)})\n")
+        return 2
+
+    async def body(model: WorkflowModel, model_id: str) -> int:
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", model_id)
+        dest = (args.out or config.paths.resolved_data_dir / "plans" / f"{args.set}-{slug}").expanduser()
+        failed = 0
+        only = {k.strip() for k in args.only.split(",")} if args.only else None
+        todo = [p for p in sets[args.set].pairs if only is None or p.key in only]
+        for pair in todo:
+            saved: list[Path] = []
+            goal = Plan.load(pair.plan).goal
+            sys.stdout.write(f"\n== {pair.key}: planning with {model_id}\n")
+            code = await run_plan(goal, pair.project, model=model, model_id=model_id, config=config,
+                                  ask=lambda _payload: "approve", on_saved=saved.append)
+            if code or not saved:
+                failed += 1
+                sys.stdout.write(f"== {pair.key}: no Plan (exit {code})\n")
+                continue
+            dest.mkdir(parents=True, exist_ok=True)
+            Plan.load(saved[0]).save(dest / f"{pair.key}.json")
+        sys.stdout.write(f"\nPlans in {dest} ({len(todo) - failed} of {len(todo)})\n"
+                         f"build them: harness-workflow bench {args.set} --plans-dir {dest} --model <coder>\n")
+        return 1 if failed else 0
+
+    return await with_model(args, config, body)
 
 
 async def live_plan(args: argparse.Namespace, config: HarnessConfig, ask: Ask) -> int:
@@ -727,8 +856,16 @@ async def run_cancellable(coro: Coroutine[Any, Any, int]) -> int:
 def main(argv: list[str] | None = None, *, ask: Ask = _stdin) -> None:
     args = build_parser().parse_args(argv)
     config = load_config(args.config)
+    if getattr(args, "thinking_sample", None) is not None:
+        config.anthropic.thinking_sample = min(1.0, max(0.0, args.thinking_sample))
     if args.command == "report":
         code = report(args, config)
+    elif args.command == "models":
+        code = asyncio.run(show_models(args, config))
+    elif args.command == "plans-for":
+        if args.max_cost is not None:
+            config.workflow.max_cost_usd = args.max_cost
+        code = asyncio.run(run_cancellable(live_plans_for(args, config)))
     elif args.command == "bench":
         code = asyncio.run(run_cancellable(live_bench(args, config)))
     else:

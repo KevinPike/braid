@@ -63,12 +63,16 @@ The SQLite record of what was dropped or summarized, when and why.
 _Avoid_: Compaction history
 
 **Prompt queue**:
-Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active, an approval is pending, or a **Workflow** run is active or waiting on a human.
+Prompts submitted while a generation is running; they wait their turn in order and are held while a red **Alert** is active, an approval is pending, a **Choice** is open, or a **Workflow** run is active or waiting on a human.
 _Avoid_: Backlog, pending messages
 
 **Approval**:
-The user's y/n before a gated action runs: a gated tool call (`shell`, `write_file`), applying a **Workspace** diff, or a **Sandbox escape**. The only thing that lets one run. Held open, it holds the **Prompt queue**.
+The user's y/n before a gated action runs: a gated tool call (`shell`, `write_file`, `run_skill_script`), applying a **Workspace** diff, or a **Sandbox escape**. The only thing that lets one run. Held open, it holds the **Prompt queue**.
 _Avoid_: Confirmation, permission
+
+**Choice**:
+A set of one to four questions that a model or a **Workflow** node puts to the human, each with two to four options, one or several to pick, and a free-text Other; the answers go back to the asker. For decisions that belong to the user. It gates nothing: never an **Approval** and never a **Sign-off** (ADR 0010). While it is open it holds the **Prompt queue**.
+_Avoid_: Question (taken by the Plan's open questions and tev1's), confirmation, prompt
 
 **Policy check**:
 The tev1 question "is this action safe to run in the project folder?", shown on the **Approval** prompt as advice and logged in the Decision log. Never skips the **Approval**.
@@ -157,7 +161,7 @@ A stronger model that rules on a **Dispute** no **Invariant** upholds: test wron
 _Avoid_: Judge, referee
 
 **Route record**:
-The run-log line every conditional edge writes: from, to, and the basis (code, model or human), with the deciding field and value. For a model basis it also has the model, request id, reason and thinking summary.
+The run-log line every conditional edge writes: from, to, and the basis (code, model, human or mcp-client), with the deciding field and value. For a model basis it also has the model, request id, reason and thinking summary.
 _Avoid_: Transition log, decision (that is the Decision log)
 
 **Role**:
@@ -184,6 +188,46 @@ _Avoid_: Suite, benchmark (the activity), eval (that is `harness-eval`)
 `~/.braid/bench.jsonl`: one line per bench run, holding its summary and provenance (harness commit, **Plan** hash, backend, settings); the report compares labels from it and calls a difference within the repeats' range noise.
 _Avoid_: Ledger alone (that is the per-call context Ledger), results file
 
+### Skills
+
+**Skill**:
+An Agent Skills directory holding a `SKILL.md` (name, description, instructions) and optional `scripts/`, `references/` and `assets/`, found under `.braid/skills` (project), `~/.braid/skills` (user) or, when switched on, the read-only `.claude/skills` folders. Its text is untrusted: it can persuade the model but never grants an **Approval**, and its scripts run only in the **Sandbox**. The first of a name wins; later ones are shadowed. Not a **Graph file** (F6).
+_Avoid_: Plugin, prompt template, command
+
+**Skill index**:
+The system-prompt block that lists each **Skill**'s name and a clipped description (never a body or a path), rebuilt only when the set of skills changes so the cached prefix holds. A body enters history only when the model calls `skill`, or the user types `/skill-name`, and Compaction may then drop it.
+_Avoid_: Skill list, skill catalog (the catalog is the code that builds it)
+
+**Graph file**:
+A small **Workflow** written as YAML in `.braid/graphs/` and run with `/run` (F6, not built yet). Renamed from "skills" on 2026-10-13 so that **Skill** means only a `SKILL.md` directory.
+_Avoid_: Skill (for a YAML graph), script
+
+### MCP
+
+**MCP server**:
+A third-party process (stdio, run in the **Sandbox**) or endpoint (Streamable HTTP) that `harness.toml` lists under `[mcp.servers.*]` and whose tools reach the chat agent as `mcp__<server>__<tool>`. Its descriptions and results are untrusted text: every call needs an **Approval** unless the server's `allow` names the tool, its environment is built from scratch (no harness key), and its stderr goes to a log file. A failure is a note, not a crash. `/mcp` shows the state.
+_Avoid_: Plugin, extension, connector
+
+**Pin**:
+The hash of an **MCP server** tool's name, description and input schema, stored in `~/.braid/mcp-pins.json` the first time the tool is seen. A later connect that finds a different hash disables the tool until `/mcp trust <server>`.
+_Avoid_: Lock, whitelist, signature
+
+**MCP prompt**:
+A prompt template an **MCP server** offers, run by the user as `/<server>:<prompt> key=value`; the rendered messages become the user turn. The model cannot call one.
+_Avoid_: Command, skill
+
+**braid as an MCP server**:
+`harness-mcp` (stdio), which offers the **Workflows** to a client such as Claude Code as `braid_*` tools. Reads are free; a started run needs a human's yes through MCP elicitation (or, in the weaker `confirm = "token"` mode, a quote the client's agent confirms) and is clamped by the **MCP ceilings**. A run that needs a human reports `waiting`; **Sign-off** and applying a diff are never possible over MCP (ADR 0013).
+_Avoid_: Braid API, remote control
+
+**MCP ceilings**:
+`[mcp_server] max_cost_usd` (per started run) and `daily_cost_usd` (all MCP-started runs since midnight, from the run index): a client's requested cost is clamped to the smaller figure, which becomes the run's **Spend cap**.
+_Avoid_: Budget (that is the `num_ctx` limit), quota
+
+**mcp-client**:
+The **Route record** basis for a route that a client's `braid_run_answer` decided, beside `code`, `model` and `human` (ADR 0008, 0013).
+_Avoid_: remote
+
 ### Isolation
 
 **Workspace**:
@@ -203,6 +247,18 @@ _Avoid_: Exception, override
 **Daily driver**:
 The model that runs the main loop: `claude-haiku-5-5` on the Anthropic API (ADR 0007); `gemma4:e4b` on the frozen Ollama path.
 _Avoid_: Main model, default model
+
+**Catalog**:
+The cached list of OpenRouter models (`~/.braid/openrouter-models.json`, 24 h) with their prices and supported parameters; a model without structured output is refused against it before any call (ADR 0009).
+_Avoid_: Model list, registry
+
+**Tape**:
+A recorded set of API exchanges (a request fingerprint, the response, its status, its wall time) that replay serves instead of the network, with no credential in it (`src/harness/replay.py`).
+_Avoid_: Cassette, fixture, recording
+
+**Thinking sample**:
+The share of Workflow calls that keep thinking on (`[anthropic] thinking_sample`); the others send thinking disabled. Each call's draw is logged as `thinking_on`.
+_Avoid_: Thinking rate, debug mode
 
 **Decision layer**:
 The tev1 models that answer routing, compaction-trigger, policy and done-or-continue questions. Advisory only; never the sole check on a risky action.

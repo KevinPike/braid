@@ -144,6 +144,8 @@ def describe(record: dict[str, Any]) -> str:
         text += f"  (model {record['model_seconds']:.1f}s)"
     if record.get("cost_usd") is not None:
         text += f"  ${record['cost_usd']:.4f}"
+    if cut := sum(1 for r in record.get("stop_reasons", [record.get("stop_reason")]) if r == "max_tokens"):
+        text += f"  ⚠ cut at the token cap x{cut}"
     return text
 
 
@@ -167,6 +169,10 @@ def final_report(rec: Recorder, total_s: float, *, by_role: bool = False) -> str
     if api:
         head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
                  f"{rec.cache_read_input_tokens} cache-read tokens")
+        if len(rec.served) > 1 or rec.task_types:  # a routed run: who answered, and how the router typed the prompts
+            head += "\nserved by: " + ", ".join(f"{m} x{n}" for m, n in sorted(rec.served.items(), key=lambda kv: -kv[1]))
+            if rec.task_types:
+                head += "\ntask types: " + ", ".join(f"{t} x{n}" for t, n in sorted(rec.task_types.items(), key=lambda kv: -kv[1]))
         if by_role or "arbiter" in rec.roles:  # F10, F11: Roles on other models cost more, so show where the money went
             head += "\nby role: " + ", ".join(
                 f"{role} ${t['cost_usd']:.4f} ({int(t['calls'])} calls)" for role, t in sorted(rec.roles.items())

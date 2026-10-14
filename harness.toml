@@ -18,6 +18,21 @@ max_retries = 2               # the SDK retries 408/409/429/5xx (529 included) a
 timeout = 600.0               # seconds per request
 thinking_display = "summarized"   # F9: "summarized" returns a readable thinking summary (run log, Inspectors);
                               # "omitted" is the 5.5 models' default (empty thinking). Billed the same either way
+# thinking_sample = 1.0       # share of Workflow calls that think (0-1); the rest send thinking disabled: faster and cheaper,
+                              # logged per node as thinking_on. A sampled run mixes two treatments; compare like with like
+
+# ADR 0009: OpenRouter, any model with structured output, through the same Anthropic SDK. Key: OPENROUTER_API_KEY, never here.
+# Use it with `--backend openrouter --model z-ai/glm-5.3` (any `vendor/model` id picks it); `harness-workflow models` lists them.
+[openrouter]
+# data_collection = "deny"    # "deny" excludes most :free models (they train on prompts); "allow" lets them run
+# max_tokens = 4096          # per call; a runaway reply is cut here and retried once, instead of running to 16000
+# require_parameters = true   # never route to a provider that ignores response_format
+# max_price = { prompt = 1.0, completion = 3.0 }   # USD per million tokens; a request over it is a 404, not a spend
+# fallbacks = []              # other model ids tried in order when the model errors
+# [openrouter.auto]           # --model openrouter/auto: OpenRouter picks per call, ranked by 7-day spend share
+# cost_tier = "medium"        # low | medium | high | xhigh | max: a band, not a ceiling
+# allowed_models = ["anthropic/*"]   # required; every model it admits needs structured output
+# excluded_models = []
 
 [paths]
 data_dir = "~/.braid"
@@ -39,6 +54,12 @@ shell = true                  # every command needs TUI approval (ADR 0003) and 
 shell_network = false         # allow network access to sandboxed shell commands
 write = true                  # write_file; every write needs TUI approval
 approve = ["shell", "write_file"]   # tools gated by approval; these two are always gated
+ask = true                    # ask_user_question: the chat agent may put a Choice to you; it acts on nothing (ADR 0010)
+
+[ask]
+calls_per_turn = 3            # Choices the chat agent may open per prompt; later calls are refused
+refusals_per_turn = 2         # refused calls (bad shape, a confirmation) before the tool stops for the turn
+timeout_s = 0                 # 0 waits as an Approval does; otherwise the Choice times out and nothing is chosen
 
 [decide]
 enabled = true                # tev1 runs on Ollama, so the decision layer is off on the anthropic backend
@@ -59,6 +80,7 @@ backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (d
 # model = "gemma4:e4b"        # Ollama model; default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
 # anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
+slow_call_s = 60.0           # warn once on stderr when one API request takes this long (0: never)
 max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
 # arbiter = "claude-sonnet-5-5"   # F10: a stronger model rules on a Dispute no Invariant upholds (or claude-opus-5-5);
                               # unset, there is no arbitrate node. Its calls count toward the Spend cap
@@ -95,3 +117,46 @@ critique_angles = ["feasibility", "scope", "testability", "risk", "spacing"]
 # model = "claude-haiku-5-5"  # view is always "full": it edits the implementation
 # [workflow.roles.arbiter]
 # model = "claude-sonnet-5-5" # takes no view: the Arbiter never sees the implementation (F10)
+
+# F14, F15: Skills. Agent Skills directories (a folder with SKILL.md). Only each skill's name and description go in the
+# system prompt; the body loads when the model calls `skill`, or you type /skill-name. Skill text is untrusted (ADR 0011):
+# `run_skill_script` runs in the Sandbox and asks for an Approval every time, whatever the skill's allowed-tools says.
+[skills]
+enabled = true
+roots = [".braid/skills", "~/.braid/skills"]   # first match wins; "~" is yours, the rest are under the project
+claude_roots = false          # true adds .claude/skills and ~/.claude/skills, read-only
+max_index_tokens = 2000       # the system-prompt index; over it, skills are left out with a note
+script_timeout_s = 60
+
+# F16: MCP client. Servers are third-party code (ADR 0012): every tool call needs an Approval unless the tool's bare name
+# is in `allow`; a stdio server runs in the Sandbox with an environment built from scratch (PATH, HOME, LANG, TERM and
+# `env`, whose ${VAR}s must be listed in `pass_env`). Naming ANTHROPIC_API_KEY, OPENROUTER_API_KEY or any *_API_KEY is a
+# config error. A server's stderr goes to ~/.braid/mcp-logs/<name>.log. Tools show as mcp__<server>__<tool>; /mcp lists
+# them, /mcp restart <server> reconnects, /mcp trust <server> accepts a changed tool definition, /mcp read <server> <uri>
+# attaches a resource to your next message, and /<server>:<prompt> key=value runs a server's prompt.
+[mcp]
+enabled = true
+# [mcp.servers.git]
+# command = "uvx"
+# args = ["mcp-server-git", "--repository", "."]
+# allow = ["git_status", "git_log", "git_diff"]   # read-only; git_commit stays gated
+# paths = ["."]               # readable in the Sandbox besides the project
+# [mcp.servers.fetch]
+# command = "uvx"
+# args = ["mcp-server-fetch"]
+# network = true              # a Sandbox escape, granted here once and shown on every Approval
+# timeout_s = 30
+# [mcp.servers.docs]
+# url = "https://docs.example.com/mcp"   # Streamable HTTP
+# headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+# pass_env = ["DOCS_TOKEN"]
+
+# F18: braid as an MCP server (`harness-mcp`, stdio; ADR 0013). A client such as Claude Code may read freely and start
+# bounded spends (plan, build, bench) after a human's yes through MCP elicitation. It can never give a Sign-off or apply a diff.
+# Both ceilings clamp every run's Spend cap; the daily one adds up all MCP-started runs. The API keys come from the
+# environment, as for the CLI, and never appear in a result.
+[mcp_server]
+max_cost_usd = 0.10           # per started run
+daily_cost_usd = 1.00         # across all MCP-started runs
+confirm = "elicit"            # "token": a two-call quote-then-start for clients without elicitation (the client's agent confirms)
+backends = ["anthropic"]      # add "openrouter" to allow it
