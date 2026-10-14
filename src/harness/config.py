@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 ThinkingDisplay = Literal["summarized", "omitted"]
@@ -17,8 +17,16 @@ class OllamaConfig(BaseModel):
     host: str = "http://localhost:11434"
 
 
-Backend = Literal["anthropic", "ollama"]
+Backend = Literal["anthropic", "ollama", "openrouter"]
 API_PREFIX = "claude-"  # a model id with this prefix runs on the Anthropic API, whatever ``backend`` says
+OPENROUTER_AUTO = "openrouter/auto"
+
+
+def is_openrouter_id(model: str) -> bool:
+    """``vendor/model`` (``z-ai/glm-5.3``, ``openrouter/auto``) is an OpenRouter id; Ollama's ``hf.co/...`` names are not.
+    An Ollama name like ``user/model`` now reads as OpenRouter too: choose the frozen Ollama path with ``--backend ollama``."""
+    vendor, slash, _ = model.partition("/")
+    return bool(slash) and "." not in vendor and not model.startswith(API_PREFIX)
 
 
 class ProfileConfig(BaseModel):
@@ -154,11 +162,13 @@ class WorkflowConfig(BaseModel):
     backend: Backend = "anthropic"  # ADR 0007; "ollama" is the frozen path
     model: str | None = None
     anthropic_model: str = "claude-haiku-5-5"
+    openrouter_model: str | None = None  # ADR 0009: the model for ``backend = "openrouter"`` when ``--model`` is not given
     effort: Effort | None = None  # Anthropic only; None leaves the model's default
     max_cost_usd: float = 0.10  # Spend cap: an API-backed run stops at the next node boundary once it has cost more
     num_ctx: int = 16384
     think: bool | None = False  # sent as /api/chat's top-level ``think``; false stops thinking models spending the output on it
     num_predict: int | None = 4096  # cap on generated tokens per model call
+    slow_call_s: float = 60.0  # warn once on stderr when one API request takes this long (0: never)
     max_attempts: int = 3  # implementation attempts, and test rewrites, per Behavior before Stuck
     show_invariants: bool = True  # F3: show the Plan's Invariants to the models (they are checked by code either way)
     check_tests_at_red: bool = True  # F3: check a new test against the Invariants after Red; off leaves only Disputes
@@ -218,6 +228,39 @@ class AnthropicConfig(BaseModel):
     # F9: the 5.5 models think adaptively and send the thinking back empty ("omitted") unless asked for a summary.
     # Visibility only: thinking is billed the same either way.
     thinking_display: ThinkingDisplay = "summarized"
+    # The share of Workflow calls that think; the rest send ``thinking: {"type": "disabled"}``, which also makes them much
+    # faster and cheaper (a reasoning model such as DeepSeek spent 14 minutes on one call). Each call is drawn at random
+    # and logged (``thinking_on``), and the run's provenance records a share below 1. Thinking changes what the model
+    # does, not only what is shown: a sampled run mixes two treatments, so compare sampled runs with sampled runs.
+    thinking_sample: float = Field(default=1.0, ge=0.0, le=1.0)
+
+
+class OpenRouterAuto(BaseModel):
+    """``openrouter/auto`` (ADR 0009): OpenRouter picks the model per call, ranked by trailing-7-day spend share inside the
+    ``cost_tier`` band. ``allowed_models`` (wildcards or slugs) is required, and every model it admits must support
+    structured output."""
+
+    cost_tier: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
+    allowed_models: list[str] = []
+    excluded_models: list[str] = []
+    session: Literal["run", "none"] = "run"  # "run": one session_id per model object, so the router keeps its pick while it is still a candidate
+
+
+class OpenRouterConfig(BaseModel):
+    """The OpenRouter client (ADR 0009), reached through the Anthropic SDK pointed at ``base_url``. The key is only ever
+    ``OPENROUTER_API_KEY`` in the environment."""
+
+    base_url: str = "https://openrouter.ai/api"
+    max_retries: int = 2
+    timeout: float = 300.0
+    # Cap on generated tokens per Workflow call (the Anthropic path uses 16000). A slow provider runs a runaway reply to the
+    # cap at ~25 tokens/s, which is ~10 minutes; a reply cut at the cap gets the one "answer more briefly" retry.
+    max_tokens: int = 4096
+    data_collection: Literal["allow", "deny"] = "deny"  # "deny" excludes most :free models, which train on prompts
+    require_parameters: bool = True  # never route to a provider that ignores response_format
+    max_price: dict[str, float] = {}  # {"prompt": USD per M, "completion": USD per M}; a request over it fails
+    fallbacks: list[str] = []  # other model ids tried in order when the model errors
+    auto: OpenRouterAuto = OpenRouterAuto()
 
 
 class PathsConfig(BaseModel):
@@ -258,6 +301,11 @@ class PathsConfig(BaseModel):
         return self.resolved_data_dir / "bench.jsonl"
 
     @property
+    def openrouter_models_file(self) -> Path:
+        """The cached OpenRouter model catalog (ADR 0009); holds the public model list, never a key."""
+        return self.resolved_data_dir / "openrouter-models.json"
+
+    @property
     def calibration_file(self) -> Path:
         return self.resolved_data_dir / "calibration.json"
 
@@ -272,6 +320,7 @@ class HarnessConfig(BaseModel):
     evals: EvalsConfig = EvalsConfig()
     workflow: WorkflowConfig = WorkflowConfig()
     anthropic: AnthropicConfig = AnthropicConfig()
+    openrouter: OpenRouterConfig = OpenRouterConfig()
     paths: PathsConfig = PathsConfig()
 
 

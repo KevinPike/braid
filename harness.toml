@@ -18,6 +18,21 @@ max_retries = 2               # the SDK retries 408/409/429/5xx (529 included) a
 timeout = 600.0               # seconds per request
 thinking_display = "summarized"   # F9: "summarized" returns a readable thinking summary (run log, Inspectors);
                               # "omitted" is the 5.5 models' default (empty thinking). Billed the same either way
+# thinking_sample = 1.0       # share of Workflow calls that think (0-1); the rest send thinking disabled: faster and cheaper,
+                              # logged per node as thinking_on. A sampled run mixes two treatments; compare like with like
+
+# ADR 0009: OpenRouter, any model with structured output, through the same Anthropic SDK. Key: OPENROUTER_API_KEY, never here.
+# Use it with `--backend openrouter --model z-ai/glm-5.3` (any `vendor/model` id picks it); `harness-workflow models` lists them.
+[openrouter]
+# data_collection = "deny"    # "deny" excludes most :free models (they train on prompts); "allow" lets them run
+# max_tokens = 4096          # per call; a runaway reply is cut here and retried once, instead of running to 16000
+# require_parameters = true   # never route to a provider that ignores response_format
+# max_price = { prompt = 1.0, completion = 3.0 }   # USD per million tokens; a request over it is a 404, not a spend
+# fallbacks = []              # other model ids tried in order when the model errors
+# [openrouter.auto]           # --model openrouter/auto: OpenRouter picks per call, ranked by 7-day spend share
+# cost_tier = "medium"        # low | medium | high | xhigh | max: a band, not a ceiling
+# allowed_models = ["anthropic/*"]   # required; every model it admits needs structured output
+# excluded_models = []
 
 [paths]
 data_dir = "~/.braid"
@@ -59,6 +74,7 @@ backend = "anthropic"         # ADR 0006/0007: Workflows on the Anthropic API (d
 # model = "gemma4:e4b"        # Ollama model; default: the [profile] model (gemma4:12b is too heavy for this 24 GB Mac)
 # anthropic_model = "claude-haiku-5-5"  # a --model / /build --model id starting with "claude-" picks this backend too
 # effort = "low"              # Anthropic only: low | medium | high | xhigh | max; default leaves the model's own
+slow_call_s = 60.0           # warn once on stderr when one API request takes this long (0: never)
 max_cost_usd = 0.10           # Spend cap: an API run stops at the next node boundary once it has cost more; nothing is applied
 # arbiter = "claude-sonnet-5-5"   # F10: a stronger model rules on a Dispute no Invariant upholds (or claude-opus-5-5);
                               # unset, there is no arbitrate node. Its calls count toward the Spend cap

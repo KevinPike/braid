@@ -56,15 +56,18 @@ def plan_sha256(plan: Plan) -> str:
 
 def provenance(
     plan: Plan, *, plan_path: Path | None, backend: str, effort: str | None, max_attempts: int, execution: str,
-    bench: str | None, root: Path = HARNESS_ROOT,
+    bench: str | None, root: Path = HARNESS_ROOT, thinking_sample: float = 1.0,
 ) -> dict[str, Any]:
     """The summary fields that say what produced a run. Plain data: summaries from before F2 load without them."""
     commit, dirty = harness_commit(root)
-    return {
+    prov: dict[str, Any] = {
         "harness_commit": commit, "harness_dirty": dirty,
         "plan_path": str(plan_path) if plan_path else None, "plan_sha256": plan_sha256(plan),
         "backend": backend, "effort": effort, "max_attempts": max_attempts, "execution": execution, "bench": bench,
     }
+    if thinking_sample < 1.0:  # only when sampled, so older summaries and unsampled ones read the same
+        prov["thinking_sample"] = thinking_sample
+    return prov
 
 
 # --- the manifest ----------------------------------------------------------------------------------------------------

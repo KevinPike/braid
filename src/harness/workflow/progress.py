@@ -144,6 +144,8 @@ def describe(record: dict[str, Any]) -> str:
         text += f"  (model {record['model_seconds']:.1f}s)"
     if record.get("cost_usd") is not None:
         text += f"  ${record['cost_usd']:.4f}"
+    if cut := sum(1 for r in record.get("stop_reasons", [record.get("stop_reason")]) if r == "max_tokens"):
+        text += f"  ⚠ cut at the token cap x{cut}"
     return text
 
 

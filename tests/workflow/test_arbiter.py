@@ -371,7 +371,7 @@ def test_a_batched_arbiter_rides_the_runs_lane_and_never_sends_fallbacks() -> No
 
 
 def test_an_ollama_or_unpriced_arbiter_is_refused_before_a_run() -> None:
-    with pytest.raises(ValueError, match="Anthropic model id"):
+    with pytest.raises(ValueError, match="Anthropic .*or OpenRouter"):
         make_arbiter(HarnessConfig(workflow=WorkflowConfig(arbiter="gemma4:e4b")))
     with pytest.raises(ValueError, match="no pricing"):
         make_arbiter(HarnessConfig(workflow=WorkflowConfig(arbiter="claude-unpriced-9")), anthropic.AsyncAnthropic(api_key="k"))

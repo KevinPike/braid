@@ -247,9 +247,9 @@ async def test_batched_roles_share_the_runs_lane_and_each_request_names_its_role
 
 
 def test_a_role_model_must_be_an_anthropic_model_with_a_price() -> None:
-    with pytest.raises(ValueError, match=r"roles.tester\] needs an Anthropic model id"):
+    with pytest.raises(ValueError, match=r"roles.tester\] needs an Anthropic .*or OpenRouter"):
         make_roles(HarnessConfig(workflow=WorkflowConfig(roles=RolesConfig(tester=RoleConfig(model="gemma4:e4b")))), HAIKU)
-    with pytest.raises(ValueError, match=r"roles.implementer\] needs an Anthropic model id"):  # an effort on Ollama
+    with pytest.raises(ValueError, match=r"roles.implementer\] needs an Anthropic .*or OpenRouter"):  # an effort on Ollama
         make_roles(HarnessConfig(workflow=WorkflowConfig(roles=RolesConfig(implementer=RoleConfig(effort="low")))), "gemma4:e4b")
     with pytest.raises(ValueError, match="no pricing"):
         make_roles(HarnessConfig(workflow=WorkflowConfig(roles=RolesConfig(tester=RoleConfig(model="claude-unpriced-9")))),

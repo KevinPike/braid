@@ -127,6 +127,14 @@ class Recorder:
             fields["request_ids"] = [c.request_id for c in calls]
         if thinking := "\n\n".join(c.thinking for c in calls if c.thinking):
             fields["thinking"] = thinking
+        if any(c.stop_reason for c in calls):  # why each reply ended, and the requests' wall time (a slow call shows here)
+            fields["stop_reason"] = calls[-1].stop_reason
+            if len(calls) > 1:
+                fields["stop_reasons"] = [c.stop_reason for c in calls]
+        if any(c.seconds is not None for c in calls):
+            fields["call_seconds"] = round(sum(c.seconds or 0.0 for c in calls), 1)
+        if any(c.thinking_on is not None for c in calls):  # thinking is sampled: how many of this node's requests thought
+            fields["thinking_on"] = sum(1 for c in calls if c.thinking_on)
         self.cost_usd += cost
         self.input_tokens += fields["input_tokens"]
         self.output_tokens += fields["output_tokens"]
