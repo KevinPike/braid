@@ -17,8 +17,8 @@ from harness.workflow.model import ApiCall
 TAIL_LINES = 40
 VALUE_CHARS = 200  # a Route record's value is cut to this (a hint or a pytest tail can be long)
 
-Basis = Literal["code", "model", "human"]
-BASES: tuple[Basis, ...] = ("code", "model", "human")
+Basis = Literal["code", "model", "human", "mcp-client"]  # "mcp-client": an MCP client answered an interrupt (ADR 0013)
+BASES: tuple[Basis, ...] = ("code", "model", "human")  # always counted; "mcp-client" appears only in runs a client answered
 
 
 def tail(text: str, limit: int = TAIL_LINES) -> str:
@@ -101,6 +101,7 @@ class Recorder:
     proposed_invariants: list[dict[str, Any]] = field(default_factory=list)  # F10: from rulings, for a human to add
     served: dict[str, int] = field(default_factory=dict)  # OpenRouter: calls per served model (ADR 0009)
     task_types: dict[str, int] = field(default_factory=dict)  # openrouter/auto: calls per classifier task type
+    human: Basis = "human"  # the basis of a route an interrupt answer decides; "mcp-client" in runs started over MCP (ADR 0013)
 
     def add_route(self, route: Route) -> None:
         self.routes[route.basis] = self.routes.get(route.basis, 0) + 1
