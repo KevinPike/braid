@@ -121,3 +121,26 @@ roots = [".braid/skills", "~/.braid/skills"]   # first match wins; "~" is yours,
 claude_roots = false          # true adds .claude/skills and ~/.claude/skills, read-only
 max_index_tokens = 2000       # the system-prompt index; over it, skills are left out with a note
 script_timeout_s = 60
+
+# F16: MCP client. Servers are third-party code (ADR 0012): every tool call needs an Approval unless the tool's bare name
+# is in `allow`; a stdio server runs in the Sandbox with an environment built from scratch (PATH, HOME, LANG, TERM and
+# `env`, whose ${VAR}s must be listed in `pass_env`). Naming ANTHROPIC_API_KEY, OPENROUTER_API_KEY or any *_API_KEY is a
+# config error. A server's stderr goes to ~/.braid/mcp-logs/<name>.log. Tools show as mcp__<server>__<tool>; /mcp lists
+# them, /mcp restart <server> reconnects, /mcp trust <server> accepts a changed tool definition, /mcp read <server> <uri>
+# attaches a resource to your next message, and /<server>:<prompt> key=value runs a server's prompt.
+[mcp]
+enabled = true
+# [mcp.servers.git]
+# command = "uvx"
+# args = ["mcp-server-git", "--repository", "."]
+# allow = ["git_status", "git_log", "git_diff"]   # read-only; git_commit stays gated
+# paths = ["."]               # readable in the Sandbox besides the project
+# [mcp.servers.fetch]
+# command = "uvx"
+# args = ["mcp-server-fetch"]
+# network = true              # a Sandbox escape, granted here once and shown on every Approval
+# timeout_s = 30
+# [mcp.servers.docs]
+# url = "https://docs.example.com/mcp"   # Streamable HTTP
+# headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
+# pass_env = ["DOCS_TOKEN"]

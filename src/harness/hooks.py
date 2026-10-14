@@ -105,6 +105,15 @@ class WorkflowInterrupted(BaseHookEvent):
     kind: str
 
 
+@dataclass
+class McpServerChanged(BaseHookEvent):
+    """An MCP server connected, failed, was restarted or had a tool disabled or trusted (F16)."""
+
+    server: str
+    status: str
+    detail: str = ""
+
+
 class HarnessHooks:
     """Owns the registry for harness events and adapts each component's listener onto it."""
 

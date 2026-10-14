@@ -9,6 +9,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from harness.mcp.config import McpConfig
+
 Effort = Literal["low", "medium", "high", "xhigh", "max"]
 ThinkingDisplay = Literal["summarized", "omitted"]
 
@@ -327,6 +329,7 @@ class HarnessConfig(BaseModel):
     context: ContextConfig = ContextConfig()
     tools: ToolsConfig = ToolsConfig()
     skills: SkillsConfig = SkillsConfig()
+    mcp: McpConfig = McpConfig()
     decide: DecideConfig = DecideConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
