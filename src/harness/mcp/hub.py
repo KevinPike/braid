@@ -15,12 +15,13 @@ import json
 import logging
 import re
 import shlex
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Literal
 
+from mcp import types as mcp_types
 from mcp.client.session import ElicitationFnT
 from strands.tools.mcp import MCPAgentTool, MCPClient
 from strands.types._events import ToolResultEvent
@@ -38,6 +39,9 @@ MAX_NAME = 64  # the Anthropic API's limit on a tool name
 PROBE_TIMEOUT_S = 5.0
 _KEY = re.compile(r"\bsk-[A-Za-z0-9_\-]+")
 Transport = Callable[[], Any]
+# (server, params) -> the human's answer. It runs on the client's background thread; harness.mcp.elicit.Elicitor is the one.
+Elicit = Callable[[str, mcp_types.ElicitRequestParams], Awaitable[mcp_types.ElicitResult | mcp_types.ErrorData]]
+TICK_S = 0.25
 Status = Literal["connected", "failed", "disabled"]
 
 
@@ -126,6 +130,7 @@ class ServerState:
     client: MCPClient | None = None
     tools: dict[str, ToolInfo] = field(default_factory=dict)  # by agent-facing name
     prompts: dict[str, PromptInfo] = field(default_factory=dict)
+    asking: int = 0  # elicitations waiting for the human: the call timeout does not run meanwhile
 
     @property
     def kind(self) -> str:
@@ -167,7 +172,7 @@ class McpHub:
     def __init__(
         self, config: McpConfig, *, data_dir: Path, project: Path, hooks: HarnessHooks | None = None,
         notify: Callable[[str], None] | None = None, transports: Mapping[str, Transport] | None = None,
-        environ: Mapping[str, str] | None = None, elicitation_callback: ElicitationFnT | None = None,
+        environ: Mapping[str, str] | None = None, elicitation_callback: Elicit | None = None,
     ) -> None:
         self.config = config
         self.data_dir = data_dir
@@ -178,7 +183,7 @@ class McpHub:
         self.pins = Pins(data_dir / "mcp-pins.json")
         self._transports = dict(transports or {})
         self._environ = dict(environ if environ is not None else {})
-        self._elicit = elicitation_callback  # F17 hooks the Asker in here
+        self._elicit = elicitation_callback
         self.servers = {n: ServerState(n, c) for n, c in config.servers.items()}
 
     # --- lifecycle ---------------------------------------------------------------------------------------------------
@@ -258,22 +263,60 @@ class McpHub:
         st.tools, st.prompts = self._vet(st, raw), {p.name: replace(p, server=st.name) for p in prompts}
         self._publish(st)
 
+    def _callback(self, st: ServerState) -> ElicitationFnT | None:
+        """The client's elicitation callback for one server: the Asker's, told which server asks, and counted so that a
+        call waiting on the human is not timed out."""
+        elicit = self._elicit
+        if elicit is None:
+            return None
+
+        async def callback(context: Any, params: mcp_types.ElicitRequestParams) -> mcp_types.ElicitResult | mcp_types.ErrorData:
+            st.asking += 1
+            try:
+                return await elicit(st.name, params)
+            finally:
+                st.asking -= 1
+
+        return callback
+
+    async def _within(self, st: ServerState, call: Awaitable[ToolResult], limit: float) -> ToolResult:
+        """``wait_for(call, limit)``, except that time spent waiting for the human to answer an elicitation is not counted."""
+        if self._elicit is None:
+            return await asyncio.wait_for(call, limit)
+        task = asyncio.ensure_future(call)
+        loop, left = asyncio.get_running_loop(), limit
+        mark = loop.time()
+        try:
+            while True:
+                done, _ = await asyncio.wait({task}, timeout=min(left, TICK_S))
+                if done:
+                    return task.result()
+                now = loop.time()
+                if not st.asking:
+                    left -= now - mark
+                    if left <= 0:
+                        raise TimeoutError
+                mark = now
+        finally:
+            if not task.done():
+                task.cancel()
+
     def _client(self, st: ServerState) -> MCPClient:
         cfg = st.cfg
         timeout = cfg.startup_timeout_s
         if st.name in self._transports:
-            return MCPClient(self._transports[st.name], startup_timeout=timeout, elicitation_callback=self._elicit)
+            return MCPClient(self._transports[st.name], startup_timeout=timeout, elicitation_callback=self._callback(st))
         if cfg.stdio:
             transport = sandboxed_stdio(
                 cfg, state=state_dir(self.data_dir, st.name), project=self.project, errlog=self.log_path(st.name),
                 environ=self._environ,
             )
-            return MCPClient(transport, startup_timeout=timeout, elicitation_callback=self._elicit)
+            return MCPClient(transport, startup_timeout=timeout, elicitation_callback=self._callback(st))
         try:
             headers = {k: resolve(v, cfg.pass_env, self._environ) for k, v in cfg.headers.items()}
         except ValueError as exc:
             raise LaunchError(str(exc)) from None
-        return MCPClient(url=cfg.url, headers=headers or None, startup_timeout=timeout, elicitation_callback=self._elicit)
+        return MCPClient(url=cfg.url, headers=headers or None, startup_timeout=timeout, elicitation_callback=self._callback(st))
 
     @staticmethod
     def _open(client: MCPClient) -> tuple[list[MCPAgentTool], list[PromptInfo]]:
@@ -407,9 +450,11 @@ class McpHub:
         assert client is not None
         limit = st.cfg.timeout_s
         try:
-            result = await asyncio.wait_for(
-                client.call_tool_async(
-                    tool_use["toolUseId"], original, tool_use["input"], read_timeout_seconds=timedelta(seconds=limit),
+            result = await self._within(
+                st,
+                client.call_tool_async(  # the session's own read timeout would count the human's thinking time
+                    tool_use["toolUseId"], original, tool_use["input"],
+                    read_timeout_seconds=None if self._elicit else timedelta(seconds=limit),
                     cancel_signal=getattr(invocation_state.get("agent"), "_cancel_signal", None),
                 ),
                 limit,

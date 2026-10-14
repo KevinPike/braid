@@ -77,7 +77,7 @@ class ChoiceRequest(BaseModel):
             if len(set(labels)) != len(labels):
                 dup = next(label for label, k in Counter(labels).items() if k > 1)
                 raise ValueError(f"{where}.options: the label '{dup}' is repeated; labels must be unique in a question")
-            if all(label in CONFIRMATIONS for label in labels):
+            if all(label in CONFIRMATIONS for label in labels) and not (info.context and info.context.get("elicited")):
                 raise ValueError(
                     f"{where}.options: these options only confirm or deny ({', '.join(labels)}); a Choice is for "
                     "decisions that belong to the user, not for asking permission. Decide, or ask a real question")
@@ -131,6 +131,18 @@ class ChoiceRecord:
     at: datetime | None = None
     id: int | None = None
 
+    @classmethod
+    def refused(cls, raw: object, source: str, model: str, reason: str) -> ChoiceRecord:
+        """A call the tool turned away before showing it. The request is what the model sent when it still has the right
+        shape; one that does not gets a placeholder, so the row still says who was refused and why."""
+        try:
+            request = ChoiceRequest.model_validate_json(json.dumps(raw, default=str), context={"logged": True})
+        except ValidationError:
+            stub = Question(header="refused", question="(the request was not valid; see the reason)",
+                            options=(Option(label="-"), Option(label="--")))
+            request = ChoiceRequest(questions=(stub,))
+        return cls(source, model, request, ChoiceResult(status="refused", reason=reason), 0.0)
+
     def line(self) -> str:
         """One line for ``/choices``: when, source, status, latency and the answers (already redacted in the log)."""
         when = self.at.astimezone().strftime("%H:%M:%S") if self.at is not None else "-"
@@ -143,11 +155,12 @@ class ChoiceRecord:
 Asker = Callable[[ChoiceRequest, str], Awaitable[ChoiceResult]]
 
 
-def validate(raw: object) -> ChoiceRequest:
+def validate(raw: object, *, elicited: bool = False) -> ChoiceRequest:
     """A ``ChoiceRequest`` from what a model sent (camelCase or snake_case keys); ``ValidationError`` names the field.
 
-    Parsed as JSON so that lists become tuples under the strict config."""
-    return ChoiceRequest.model_validate_json(json.dumps(raw, default=str))
+    Parsed as JSON so that lists become tuples under the strict config. ``elicited`` is for an MCP server's form (F17),
+    where a yes/no field is legitimate: only the confirmation check is lifted, the secrets check still applies."""
+    return ChoiceRequest.model_validate_json(json.dumps(raw, default=str), context={"elicited": True} if elicited else None)
 
 
 def problems(exc: ValidationError) -> str:

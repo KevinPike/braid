@@ -14,7 +14,7 @@ from textual.widgets import Input, Static
 from harness.app import HarnessApp
 from harness.chat import ApprovalPrompt, ChoicePrompt, Reply
 from harness.choice import tool_schema
-from harness.config import AskConfig
+from harness.config import AskConfig, load_config
 from harness.demo import demo_app
 from harness.tools.ask import DESCRIPTION, TOOL_NAME
 from tests.anthropic_fakes import FakeApi, text, tool_use
@@ -108,7 +108,7 @@ async def test_the_fourth_call_in_a_turn_is_refused_and_never_shown(tmp_path: Pa
         refused = tool_results(api.bodies[4])[-1]
         assert refused["is_error"] and json.loads(refused["content"][0]["text"]) == {
             "status": "refused", "reason": "ask limit for this turn reached; decide or stop"}
-        assert len(app.choices.entries()) == 3
+        assert [r.result.status for r in app.choices.entries()] == ["answered"] * 3 + ["refused"]  # the refusal is a row too
 
 
 async def test_a_confirmation_is_refused_with_the_reason_and_the_model_can_retry(tmp_path: Path) -> None:
@@ -123,6 +123,10 @@ async def test_a_confirmation_is_refused_with_the_reason_and_the_model_can_retry
         assert first["status"] == "refused" and "questions[0].options" in first["reason"] and "confirm" in first["reason"]
         await pilot.press("2", "enter")
         await until(pilot, lambda: not app.generating)
+        refused, answered = app.choices.entries()
+        assert (refused.result.status, answered.result.status) == ("refused", "answered")
+        assert "confirm" in refused.result.reason and refused.latency_s == 0.0 and refused.source == "chat"
+        assert [o.label for o in refused.request.questions[0].options] == ["Yes", "No"]  # what the model sent, as logged
 
 
 async def test_two_refusals_stop_the_tool_for_the_turn(tmp_path: Path) -> None:
@@ -138,7 +142,9 @@ async def test_two_refusals_stop_the_tool_for_the_turn(tmp_path: Path) -> None:
         await until(pilot, lambda: not app.generating)
         third = json.loads(tool_results(api.bodies[3])[-1]["content"][0]["text"])
         assert third["status"] == "refused" and "limit" in third["reason"]
-        assert not app.choices.entries()
+        rows = app.choices.entries()  # all three are rows, the invalid ones with a placeholder request
+        assert [r.result.status for r in rows] == ["refused"] * 3 and rows[0].request.questions[0].header == "refused"
+        assert "limit" in rows[2].result.reason
 
 
 async def test_ctrl_c_with_the_widget_open_leaves_no_unpaired_tool_use_and_answers_nothing(tmp_path: Path) -> None:
@@ -204,6 +210,50 @@ def test_ask_defaults() -> None:
     assert (AskConfig().calls_per_turn, AskConfig().refusals_per_turn, AskConfig().timeout_s) == (3, 2, 0.0)
 
 
+def test_the_ask_table_in_harness_toml_is_parsed(tmp_path: Path) -> None:
+    path = tmp_path / "harness.toml"
+    path.write_text("[ask]\ncalls_per_turn = 1\nrefusals_per_turn = 5\ntimeout_s = 12.5\n\n[tools]\nask = false\n")
+    cfg = load_config(path)
+    assert (cfg.ask.calls_per_turn, cfg.ask.refusals_per_turn, cfg.ask.timeout_s, cfg.tools.ask) == (1, 5, 12.5, False)
+    path.write_text("[ask]\ntimeout_s = \"soon\"\n")
+    with pytest.raises(ValueError, match="timeout_s"):
+        load_config(path)
+
+
+async def test_the_configured_calls_per_turn_is_what_the_tool_enforces(tmp_path: Path) -> None:
+    api = FakeApi().reply(ask("toolu_1"), stop_reason="tool_use").reply(ask("toolu_2"), stop_reason="tool_use").reply(text("ok"))
+    cfg = config(tmp_path)
+    cfg.ask = AskConfig(calls_per_turn=1)
+    app = HarnessApp(cfg, anthropic_client=api.client())
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app._agent is not None)
+        await submit(app, pilot, "ask twice")
+        await until(pilot, lambda: bool(app.query(ChoicePrompt)))
+        await pilot.pause(0.05)
+        await pilot.press("1", "enter")
+        await until(pilot, lambda: not app.generating)
+        assert json.loads(tool_results(api.bodies[2])[-1]["content"][0]["text"])["status"] == "refused"
+
+
+async def test_a_timeout_gives_timed_out_to_the_model_and_the_log_and_chooses_nothing(tmp_path: Path) -> None:
+    api = FakeApi().reply(ask(), stop_reason="tool_use").reply(text("I will decide myself."))
+    cfg = config(tmp_path)
+    cfg.ask = AskConfig(timeout_s=0.2)
+    app = HarnessApp(cfg, anthropic_client=api.client())
+    async with app.run_test() as pilot:
+        await until(pilot, lambda: app._agent is not None)
+        await submit(app, pilot, "which store?")
+        await until(pilot, lambda: bool(app.query(ChoicePrompt)))
+        await until(pilot, lambda: not app.generating)
+        assert not app.query(ChoicePrompt) and "✗ choice cancelled" not in records(app)
+        [result] = tool_results(api.bodies[1])
+        assert not result.get("is_error")
+        assert json.loads(result["content"][0]["text"]) == {
+            "status": "timed_out", "reason": "no answer within 0.2 s; nothing was chosen"}
+        [row] = app.choices.entries()
+        assert row.result.status == "timed_out" and not row.result.answers and row.latency_s >= 0.2
+
+
 # --- the offline demo -----------------------------------------------------------------------------------------------
 
 
@@ -224,6 +274,8 @@ async def test_demo_choice_boots_without_a_key_and_asks_a_choice_offline(tmp_pat
         said = [r.text for r in app.query(Reply)][-1]
         assert "argon2-cffi" in said and "JSON file" in said and "scripted demo" in said
         assert [r.result.status for r in app.choices.entries()] == ["answered"]
+        banner = "\n".join(str(n.render()) for n in app.query(".note"))
+        assert "scripted" in banner and "offline" in banner and "data leaves this machine" not in banner
     assert not (tmp_path / ".braid").exists()  # nothing written to the real data dir
 
 
