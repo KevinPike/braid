@@ -83,7 +83,7 @@ def make_openrouter_client(config: OpenRouterConfig) -> anthropic.AsyncAnthropic
         raise ValueError("OPENROUTER_API_KEY is not set (put it in .env and run with `uv run --env-file .env`)")
     return anthropic.AsyncAnthropic(
         base_url=config.base_url, api_key=key, max_retries=config.max_retries,
-        timeout=httpx2.Timeout(config.timeout, connect=5.0), default_headers={"X-Title": "braid"},
+        timeout=httpx2.Timeout(config.timeout, connect=5.0), default_headers={"X-Title": "braid", "X-OpenRouter-Metadata": "enabled"},  # metadata: the auto-router's task type
     )
 
 

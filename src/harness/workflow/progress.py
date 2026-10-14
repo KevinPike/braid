@@ -169,6 +169,10 @@ def final_report(rec: Recorder, total_s: float, *, by_role: bool = False) -> str
     if api:
         head += (f"\ncost ${rec.cost_usd:.4f}: {rec.input_tokens} in, {rec.output_tokens} out, "
                  f"{rec.cache_read_input_tokens} cache-read tokens")
+        if len(rec.served) > 1 or rec.task_types:  # a routed run: who answered, and how the router typed the prompts
+            head += "\nserved by: " + ", ".join(f"{m} x{n}" for m, n in sorted(rec.served.items(), key=lambda kv: -kv[1]))
+            if rec.task_types:
+                head += "\ntask types: " + ", ".join(f"{t} x{n}" for t, n in sorted(rec.task_types.items(), key=lambda kv: -kv[1]))
         if by_role or "arbiter" in rec.roles:  # F10, F11: Roles on other models cost more, so show where the money went
             head += "\nby role: " + ", ".join(
                 f"{role} ${t['cost_usd']:.4f} ({int(t['calls'])} calls)" for role, t in sorted(rec.roles.items())

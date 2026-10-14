@@ -689,3 +689,37 @@ def test_flags_come_first_and_the_rest_is_the_goal_and_a_pytest_command_is_shown
     assert shorten_command("/tmp/v/.venv/bin/python -m pytest -q tests/test_x.py") == "pytest -q tests/test_x.py"
     assert shorten_command("test -f pyproject.toml") == "test -f pyproject.toml"
     assert len(shorten_command("echo " + "x" * 300)) == 90
+
+
+async def test_an_openrouter_model_is_checked_against_the_catalog_before_a_tui_run(
+    fixture_repo: Path, fixture_venv: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ADR 0009: /build --model vendor/model refuses a model without structured output, as the CLI does."""
+    from harness.openrouter import KeyStatus, ModelRefused, parse_catalog
+
+    save_plan(tmp_path)
+    catalog = parse_catalog({"data": []})
+    asked: list[list[str]] = []
+
+    async def fake_prepare(config: HarnessConfig, ids: list[str]) -> Any:
+        asked.append(ids)
+        if "old/no-json" in ids:
+            raise ModelRefused("old/no-json does not support structured outputs; Workflows need JSON")
+        return catalog, KeyStatus(5.0, 4.5, 0.5, 1000, 1000)
+
+    monkeypatch.setattr("harness.workflow_pane.prepare_openrouter", fake_prepare)
+    model = Gated([MUL_TEST, MUL_IMPL], at=1)
+    app, _ = await swap_app(tmp_path, fixture_repo, fixture_venv, model)
+    async with app.run_test() as pilot:
+        await pilot.pause(0.2)
+        await submit(app, "/build --no-hints --model old/no-json")
+        await until(pilot, lambda: any("structured outputs" in t for t in texts(app, "note")))
+        assert model.calls == 0  # refused: no run started, no model call
+        await submit(app, "/build --no-hints --model z-ai/glm-5.3")
+        await until(pilot, lambda: model.calls == 2)
+        assert asked == [["old/no-json"], ["z-ai/glm-5.3"]] and app.workflows._catalog is catalog
+        assert any("on OpenRouter; $4.50 of key credit left" in t for t in texts(app, "note"))
+        model.release.set()
+        await until(pilot, lambda: bool(app.query(ApprovalPrompt)))
+        await pilot.press("n")
+        await finished(app, pilot)

@@ -24,7 +24,7 @@ import tempfile
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from statistics import mean
@@ -51,7 +51,7 @@ def harness_commit(root: Path = HARNESS_ROOT) -> tuple[str | None, bool | None]:
 
 def plan_sha256(plan: Plan) -> str:
     """A hash of the Plan's content (canonical JSON), so reformatting a file does not change it but any edit does."""
-    return hashlib.sha256(json.dumps(plan.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps(plan.model_dump(mode="json", exclude={"author"}), sort_keys=True).encode()).hexdigest()
 
 
 def provenance(
@@ -65,6 +65,9 @@ def provenance(
         "plan_path": str(plan_path) if plan_path else None, "plan_sha256": plan_sha256(plan),
         "backend": backend, "effort": effort, "max_attempts": max_attempts, "execution": execution, "bench": bench,
     }
+    if plan.author is not None:  # who wrote the Plan, for the planner x coder table (report --pairs)
+        prov["planner"] = plan.author.model
+        prov["planner_effort"] = plan.author.effort
     if thinking_sample < 1.0:  # only when sampled, so older summaries and unsampled ones read the same
         prov["thinking_sample"] = thinking_sample
     return prov
@@ -116,6 +119,17 @@ def load_manifest(path: Path = DEFAULT_MANIFEST) -> dict[str, BenchSet]:
             raise ValueError(f"set {name!r} names a pair twice ({', '.join(keys)}); give the pairs a `name`")
         sets[name] = BenchSet(name, body.get("description", ""), pairs)
     return sets
+
+
+def with_plans_dir(bench_set: BenchSet, plans_dir: Path) -> BenchSet:
+    """``bench_set`` with each pair's Plan taken from ``plans_dir/<key>.json`` (what ``plans-for`` writes). ValueError names
+    every pair that has none, before anything runs."""
+    missing = [p.key for p in bench_set.pairs if not (plans_dir / f"{p.key}.json").exists()]
+    if missing:
+        raise ValueError(f"no Plan in {plans_dir} for: {', '.join(missing)}")
+    return BenchSet(
+        bench_set.name, bench_set.description, tuple(replace(p, plan=(plans_dir / f"{p.key}.json").resolve()) for p in bench_set.pairs),
+    )
 
 
 # --- the ledger ------------------------------------------------------------------------------------------------------
@@ -466,6 +480,26 @@ def on_frontier(p: FrontierPoint, points: Sequence[FrontierPoint]) -> bool:
 
 FRONTIER_LEGEND = ("Frontier (F12): hidden pass rate (mean over katas) against mean cost per kata run, cheapest first. "
                    "* marks a label no other label beats on both. Per kata: hidden pass rate · cost per run.")
+
+
+def pairs_table(lines: Sequence[Mapping[str, Any]], labels_: Sequence[str]) -> str:
+    """Planner x coder: one row per planner (the model that wrote the Plans; ``manifest`` when they carry no author), one
+    column per coder (the model that built them), each cell the hidden pass rate (Green share without a grade) and
+    the cost per kata run. A label whose runs mix planners or coders shows under the first it finds."""
+    cells: dict[tuple[str, str], str] = {}
+    for p in frontier_points(lines, labels_):
+        first = next(x["summary"] for x in lines if x.get("label") == p.label)
+        planner = str(first.get("planner") or "manifest")
+        stats = [s for k, s in aggregate(lines, p.label).items() if k != "total"]
+        rate = p.hidden if p.hidden is not None else mean(s.green / s.planned for s in stats if s.planned)
+        cells[planner, p.model] = f"{rate:.0%}{'' if p.hidden is not None else ' green'} · ${p.cost:.4f}"
+    if not cells:
+        return f"no ledger lines labelled {', '.join(map(repr, labels_))}"
+    planners = sorted({p for p, _ in cells})
+    coders = sorted({c for _, c in cells})
+    rows = ["| planner \\ coder | " + " | ".join(coders) + " |", "|---|" + "---|" * len(coders)]
+    rows += [f"| {pl} | " + " | ".join(cells.get((pl, c), "") for c in coders) + " |" for pl in planners]
+    return "\n".join(rows) + "\n\nPlanner x coder: hidden pass rate (mean over katas) · cost per kata run. 'manifest' Plans carry no author."
 
 
 def frontier_table(lines: Sequence[Mapping[str, Any]], labels_: Sequence[str]) -> str:

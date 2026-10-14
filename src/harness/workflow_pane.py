@@ -36,7 +36,8 @@ from harness.hooks import ApprovalRequested, ApprovalResolved, WorkflowInterrupt
 from harness.inspector import RunInspector
 from harness.sandbox import RunResult, Sandbox, SandboxPolicy, SeatbeltSandbox, Workspace
 from harness.status import StatusBar
-from harness.workflow.backend import choose, make_model, make_roles
+from harness.openrouter import Catalog, OpenRouterError
+from harness.workflow.backend import choose, make_model, make_roles, openrouter_ids, prepare_openrouter
 from harness.workflow.cli import api_error_note, cost_note, plan_id_for, show
 from harness.workflow.execute import build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel
@@ -144,6 +145,7 @@ class WorkflowPane:
         self._session_start = 0.0
         self._idx, self._total = 0, 0
         self._swapped = False
+        self._catalog: Catalog | None = None  # the OpenRouter Catalog behind the current run's models (ADR 0009)
         self._chat: tuple[str | None, int] = (None, 0)
         self._active_model = ""
 
@@ -345,7 +347,17 @@ class WorkflowPane:
         """Unload the chat model and preflight the workflow model, behind the status bar's loading state."""
         app = self.app
         backend = self._backend()
-        if backend is None or choose(app.config, model=model_id).backend == "anthropic":
+        chosen = choose(app.config, model=model_id).backend
+        if chosen == "openrouter":  # ADR 0009: refuse a model without structured output before any call, as the CLI does
+            try:
+                self._catalog, key = await prepare_openrouter(app.config, openrouter_ids(app.config, model_id))
+            except (ValueError, OpenRouterError) as exc:
+                await app.note(f"workflow: {exc}")
+                return False
+            left = "no key limit" if key.limit_remaining is None else f"${key.limit_remaining:.2f} of key credit left"
+            await app.note(f"workflow: {model_id} on OpenRouter; {left}")
+            return True
+        if backend is None or chosen == "anthropic":
             return True  # an API run skips Preflight and the swap: the chat model stays loaded (ADR 0006)
         chat_model, chat_ctx = self._chat_target()
         if app._client is not None and chat_model is None:
@@ -409,7 +421,7 @@ class WorkflowPane:
         if self.deps.model_factory is not None:
             return self.deps.model_factory(model_id)
         config = self.app.config
-        return make_model(config, choose(config, model=model_id), self.app._client)
+        return make_model(config, choose(config, model=model_id), self.app._client, self._catalog)
 
     def _resumed(self, values: dict[str, Any]) -> None:
         data = values.get("recorder")

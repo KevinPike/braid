@@ -342,3 +342,48 @@ async def test_a_slow_request_warns_once_and_is_still_awaited() -> None:
     model._create = slow  # type: ignore[method-assign]
     assert (await model.complete("s", "p", Answer)).value == 3
     assert len(warned) == 1 and warned[0][0] == "z-ai/glm-5.3" and warned[0][1] >= 0.05
+
+
+# --- who served it ------------------------------------------------------------------------------------------------------------
+
+def routed(model: str, provider: str, task: str | None) -> dict[str, Any]:
+    reply = message(model=model)
+    reply["provider"] = provider
+    meta: dict[str, Any] = {"requested": "openrouter/auto", "pipeline": []}
+    if task:
+        meta["pipeline"] = [{"type": "plugin", "name": "auto-router", "data": {"resolved_to": model, "task_type": task}}]
+    reply["openrouter_metadata"] = meta
+    return reply
+
+
+async def test_each_call_records_its_provider_and_the_routers_task_type() -> None:
+    model, _ = make([routed("z-ai/glm-5.3", "Parasail", "code:general_impl")])
+    await model.complete("s", "p", Answer)
+    [call] = model.calls
+    assert call.provider == "Parasail" and call.task_type == "code:general_impl" and call.served_model == "z-ai/glm-5.3"
+
+
+async def test_a_pinned_model_has_a_provider_but_no_task_type() -> None:
+    model, _ = make([routed("z-ai/glm-5.3", "Cohere", None)])
+    await model.complete("s", "p", Answer)
+    assert model.calls[0].provider == "Cohere" and model.calls[0].task_type == ""
+
+
+def test_the_recorder_counts_served_models_and_task_types_for_the_summary_and_the_report() -> None:
+    from harness.usage import api_call
+    from harness.workflow.progress import final_report
+    from harness.workflow.records import Recorder
+
+    rec = Recorder()
+    calls = [api_call("m", 1, 1, 0, 0, None, cost_usd=0.01, served_model=s, provider="P", task_type=t)
+             for s, t in (("a/x", "code:general_impl"), ("b/y", "code:debugging"), ("a/x", "code:general_impl"))]
+    fields = rec.add_usage(calls)
+    assert fields["served_model"] == "a/x" and fields["provider"] == "P" and fields["task_type"] == "code:general_impl"
+    assert rec.served == {"a/x": 2, "b/y": 1} and rec.task_types == {"code:general_impl": 2, "code:debugging": 1}
+    report = final_report(rec, 1.0)
+    assert "served by: a/x x2, b/y x1" in report and "code:general_impl x2" in report
+
+
+def test_the_metadata_header_is_on_the_openrouter_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPENROUTER_API_KEY", KEY)
+    assert make_openrouter_client(OpenRouterConfig()).default_headers["X-OpenRouter-Metadata"] == "enabled"

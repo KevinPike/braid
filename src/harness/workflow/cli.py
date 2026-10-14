@@ -30,7 +30,7 @@ from harness.workflow.backend import Choice, RoleModels, choose, make_model, mak
 from harness.workflow.batch import BatchedWorkflowModel, Batcher
 from harness.workflow.execute import Ask, execution_variant, build_execution_graph, drive_graph, initial_state
 from harness.workflow.model import WorkflowModel, WorkflowModelError
-from harness.workflow.plan import Plan
+from harness.workflow.plan import Plan, PlanAuthor
 from harness.workflow.plan_loop import build_plan_graph, initial_plan_state
 from harness.workflow.progress import PLAN_NODES, Progress, describe, final_report
 from harness.workflow.records import Recorder, RunLog, amend_summary, write_summary
@@ -81,7 +81,17 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--parallel", type=int, metavar="N", help="runs at a time (default 1; with --batch, every run)")
     n.add_argument("--flush-s", type=float, default=30.0, metavar="S",
                    help="with --batch: send a batch S seconds after its first call even if some runs are not waiting (default 30)")
-    for sp in (g, b, n):
+    pf = sub.add_parser("plans-for", help="write a Plan per kata of a bench set with one model as planner (no human review)")
+    pf.add_argument("set", help="a set in the manifest; its katas' goals and projects are used, its Plans only for the goal")
+    pf.add_argument("--model", help="the planner's model id")
+    pf.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default by the model id)")
+    pf.add_argument("--only", metavar="KATA,KATA", help="plan only these katas of the set")
+    pf.add_argument("--out", type=Path, help="where to write <kata>.json (default <data_dir>/plans/<set>-<model>)")
+    pf.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for each Plan loop (default [workflow] max_cost_usd)")
+    pf.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
+    pf.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    n.add_argument("--plans-dir", type=Path, metavar="DIR", help="build the Plans in DIR/<kata>.json (from plans-for) instead of the set's own")
+    for sp in (g, b, n, pf):
         sp.add_argument("--thinking-sample", type=float, metavar="P", help="share of calls that think (0-1); the rest run with thinking "
                         "disabled, which is faster and cheaper (default [anthropic] thinking_sample)")
     m = sub.add_parser("models", help="list OpenRouter models (ADR 0009): price, context, structured output, free")
@@ -97,6 +107,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("labels", nargs="*", help="a label to show (none: list the labels)")
     r.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare label B against label A")
     r.add_argument("--frontier", nargs="+", metavar="LABEL", help="F12: hidden pass rate against cost per kata, per label")
+    r.add_argument("--pairs", nargs="+", metavar="LABEL", help="planner x coder: hidden pass rate and cost per cell, for these labels")
     r.add_argument("--summaries", type=Path, metavar="PRACTICE_DIR", help="the latest summary per model x kata under DIR/*/runs/")
     r.add_argument("--all", action="store_true", help="with --summaries: include hinted runs")
     r.add_argument("--ledger", type=Path, help="the ledger (default <data_dir>/bench.jsonl)")
@@ -510,8 +521,10 @@ def plan_id_for(goal: str, stamp: str) -> str:
 async def run_plan(
     goal: str, project: Path, *, model: WorkflowModel, model_id: str, config: HarnessConfig, ask: Ask,
     out: TextIO = sys.stdout, err: TextIO = sys.stderr, clock: Callable[[], float] = time.monotonic, tty: bool | None = None,
+    on_saved: Callable[[Path], None] | None = None,
 ) -> int:
-    """Run the Plan loop on ``goal``, researching ``project``; prints the Plan as Markdown and the path it was saved to."""
+    """Run the Plan loop on ``goal``, researching ``project``; prints the Plan as Markdown and the path it was saved to.
+    The saved Plan records its author (model, backend, effort) for the planner x coder report; ``on_saved`` gets its path."""
     cfg = config.workflow
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     plan_id = plan_id_for(goal, stamp)
@@ -558,6 +571,14 @@ async def run_plan(
         out.flush()
         return SPEND_CAP_EXIT
     path = final["plan_path"]
+    authored = Plan.load(Path(path))
+    authored.author = PlanAuthor(
+        model=model_id, backend=choose(config, model=model_id).backend, effort=cfg.effort,
+        written_at=datetime.now().isoformat(timespec="seconds"),
+    )
+    authored.save(Path(path))
+    if on_saved is not None:
+        on_saved(Path(path))
     out.write(
         f"\n{final['markdown']}\ntotal wall time {clock() - started:.1f}s, model time {rec.model_seconds:.1f}s over "
         f"{rec.model_calls} calls{cost_note(rec)}, {final['round']} round(s), status: {final['status']}\n"
@@ -671,6 +692,12 @@ async def live_bench(args: argparse.Namespace, config: HarnessConfig) -> int:
         sys.stderr.write(f"{exc}\n")
         return 2
     bench_set = sets[args.set]
+    if args.plans_dir is not None:  # a planner x coder run: the same katas, the Plans another model wrote
+        try:
+            bench_set = bench.with_plans_dir(bench_set, args.plans_dir.expanduser())
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 2
     parallel = args.parallel or (len(cells) * len(bench_set.pairs) * args.repeat if args.batch else 1)
     try:
         return await run_grid(
@@ -729,7 +756,9 @@ def report(args: argparse.Namespace, config: HarnessConfig, out: TextIO = sys.st
         return 0
     ledger = args.ledger or config.paths.bench_ledger
     lines = bench.read_ledger(ledger)
-    if args.frontier:
+    if args.pairs:
+        out.write(bench.pairs_table(lines, args.pairs) + "\n")
+    elif args.frontier:
         out.write(bench.frontier_table(lines, args.frontier) + "\n")
     elif args.compare:
         out.write(bench.compare_table(lines, *args.compare) + "\n")
@@ -758,6 +787,39 @@ async def show_models(args: argparse.Namespace, config: HarnessConfig, out: Text
         notes=load_notes(args.notes), as_json=args.json, pattern=args.pattern,
     ) + "\n")
     return 0
+
+
+async def live_plans_for(args: argparse.Namespace, config: HarnessConfig) -> int:
+    """``plans-for``: the Plan loop on each kata's goal with one planner, approving each Plan unseen; the Plans (each carrying
+    its author) land in ``--out`` for ``bench --plans-dir``. A Plan that fails (Spend cap, API error) is reported and skipped."""
+    sets = bench.load_manifest(args.manifest)
+    if args.set not in sets:
+        sys.stderr.write(f"no set {args.set!r} in {args.manifest} (sets: {', '.join(sets)})\n")
+        return 2
+
+    async def body(model: WorkflowModel, model_id: str) -> int:
+        slug = re.sub(r"[^A-Za-z0-9._-]", "_", model_id)
+        dest = (args.out or config.paths.resolved_data_dir / "plans" / f"{args.set}-{slug}").expanduser()
+        failed = 0
+        only = {k.strip() for k in args.only.split(",")} if args.only else None
+        todo = [p for p in sets[args.set].pairs if only is None or p.key in only]
+        for pair in todo:
+            saved: list[Path] = []
+            goal = Plan.load(pair.plan).goal
+            sys.stdout.write(f"\n== {pair.key}: planning with {model_id}\n")
+            code = await run_plan(goal, pair.project, model=model, model_id=model_id, config=config,
+                                  ask=lambda _payload: "approve", on_saved=saved.append)
+            if code or not saved:
+                failed += 1
+                sys.stdout.write(f"== {pair.key}: no Plan (exit {code})\n")
+                continue
+            dest.mkdir(parents=True, exist_ok=True)
+            Plan.load(saved[0]).save(dest / f"{pair.key}.json")
+        sys.stdout.write(f"\nPlans in {dest} ({len(todo) - failed} of {len(todo)})\n"
+                         f"build them: harness-workflow bench {args.set} --plans-dir {dest} --model <coder>\n")
+        return 1 if failed else 0
+
+    return await with_model(args, config, body)
 
 
 async def live_plan(args: argparse.Namespace, config: HarnessConfig, ask: Ask) -> int:
@@ -800,6 +862,10 @@ def main(argv: list[str] | None = None, *, ask: Ask = _stdin) -> None:
         code = report(args, config)
     elif args.command == "models":
         code = asyncio.run(show_models(args, config))
+    elif args.command == "plans-for":
+        if args.max_cost is not None:
+            config.workflow.max_cost_usd = args.max_cost
+        code = asyncio.run(run_cancellable(live_plans_for(args, config)))
     elif args.command == "bench":
         code = asyncio.run(run_cancellable(live_bench(args, config)))
     else:

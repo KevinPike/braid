@@ -76,6 +76,16 @@ class GuardedWorkflowModel:
         raise WorkflowModelError(f"{self.model_id} returned invalid JSON twice for {schema.__name__}:{error}")
 
 
+def openrouter_route(response: Reply) -> tuple[str, str]:
+    """(provider, task type) from an OpenRouter reply: ``provider`` is a top-level field, and ``openrouter/auto``'s classifier
+    puts ``task_type`` in its pipeline step when the request asked for ``X-OpenRouter-Metadata``. Empty when absent."""
+    extra = response.model_extra or {}
+    meta = extra.get("openrouter_metadata")
+    steps = meta.get("pipeline") if isinstance(meta, dict) else None
+    task = next((str(d["task_type"]) for s in steps or [] if isinstance(s, dict) and isinstance(d := s.get("data"), dict) and "task_type" in d), "")
+    return str(extra.get("provider") or ""), task
+
+
 def warn_slow(model_id: str, seconds: float) -> None:
     """The default ``on_slow``: one permanent line on stderr (over a live spinner line if there is one)."""
     clear = "\r\x1b[K" if sys.stderr.isatty() else ""
@@ -133,13 +143,14 @@ class AnthropicWorkflowModel:
     def _record(self, response: Reply, thinking_on: bool | None = None, seconds: float | None = None) -> None:
         u = response.usage
         cost: float | None = None
+        provider, task_type = openrouter_route(response) if self.reported_cost else ("", "")
         if self.reported_cost:  # OpenRouter adds ``cost`` (USD) to ``usage``; the SDK keeps it as an extra field
             reported = getattr(u, "cost", None)
             if not isinstance(reported, (int, float)):  # the call is billed, so keep its tokens (at 0: unknown) and stop the run
                 self.calls.append(api_call(
                     self.model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
                     response._request_id, served_model=str(response.model), cost_usd=0.0, thinking_on=thinking_on,
-                    stop_reason=str(response.stop_reason or ""), seconds=seconds,
+                    stop_reason=str(response.stop_reason or ""), seconds=seconds, provider=provider, task_type=task_type,
                 ))
                 raise ApiFailure("UnreportedCost", f"{self.model_id}: the reply's usage carried no cost", request_id=response._request_id)
             cost = float(reported)
@@ -147,6 +158,7 @@ class AnthropicWorkflowModel:
             self.model_id, u.input_tokens, u.output_tokens, u.cache_read_input_tokens, u.cache_creation_input_tokens,
             response._request_id, thinking=thinking_text(response.content), served_model=str(response.model), cost_usd=cost,
             thinking_on=thinking_on, stop_reason=str(response.stop_reason or ""), seconds=seconds,
+            provider=provider, task_type=task_type,
         ))
         if self.vet_served is not None:
             self.vet_served(str(response.model))

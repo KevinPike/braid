@@ -15,6 +15,15 @@ class Assumption(BaseModel):
     evidence: str | None = None  # "path:line - what it shows", from Plan-loop research
 
 
+class PlanAuthor(BaseModel):
+    """Who wrote a Plan (ADR 0009's planner x coder pairs): the model and effort of the Plan loop that produced it."""
+
+    model: str
+    backend: str
+    effort: str | None = None
+    written_at: str = ""
+
+
 class Plan(BaseModel):
     goal: str
     behaviors: list[str] = Field(min_length=1)
@@ -25,6 +34,7 @@ class Plan(BaseModel):
     open_questions: list[str] = []
     notes: list[str] = []
     invariants: list[Invariant] = []  # F3: rules every expected value in a test must satisfy, checked by code
+    author: PlanAuthor | None = None  # set when the Plan loop wrote it; not part of the Plan's hash
 
     @classmethod
     def load(cls, path: Path) -> Plan:
