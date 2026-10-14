@@ -844,7 +844,7 @@ class HarnessApp(App[None]):
 
     async def _mcp_command(self, args: str) -> None:
         if self.mcp is None:
-            await self._note("/mcp: no MCP servers ([mcp.servers.*] in harness.toml, [mcp] enabled)")
+            await self._note("/mcp: no MCP servers ([mcp.servers.*] in braid.toml, [mcp] enabled)")
             return
         verb, _, rest = args.partition(" ")
         rest = rest.strip()
@@ -1250,7 +1250,7 @@ class HarnessApp(App[None]):
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="harness")
-    parser.add_argument("config", nargs="?", type=Path, help="path to harness.toml (default ./harness.toml)")
+    parser.add_argument("config", nargs="?", type=Path, help="path to braid.toml (default ./braid.toml)")
     which = parser.add_mutually_exclusive_group()
     which.add_argument("--resume", metavar="ID", help="resume the session with this id (or unambiguous prefix)")
     which.add_argument("--continue", dest="continue_last", action="store_true", help="resume the most recent session")

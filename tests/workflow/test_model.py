@@ -109,4 +109,4 @@ def test_workflow_config_defaults_stop_thinking_and_cap_output() -> None:
     from harness.config import WorkflowConfig, load_config
 
     assert WorkflowConfig().think is False and WorkflowConfig().num_predict == 4096
-    assert load_config(Path("harness.toml")).workflow.num_predict == 4096
+    assert load_config(Path("braid.toml")).workflow.num_predict == 4096

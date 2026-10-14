@@ -10,13 +10,13 @@ Skills loaded: `mattpocock-skills:writing-for-agents` (used for the SKILL.md and
 
 ---
 
-**Status (2026-10-13): F14-F18 built and gated** (ADRs 0011-0013; tests in `tests/skills`, `tests/mcp`). Not done: the status-bar flag for an unsandboxed MCP server, a real-server Ctrl-C check, the Seatbelt spike against real third-party MCP servers (needs network), a real MCP-client check of `harness-mcp` (needs the user's approval), and the daily spend total counts only MCP-started runs. Register the server with `claude mcp add braid -- uv run --directory <repo> --env-file .env harness-mcp`.
+**Status (2026-10-13): F14-F18 built and gated** (ADRs 0011-0013; tests in `tests/skills`, `tests/mcp`). Not done: the status-bar flag for an unsandboxed MCP server, a real-server Ctrl-C check, the Seatbelt spike against real third-party MCP servers (needs network), a real MCP-client check of `braid-mcp` (needs the user's approval), and the daily spend total counts only MCP-started runs. Register the server with `claude mcp add braid -- uv run --directory <repo> --env-file .env braid-mcp`.
 
 ## Goals
 
 1. The chat agent sees every discovered skill as one line (name + description) and loads a body only when it, or the user with `/skill-name`, activates it.
 2. A skill's `scripts/` run only through the `Sandbox` (ADR 0005), each run behind an **Approval**.
-3. braid connects to stdio and HTTP MCP servers from `harness.toml`; their tools reach the Strands agent namespaced, gated by Approval unless allow-listed, with no harness secret in their environment, and a broken server becomes a note, never a crash.
+3. braid connects to stdio and HTTP MCP servers from `braid.toml`; their tools reach the Strands agent namespaced, gated by Approval unless allow-listed, with no harness secret in their environment, and a broken server becomes a note, never a crash.
 4. MCP prompts become slash commands; resources can be pulled in by the user.
 5. braid runs as an MCP server (stdio) so Claude Code can list models, Plans and runs for free and start `plan`/`build`/`bench` only within a **Spend cap** and with an explicit confirm.
 
@@ -53,7 +53,7 @@ Skills loaded: `mattpocock-skills:writing-for-agents` (used for the SKILL.md and
 | D16 | Failure handling | crash; retry forever; note | Start with `continue_on_error`; a server that fails to start, times out (`timeout_s`, default 60) or dies becomes a chat note and a tool error result; `/mcp restart <name>`. Never an exception into the TUI. |
 | D17 | MCP prompts | ignore; `/server:prompt` | `/<server>:<prompt> key=value …`, queued like any prompt; the rendered messages become the user turn. Listed in `/mcp`. |
 | D18 | MCP resources | model tool; user pull | User pull only in v1: `/mcp read <server> <uri>` attaches the text to the next turn (counted as **current turn**). A model-callable reader can come later behind the same gate. |
-| D19 | braid as MCP server: transport | stdio; HTTP | stdio (`harness-mcp`, launched by the client: `claude mcp add braid -- uv run --env-file .env harness-mcp`). HTTP means Origin checks and auth for no gain on one machine. |
+| D19 | braid as MCP server: transport | stdio; HTTP | stdio (`braid-mcp`, launched by the client: `claude mcp add braid -- uv run --env-file .env braid-mcp`). HTTP means Origin checks and auth for no gain on one machine. |
 | D20 | Spend confirm with no TUI | none; confirm token; MCP elicitation | **Elicitation by default**: a spending tool sends a quote (model, cap, the bench ledger's cost range for that kata) as an `elicit` yes/no that the client's human answers. A client without elicitation gets an error unless `[mcp_server] confirm = "token"`, a weaker two-call quote-then-start mode, documented as "the client agent confirms". Either way the cap is clamped. |
 | D21 | Human interrupts (plan review, clarify, Stuck, Sign-off, apply) over MCP | refuse runs that pause; return `waiting`; elicit | The run stops at the interrupt with status `waiting` and its payload. `braid_run_answer` answers `review`/`clarify`/`stuck`, recorded as a **Route record** with basis `mcp-client`. `sign_off` and apply are refused over MCP: the human does them in the TUI (`/runs`, `/build --resume`). |
 
@@ -122,7 +122,7 @@ headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
 pass_env = ["DOCS_TOKEN"]
 enabled = false
 
-[mcp_server]                  # braid as a server (harness-mcp)
+[mcp_server]                  # braid as a server (braid-mcp)
 max_cost_usd = 0.10           # per started run; a request above it is clamped and the clamp reported
 daily_cost_usd = 1.00         # across all MCP-started runs, from the run index
 confirm = "elicit"            # "elicit" | "token" (the client agent confirms; weaker)
@@ -181,7 +181,7 @@ Wire the `Asker` from `specs/ask-user-question.md` into the MCP `elicitation_cal
 
 ### F18 — braid as an MCP server
 
-`harness-mcp` (stdio, `[project.scripts]`), `mcp/server.py`, `mcp/spend.py`. Nothing but MCP messages on stdout: Workflow progress goes to the run log and `ctx.report_progress`.
+`braid-mcp` (stdio, `[project.scripts]`), `mcp/server.py`, `mcp/spend.py`. Nothing but MCP messages on stdout: Workflow progress goes to the run log and `ctx.report_progress`.
 
 | Tool | Cost | Notes |
 |---|---|---|
@@ -204,7 +204,7 @@ Free tools carry `readOnlyHint: true`; spending ones `destructiveHint: false, op
 4. A client without elicitation and `confirm = "elicit"` gets an error; with `confirm = "token"`, call one returns a quote and token, call two with that token starts the run, an expired or altered token is refused.
 5. A run reaching `sign_off` reports `waiting`; `braid_run_answer` on it is refused; on `review` it resumes and the Route record says basis `mcp-client`.
 6. No result, error or progress message contains an `sk-` string while keys are set in the env; a backend not in `backends` is refused.
-7. Running `harness-mcp` as a subprocess and sending `initialize` yields only JSON-RPC on stdout.
+7. Running `braid-mcp` as a subprocess and sending `initialize` yields only JSON-RPC on stdout.
 
 ---
 
@@ -213,7 +213,7 @@ Free tools carry `readOnlyHint: true`; spending ones `destructiveHint: false, op
 - **Every skill file and every MCP result is untrusted data.** Prompt injection through a `SKILL.md`, a reference file or a tool result cannot be filtered reliably, so the defence is what an injected instruction can reach: side effects need an Approval (D6, D12), code runs in the Sandbox (D6, D13), and no harness secret is in reach (D14). The Approval prompt shows the provenance ("requested after mcp__fetch__fetch returned") so a user can see an injection chain.
 - **The lethal trifecta** (private data + untrusted content + a way out): a network-capable MCP server is the way out. `network = true` servers are flagged on every Approval and are never `allow`-listed by the defaults.
 - **Tool poisoning and rug pulls**: descriptions are model-visible instructions; pins (D15) catch a change after first trust; `/mcp` shows each description so the user reads what they trust.
-- **Keys**: `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` never reach a skill script or an MCP server (built-from-scratch env, D14), never appear in a note, log or MCP result (the `sk-`/`sk-or-` redaction from ADR 0009 covers MCP errors), and `harness.toml` holds no secret (only `${VAR}` names).
+- **Keys**: `ANTHROPIC_API_KEY` and `OPENROUTER_API_KEY` never reach a skill script or an MCP server (built-from-scratch env, D14), never appear in a note, log or MCP result (the `sk-`/`sk-or-` redaction from ADR 0009 covers MCP errors), and `braid.toml` holds no secret (only `${VAR}` names).
 - **braid as a server**: the client is an agent, not a human. It may read and may start bounded spends with a human's elicited yes; it may never apply a diff or give a **Sign-off**.
 
 ## Demo value
@@ -235,7 +235,7 @@ Numbering settled 2026-10-13: ADR 0010 is the Choice ADR (specs/ask-user-questio
 - **Strands `MCPClient` runs a background thread and event loop**; cancelling a turn with Ctrl-C must cancel the MCP call (`_MCPCallCancelledError` exists; verify in F16).
 - **Tool-schema weight**: a large server can add thousands of tokens to every request. `/mcp` shows per-server schema tokens; `tool_filters` trims.
 - **Prompt cache churn**: changing the skill index or the MCP tool set mid-session invalidates the cached prefix; rebuild only on change.
-- **Two processes, one state**: the TUI and `harness-mcp` share `workflows.db` and `bench.jsonl`; SQLite WAL and append-only JSONL should hold, but a resume of the same run from both must be refused (run lock).
+- **Two processes, one state**: the TUI and `braid-mcp` share `workflows.db` and `bench.jsonl`; SQLite WAL and append-only JSONL should hold, but a resume of the same run from both must be refused (run lock).
 - **`InMemoryTransport` is private** (`mcp.client._memory`); if it moves, fall back to `mcp.shared.memory.create_client_server_memory_streams`.
 - **Elicitation support in clients varies**; with `confirm = "elicit"` some clients cannot start a spend at all (intended).
 

@@ -38,7 +38,7 @@ class RunInfo:
     updated: str = ""
     cost_usd: float = 0.0  # spent so far (API-backed runs); kept up to date by runs started over MCP
     cap_usd: float = 0.0  # the Spend cap the run was granted; 0 for a run that never had one recorded
-    origin: str = ""  # "mcp" for a run `harness-mcp` started (ADR 0013); the daily ceiling adds these up
+    origin: str = ""  # "mcp" for a run `braid-mcp` started (ADR 0013); the daily ceiling adds these up
 
     def line(self, *, live: bool) -> str:
         state = self.state if live or self.state not in ("running", "waiting") else "killed"

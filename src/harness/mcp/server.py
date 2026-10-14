@@ -1,4 +1,4 @@
-"""``harness-mcp``: braid's Workflows as MCP tools over stdio, for a client such as Claude Code (F18, ADR 0013).
+"""``braid-mcp``: braid's Workflows as MCP tools over stdio, for a client such as Claude Code (F18, ADR 0013).
 
 The client is an agent, not a human. It may read freely (the model catalog, Plans, runs, the Bench ledger) and may start
 bounded spends (``braid_plan_start``, ``braid_build_start``, ``braid_bench_start``) only after a human's yes through MCP
@@ -126,7 +126,7 @@ def make_deps(
     catalog: CatalogLoader | None = None, manifest: Path = bench.DEFAULT_MANIFEST, clock: Callable[[], float] = time.monotonic,
     environ: Mapping[str, str] | None = None, store: RunStore | None = None, runner: Runner | None = None,
 ) -> ServerDeps:
-    """The real wiring (``harness-mcp``), with the seams a test replaces."""
+    """The real wiring (``braid-mcp``), with the seams a test replaces."""
     store = store or RunStore(config.workflow.checkpoints_db.expanduser(), timeout=0.05)  # see Driver._retry
     cfg = config.mcp_server
     guard = SpendGuard(cfg.max_cost_usd, cfg.daily_cost_usd, StoreLedger(store))
@@ -504,8 +504,8 @@ def build_server(deps: ServerDeps) -> MCPServer[None]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(prog="harness-mcp", description="braid's Workflows as MCP tools over stdio.")
-    parser.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    parser = argparse.ArgumentParser(prog="braid-mcp", description="braid's Workflows as MCP tools over stdio.")
+    parser.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     args = parser.parse_args(argv)
     config = load_config(args.config)
     deps = make_deps(config)

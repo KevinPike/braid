@@ -19,7 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
         description="Run the hand-labelled tool-selection prompts against each model and compare accuracy, "
                     "tokens per second and peak context use. Run with `uv run --group evals harness-eval`.",
     )
-    p.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    p.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     p.add_argument("--models", help="comma-separated models, overriding [evals] models")
     p.add_argument("--num-ctx", type=int, help="pinned num_ctx for every model (default [evals] num_ctx)")
     p.add_argument("--cases", type=Path, default=DEFAULT_CASES, help=f"prompts JSON (default {DEFAULT_CASES})")

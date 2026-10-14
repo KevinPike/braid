@@ -1,6 +1,6 @@
 # MCP servers are sandboxed, gated tool providers
 
-braid connects to MCP servers (stdio and Streamable HTTP) listed in `harness.toml` and offers their tools to the chat agent. A server is third-party code, and its tool descriptions and results are text a third party wrote that the model is asked to follow, exactly the situation ADR 0011 describes for skills. The defence is again what an injected instruction can reach: side effects need an **Approval**, a stdio server runs only in the **Sandbox**, and no harness secret is in reach. The design is in `specs/skills-and-mcp.md` (F16). This amends ADR 0003 (MCP tools are gated by default, with an allow-list per server) and extends ADR 0005 (stdio servers run under Seatbelt with an environment built from scratch).
+braid connects to MCP servers (stdio and Streamable HTTP) listed in `braid.toml` and offers their tools to the chat agent. A server is third-party code, and its tool descriptions and results are text a third party wrote that the model is asked to follow, exactly the situation ADR 0011 describes for skills. The defence is again what an injected instruction can reach: side effects need an **Approval**, a stdio server runs only in the **Sandbox**, and no harness secret is in reach. The design is in `specs/skills-and-mcp.md` (F16). This amends ADR 0003 (MCP tools are gated by default, with an allow-list per server) and extends ADR 0005 (stdio servers run under Seatbelt with an environment built from scratch).
 
 ## Decision
 
@@ -26,5 +26,5 @@ braid connects to MCP servers (stdio and Streamable HTTP) listed in `harness.tom
 
 - Some real servers need `paths` (an interpreter or cache under `~`) or `network = true` before they start under Seatbelt; the failure note says the command failed, and the log file says why.
 - `/mcp restart` and `/mcp trust` change the agent's tool list, which is part of the cached request prefix, so they cost a cache miss on the next turn. The set never changes otherwise.
-- The pin file is per user, not per project, and a server is identified by its name in `harness.toml`.
+- The pin file is per user, not per project, and a server is identified by its name in `braid.toml`.
 - MCP tools are not available to **Workflows** (ADR 0004). Elicitation (a server asking the user a question) goes through a Choice (F17, ADR 0010), and braid as an MCP server is ADR 0013 (F18).

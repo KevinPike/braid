@@ -16,5 +16,5 @@ Amends ADR 0004 and ends the Ollama-only decision. Any model call in the harness
 - When nothing uses Ollama, there is nothing for the Guard to watch: Preflight, the model swap, **Spill** and **Truncation** checks apply only to Ollama-backed work.
 - **Data leaves the machine.** Prompts, conversation history, the Plan, file contents and test and run output are sent to Anthropic. A project the user would not share stays on Ollama.
 - **Use costs money.** Every API call records tokens, cost and the API `request_id`, and a **Spend cap** per Workflow run stops it at the next node boundary with nothing applied. The cap's value is config, not part of this decision.
-- Credentials come from the SDK's default resolution (`ANTHROPIC_API_KEY`, else an `ant auth` profile). They never appear in `harness.toml`, the run log or the summary, and the **Sandbox** env scrub (ADR 0005) keeps them from code a model wrote.
+- Credentials come from the SDK's default resolution (`ANTHROPIC_API_KEY`, else an `ant auth` profile). They never appear in `braid.toml`, the run log or the summary, and the **Sandbox** env scrub (ADR 0005) keeps them from code a model wrote.
 - Routing is unchanged. A stronger model still never decides that work is done (ADR 0004).

@@ -63,7 +63,7 @@ hidden suite. Its test is `tests/test_frameworks_grade.py`, the only gate F13 ha
 ### Per runner
 
 - **braid** (`run_braid.py`). `cli.build_once` on `bench/exotic/<kata>/plan.json`, `--no-hints`, `no` at finish, as a
-  bench run does. If `harness.toml` does not separate the Roles, the tester gets the `interface` View
+  bench run does. If `braid.toml` does not separate the Roles, the tester gets the `interface` View
   (`--tester-view full` to change it). The kata repo is made with `uv sync`, since a Workspace needs `uv.lock`.
 - **Strands Swarm** (`run_strands_swarm.py`). Strands' own Anthropic provider pins `anthropic<1.0`, so each agent runs
   on braid's `AnthropicChatModel` (`src/harness/agent.py`), which reuses Strands' formatting, sends on the 1.x client,

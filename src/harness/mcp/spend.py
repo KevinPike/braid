@@ -15,7 +15,7 @@ from typing import Literal, Protocol
 
 from harness.workflow.runs import RunStore
 
-ORIGIN = "mcp"  # RunInfo.origin of every run `harness-mcp` starts
+ORIGIN = "mcp"  # RunInfo.origin of every run `braid-mcp` starts
 EPSILON = 1e-9  # below this much left, a ceiling counts as used up
 
 

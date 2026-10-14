@@ -542,7 +542,7 @@ class McpHub:
 
     def describe(self) -> str:
         if not self.servers:
-            return "no MCP servers configured ([mcp.servers.*] in harness.toml)"
+            return "no MCP servers configured ([mcp.servers.*] in braid.toml)"
         lines: list[str] = []
         for st in self.servers.values():
             weight = sum(t.tokens for t in st.tools.values())

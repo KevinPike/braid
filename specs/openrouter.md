@@ -54,7 +54,7 @@ Drafted 2026-10-13. Terms are from `CONTEXT.md`. ADR 0007 deferred OpenRouter ("
 
 ## Shape
 
-- **Config** (`harness.toml`):
+- **Config** (`braid.toml`):
   ```toml
   [openrouter]
   max_retries = 2

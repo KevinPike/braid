@@ -1,4 +1,4 @@
-"""Loads harness.toml: the model profile and paths."""
+"""Loads braid.toml: the model profile and paths."""
 
 from __future__ import annotations
 
@@ -111,7 +111,7 @@ class AskConfig(BaseModel):
 
 
 class McpServerSideConfig(BaseModel):
-    """braid as an MCP server (F18, ADR 0013), the side ``harness-mcp`` serves. The client-side ``[mcp]`` is ``McpConfig``.
+    """braid as an MCP server (F18, ADR 0013), the side ``braid-mcp`` serves. The client-side ``[mcp]`` is ``McpConfig``.
     Spending tools ask a human through MCP elicitation; both ceilings clamp every run's Spend cap."""
 
     max_cost_usd: float = Field(default=0.10, gt=0)  # per started run; a request above it is clamped and the clamp reported
@@ -365,8 +365,8 @@ class HarnessConfig(BaseModel):
 
 
 def load_config(path: Path | None = None) -> HarnessConfig:
-    """Load config from ``path`` (default ./harness.toml); defaults if the file is absent."""
-    path = path or Path("harness.toml")
+    """Load config from ``path`` (default ./braid.toml); defaults if the file is absent."""
+    path = path or Path("braid.toml")
     if not path.exists():
         return HarnessConfig()
     with path.open("rb") as f:

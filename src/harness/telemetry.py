@@ -2,7 +2,7 @@
 
 Off by default (``[telemetry] enabled = false``); with it off nothing here runs and nothing is registered.
 
-Run a local collector, then set ``enabled = true`` in ``harness.toml``::
+Run a local collector, then set ``enabled = true`` in ``braid.toml``::
 
     # spans and metrics printed by the collector (debug exporter)
     docker run --rm -p 4318:4318 otel/opentelemetry-collector

@@ -51,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
     g.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default [workflow] backend, or by the model id: claude- anthropic, vendor/model openrouter)")
     g.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
-    g.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    g.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     g.add_argument("--unload", action="store_true", help="unload the model at the end")
     b = sub.add_parser("build", help="make each Behavior of a Plan Red then Green in a sandboxed Workspace")
     b.add_argument("--plan", type=Path, required=True, help="Plan JSON")
@@ -59,7 +59,7 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--model", help="model id (default: the backend's model from config; a claude- id picks the anthropic backend)")
     b.add_argument("--backend", choices=["ollama", "anthropic", "openrouter"], help="model backend (default [workflow] backend, or by the model id: claude- anthropic, vendor/model openrouter)")
     b.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for an API run (default [workflow] max_cost_usd)")
-    b.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    b.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     b.add_argument("--no-hints", action="store_true", help="baseline: Stuck skips the Behavior, clarify waives, Sign-off says yes")
     b.add_argument("--unload", action="store_true", help="unload the model at the end")
     n = sub.add_parser("bench", help="run a manifest set of (kata, Plan) pairs N times, --no-hints, into the ledger")
@@ -71,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     n.add_argument("--max-cost", type=float, default=1.0, metavar="USD",
                    help="stop the whole bench once it has cost this much (default 1.00); each run keeps its own Spend cap")
     n.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
-    n.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    n.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     n.add_argument("--no-red-check", action="store_true", help="F3 ablation: no Invariant check after Red, only on a Dispute")
     n.add_argument("--hide-rules", action="store_true", help="F3 ablation: do not show the Plan's Invariants to the models")
     n.add_argument("--models", metavar="A,B,...", help="F12 sweep: these model ids, one label per model x effort cell")
@@ -89,7 +89,7 @@ def build_parser() -> argparse.ArgumentParser:
     pf.add_argument("--out", type=Path, help="where to write <kata>.json (default <data_dir>/plans/<set>-<model>)")
     pf.add_argument("--max-cost", type=float, metavar="USD", help="Spend cap for each Plan loop (default [workflow] max_cost_usd)")
     pf.add_argument("--manifest", type=Path, default=bench.DEFAULT_MANIFEST, help="the manifest (default bench/katas.toml)")
-    pf.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    pf.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     n.add_argument("--plans-dir", type=Path, metavar="DIR", help="build the Plans in DIR/<kata>.json (from plans-for) instead of the set's own")
     for sp in (g, b, n, pf):
         sp.add_argument("--thinking-sample", type=float, metavar="P", help="share of calls that think (0-1); the rest run with thinking "
@@ -102,7 +102,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument("--json", action="store_true", help="machine-readable output")
     m.add_argument("--refresh", action="store_true", help="refetch the catalog instead of using the 24 h cache")
     m.add_argument("--notes", type=Path, default=Path("bench/model-notes.toml"), help="ranking notes to show (default bench/model-notes.toml)")
-    m.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    m.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     r = sub.add_parser("report", help="the benchmark ledger: one label, a comparison of two, or the latest summary per kata")
     r.add_argument("labels", nargs="*", help="a label to show (none: list the labels)")
     r.add_argument("--compare", nargs=2, metavar=("A", "B"), help="compare label B against label A")
@@ -111,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--summaries", type=Path, metavar="PRACTICE_DIR", help="the latest summary per model x kata under DIR/*/runs/")
     r.add_argument("--all", action="store_true", help="with --summaries: include hinted runs")
     r.add_argument("--ledger", type=Path, help="the ledger (default <data_dir>/bench.jsonl)")
-    r.add_argument("--config", type=Path, help="path to harness.toml (default ./harness.toml)")
+    r.add_argument("--config", type=Path, help="path to braid.toml (default ./braid.toml)")
     return p
 
 

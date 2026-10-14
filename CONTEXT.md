@@ -205,7 +205,7 @@ _Avoid_: Skill (for a YAML graph), script
 ### MCP
 
 **MCP server**:
-A third-party process (stdio, run in the **Sandbox**) or endpoint (Streamable HTTP) that `harness.toml` lists under `[mcp.servers.*]` and whose tools reach the chat agent as `mcp__<server>__<tool>`. Its descriptions and results are untrusted text: every call needs an **Approval** unless the server's `allow` names the tool, its environment is built from scratch (no harness key), and its stderr goes to a log file. A failure is a note, not a crash. `/mcp` shows the state.
+A third-party process (stdio, run in the **Sandbox**) or endpoint (Streamable HTTP) that `braid.toml` lists under `[mcp.servers.*]` and whose tools reach the chat agent as `mcp__<server>__<tool>`. Its descriptions and results are untrusted text: every call needs an **Approval** unless the server's `allow` names the tool, its environment is built from scratch (no harness key), and its stderr goes to a log file. A failure is a note, not a crash. `/mcp` shows the state.
 _Avoid_: Plugin, extension, connector
 
 **Pin**:
@@ -217,7 +217,7 @@ A prompt template an **MCP server** offers, run by the user as `/<server>:<promp
 _Avoid_: Command, skill
 
 **braid as an MCP server**:
-`harness-mcp` (stdio), which offers the **Workflows** to a client such as Claude Code as `braid_*` tools. Reads are free; a started run needs a human's yes through MCP elicitation (or, in the weaker `confirm = "token"` mode, a quote the client's agent confirms) and is clamped by the **MCP ceilings**. A run that needs a human reports `waiting`; **Sign-off** and applying a diff are never possible over MCP (ADR 0013).
+`braid-mcp` (stdio), which offers the **Workflows** to a client such as Claude Code as `braid_*` tools. Reads are free; a started run needs a human's yes through MCP elicitation (or, in the weaker `confirm = "token"` mode, a quote the client's agent confirms) and is clamped by the **MCP ceilings**. A run that needs a human reports `waiting`; **Sign-off** and applying a diff are never possible over MCP (ADR 0013).
 _Avoid_: Braid API, remote control
 
 **MCP ceilings**:
@@ -265,7 +265,7 @@ The tev1 models that answer routing, compaction-trigger, policy and done-or-cont
 _Avoid_: Router, classifier
 
 **Profile**:
-The set of models, roles and starting `num_ctx` values in `harness.toml`.
+The set of models, roles and starting `num_ctx` values in `braid.toml`.
 _Avoid_: Preset, config (config is the whole file)
 
 ### Process

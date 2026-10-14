@@ -1,4 +1,4 @@
-"""The runs `harness-mcp` starts (F18, ADR 0013): background tasks over the usual Workflow machinery.
+"""The runs `braid-mcp` starts (F18, ADR 0013): background tasks over the usual Workflow machinery.
 
 A run here is what the TUI's workflow pane makes (``build_plan_graph`` or ``build_execution_graph`` driven by
 ``drive_graph`` over the SQLite checkpointer, recorded in the run index) with three differences. Its Spend cap is the

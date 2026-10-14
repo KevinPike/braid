@@ -36,7 +36,7 @@ from harness.workflow.plan import Plan
 async def run(kata: str, out: Path, model_id: str, config_path: Path | None, view: View, sandbox: Sandbox) -> Usage:
     config = load_config(config_path)
     roles = config.workflow.roles
-    if not roles.separated:  # F11's Roles, whatever harness.toml says; an explicit [workflow.roles] is kept
+    if not roles.separated:  # F11's Roles, whatever braid.toml says; an explicit [workflow.roles] is kept
         roles.tester = RoleConfig(view=view)
     choice = choose(config, model=model_id)
     if choice.backend != "anthropic":
@@ -83,7 +83,7 @@ def main() -> None:
     parser.add_argument("--kata", required=True)
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--model", default=DEFAULT_MODEL)
-    parser.add_argument("--config", type=Path, default=None, help="harness.toml (default ./harness.toml if present)")
+    parser.add_argument("--config", type=Path, default=None, help="braid.toml (default ./braid.toml if present)")
     parser.add_argument("--tester-view", choices=("interface", "full"), default="interface")
     args = parser.parse_args()
     usage = asyncio.run(run(args.kata, args.out.resolve(), args.model, args.config, args.tester_view, SeatbeltSandbox()))

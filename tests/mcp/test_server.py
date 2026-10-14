@@ -491,7 +491,7 @@ def test_an_old_run_index_gains_the_cost_columns(tmp_path: Path) -> None:
 # --- gate 7: nothing but JSON-RPC on stdout --------------------------------------------------------------------------------
 
 def test_harness_mcp_as_a_subprocess_writes_only_json_rpc_to_stdout(tmp_path: Path) -> None:
-    cfg = tmp_path / "harness.toml"
+    cfg = tmp_path / "braid.toml"
     cfg.write_text(f'[paths]\ndata_dir = "{tmp_path / "data"}"\n[workflow]\ncheckpoints_db = "{tmp_path / "w.db"}"\n'
                    f'plans_dir = "{tmp_path / "plans"}"\n')
     messages = [

@@ -211,7 +211,7 @@ def test_ask_defaults() -> None:
 
 
 def test_the_ask_table_in_harness_toml_is_parsed(tmp_path: Path) -> None:
-    path = tmp_path / "harness.toml"
+    path = tmp_path / "braid.toml"
     path.write_text("[ask]\ncalls_per_turn = 1\nrefusals_per_turn = 5\ntimeout_s = 12.5\n\n[tools]\nask = false\n")
     cfg = load_config(path)
     assert (cfg.ask.calls_per_turn, cfg.ask.refusals_per_turn, cfg.ask.timeout_s, cfg.tools.ask) == (1, 5, 12.5, False)

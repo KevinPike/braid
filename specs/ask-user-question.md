@@ -158,7 +158,7 @@ The widget is inline in the chat log, not a `ModalScreen`, to match `ApprovalPro
 | Ctrl+C while a Workflow Choice is open | As for the other interrupts: the run pauses at its last Checkpoint, and the Choice is asked again on resume. Logged as `cancelled` |
 | Session switch or quit with a Choice open | `cancelled`. Nothing is saved as answered |
 
-**Limits** (`[ask]` in `harness.toml`)
+**Limits** (`[ask]` in `braid.toml`)
 
 | Limit | Default | When it is passed |
 |---|---|---|

@@ -49,7 +49,7 @@ def test_a_literal_key_is_refused() -> None:
 
 
 def test_a_harness_toml_with_a_forwarded_key_does_not_load(tmp_path: Path) -> None:
-    path = tmp_path / "harness.toml"
+    path = tmp_path / "braid.toml"
     path.write_text('[mcp.servers.bad]\ncommand = "uvx"\nenv = { K = "${ANTHROPIC_API_KEY}" }\n')
     with pytest.raises(ValidationError, match="ANTHROPIC_API_KEY"):
         load_config(path)

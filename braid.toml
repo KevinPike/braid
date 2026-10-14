@@ -151,7 +151,7 @@ enabled = true
 # headers = { Authorization = "Bearer ${DOCS_TOKEN}" }
 # pass_env = ["DOCS_TOKEN"]
 
-# F18: braid as an MCP server (`harness-mcp`, stdio; ADR 0013). A client such as Claude Code may read freely and start
+# F18: braid as an MCP server (`braid-mcp`, stdio; ADR 0013). A client such as Claude Code may read freely and start
 # bounded spends (plan, build, bench) after a human's yes through MCP elicitation. It can never give a Sign-off or apply a diff.
 # Both ceilings clamp every run's Spend cap; the daily one adds up all MCP-started runs. The API keys come from the
 # environment, as for the CLI, and never appear in a result.

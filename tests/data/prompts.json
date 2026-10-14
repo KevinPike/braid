@@ -16,7 +16,7 @@
   {"prompt": "What is 17 times 23?", "tool": null},
   {"prompt": "Thanks, that was helpful!", "tool": null},
   {"prompt": "What time is it in UTC?", "tool": "current_time"},
-  {"prompt": "Show the contents of harness.toml", "tool": "read_file"},
+  {"prompt": "Show the contents of braid.toml", "tool": "read_file"},
   {"prompt": "Give me three tips for writing clear commit messages.", "tool": null},
   {"prompt": "Which of my notes talk about gardening?", "tool": "search_notes"}
 ]
