@@ -23,3 +23,13 @@ Python 3.12 TUI (Textual) and LangGraph Workflows on this machine, with models o
 - Strands agents are built with `callback_handler=None`; the TUI renders the stream, stdout stays clean.
 - The app binds `ctrl+c` with `priority=True` to cancel generation instead of quitting.
 - **Frozen Ollama path**: before touching `guard/`, Calibration, Preflight or an Ollama-backed run, read `docs/ollama-machine-facts.md`.
+
+## README voice
+
+The README is a pitch, not a manual. When you edit it, keep this shape and tone.
+
+- **Order**: one-line promise, the idea in a sentence, a loop diagram, the sandbox, cost control, a three-line quickstart, then "Also in the box" and links. Reference material (keys, slash commands, shell usage, config, telemetry, tests) goes in `docs/usage.md`, not the README.
+- **Voice**: dry and understated, like Tailscale. Lead with what the reader gets. Back each claim with a number or a mechanism ("a few cents", "no network", "stops at the dollar limit you set"). No hype words: seamless, robust, powerful, effortless, blazing.
+- **Sentences**: short, active, one idea each. No semicolons. Verbs over nouns ("analyze", not "perform an analysis"). No phrasal verbs. This is the structural part of ASD-STE100 only, not the dictionary.
+- **Terms**: use the `CONTEXT.md` words and use each one the same way every time.
+- **Truth**: do not claim what the code does not do. A new feature goes in "Also in the box" with one line, and the detail goes in `docs/usage.md`. Do not invent run output in the quickstart.
