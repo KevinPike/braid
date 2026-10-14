@@ -67,7 +67,7 @@ Prompts submitted while a generation is running; they wait their turn in order a
 _Avoid_: Backlog, pending messages
 
 **Approval**:
-The user's y/n before a gated action runs: a gated tool call (`shell`, `write_file`), applying a **Workspace** diff, or a **Sandbox escape**. The only thing that lets one run. Held open, it holds the **Prompt queue**.
+The user's y/n before a gated action runs: a gated tool call (`shell`, `write_file`, `run_skill_script`), applying a **Workspace** diff, or a **Sandbox escape**. The only thing that lets one run. Held open, it holds the **Prompt queue**.
 _Avoid_: Confirmation, permission
 
 **Policy check**:
@@ -183,6 +183,20 @@ _Avoid_: Suite, benchmark (the activity), eval (that is `harness-eval`)
 **Bench ledger**:
 `~/.braid/bench.jsonl`: one line per bench run, holding its summary and provenance (harness commit, **Plan** hash, backend, settings); the report compares labels from it and calls a difference within the repeats' range noise.
 _Avoid_: Ledger alone (that is the per-call context Ledger), results file
+
+### Skills
+
+**Skill**:
+An Agent Skills directory holding a `SKILL.md` (name, description, instructions) and optional `scripts/`, `references/` and `assets/`, found under `.braid/skills` (project), `~/.braid/skills` (user) or, when switched on, the read-only `.claude/skills` folders. Its text is untrusted: it can persuade the model but never grants an **Approval**, and its scripts run only in the **Sandbox**. The first of a name wins; later ones are shadowed. Not a **Graph file** (F6).
+_Avoid_: Plugin, prompt template, command
+
+**Skill index**:
+The system-prompt block that lists each **Skill**'s name and a clipped description (never a body or a path), rebuilt only when the set of skills changes so the cached prefix holds. A body enters history only when the model calls `skill`, or the user types `/skill-name`, and Compaction may then drop it.
+_Avoid_: Skill list, skill catalog (the catalog is the code that builds it)
+
+**Graph file**:
+A small **Workflow** written as YAML in `.braid/graphs/` and run with `/run` (F6, not built yet). Renamed from "skills" on 2026-10-13 so that **Skill** means only a `SKILL.md` directory.
+_Avoid_: Skill (for a YAML graph), script
 
 ### Isolation
 

@@ -88,6 +88,17 @@ class ToolsConfig(BaseModel):
         return list(dict.fromkeys([*names, "shell", "write_file"]))
 
 
+class SkillsConfig(BaseModel):
+    """Skills (F14, F15): Agent Skills directories, discovered project first, then the user's. Their text is untrusted
+    (ADR 0011); their scripts run in the Sandbox behind an Approval each time."""
+
+    enabled: bool = True
+    roots: list[str] = [".braid/skills", "~/.braid/skills"]  # first match wins; "~" is the user's, the rest under the project
+    claude_roots: bool = False  # true adds <project>/.claude/skills and ~/.claude/skills, read-only
+    max_index_tokens: int = 2000  # the system-prompt index; over it, skills are left out with a note
+    script_timeout_s: float = 60.0
+
+
 class DecideConfig(BaseModel):
     """The tev1 decision layer (M4). Advisory only."""
 
@@ -315,6 +326,7 @@ class HarnessConfig(BaseModel):
     profile: ProfileConfig = ProfileConfig()
     context: ContextConfig = ContextConfig()
     tools: ToolsConfig = ToolsConfig()
+    skills: SkillsConfig = SkillsConfig()
     decide: DecideConfig = DecideConfig()
     telemetry: TelemetryConfig = TelemetryConfig()
     evals: EvalsConfig = EvalsConfig()
