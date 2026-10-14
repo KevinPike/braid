@@ -117,5 +117,6 @@ def demo_app(name: str, config_path: Path | None = None, data_dir: Path | None =
         "ask": base.ask.model_copy(update={"timeout_s": 0.0}),
     })
     app = HarnessApp(config, anthropic_client=scripted_client(choice_handler))
+    app._offline_demo = True
     app._startup_notes.append("demo: a scripted model, offline. Send any prompt and it will ask you a Choice.")
     return app

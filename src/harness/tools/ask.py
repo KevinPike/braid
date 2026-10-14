@@ -38,14 +38,15 @@ class AskLimits:
 
 class AskTool(AgentTool):
     """The tool. ``asker`` shows the Choice; ``turn`` says which user turn we are in (the limits count per turn) and
-    ``source`` who is asking (``chat``, later ``skill:<name>``)."""
+    ``source`` who is asking (``chat`` or ``skill:<name>``). ``on_refused`` hears every call turned away, shown or not."""
 
     def __init__(
         self, asker: Asker, limits: AskLimits | None = None, *, turn: Callable[[], int] = lambda: 0,
-        source: Callable[[], str] = lambda: "chat",
+        source: Callable[[], str] = lambda: "chat", on_refused: Callable[[Any, str, str], None] | None = None,
     ) -> None:
         super().__init__()
         self._asker, self._limits, self._turn, self._source = asker, limits or AskLimits(), turn, source
+        self._on_refused = on_refused  # (raw input, source, reason): the app writes it to the Choice log
         self._spec: ToolSpec = {"name": TOOL_NAME, "description": DESCRIPTION, "inputSchema": {"json": tool_schema()}}
         self._seen_turn: int | None = None
         self._asked = 0
@@ -64,8 +65,10 @@ class AskTool(AgentTool):
     def tool_type(self) -> str:
         return "python"
 
-    def _refuse(self, reason: str) -> ChoiceResult:
+    def _refuse(self, reason: str, raw: Any = None) -> ChoiceResult:
         self._refused += 1
+        if self._on_refused is not None:
+            self._on_refused(raw, self._source(), reason)
         return ChoiceResult(status="refused", reason=reason)
 
     async def ask(self, raw: Any) -> ChoiceResult:
@@ -73,15 +76,17 @@ class AskTool(AgentTool):
         if self._turn() != self._seen_turn:  # a new user turn: the limits start again
             self._seen_turn, self._asked, self._refused, self._open = self._turn(), 0, 0, False
         if self._refused >= self._limits.refusals_per_turn:
-            return ChoiceResult(status="refused", reason=LIMIT_REASON)  # not counted again, not shown
+            if self._on_refused is not None:  # not counted again and not shown, but still a row
+                self._on_refused(raw, self._source(), LIMIT_REASON)
+            return ChoiceResult(status="refused", reason=LIMIT_REASON)
         if self._asked >= self._limits.calls_per_turn:
-            return self._refuse(LIMIT_REASON)
+            return self._refuse(LIMIT_REASON, raw)
         if self._open:
-            return self._refuse("one Choice at a time: ask once per message, and wait for the answer")
+            return self._refuse("one Choice at a time: ask once per message, and wait for the answer", raw)
         try:
             request = validate(raw)
         except ValidationError as exc:
-            return self._refuse(problems(exc))
+            return self._refuse(problems(exc), raw)
         self._asked += 1
         self._open = True
         try:
@@ -100,6 +105,6 @@ class AskTool(AgentTool):
 
 def build_ask_tool(
     asker: Asker, limits: AskLimits | None = None, *, turn: Callable[[], int] = lambda: 0,
-    source: Callable[[], str] = lambda: "chat",
+    source: Callable[[], str] = lambda: "chat", on_refused: Callable[[Any, str, str], None] | None = None,
 ) -> AskTool:
-    return AskTool(asker, limits, turn=turn, source=source)
+    return AskTool(asker, limits, turn=turn, source=source, on_refused=on_refused)

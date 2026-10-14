@@ -15,7 +15,7 @@ from typing import Any
 
 import anthropic
 from strands import Agent
-from strands.hooks import MessageAddedEvent
+from strands.hooks import BeforeModelCallEvent, MessageAddedEvent
 from strands.types.content import Message
 
 from textual.app import App, ComposeResult
@@ -39,12 +39,13 @@ from harness.context.trimlog import TrimLog
 from harness.decide.log import DecisionLog
 from harness.decide.questions import check_policy, route, should_compact
 from harness.decide.tev import TevClient
+from harness.mcp.elicit import Elicitor
 from harness.mcp.hub import McpHub
 from harness.sandbox import SeatbeltSandbox
 from harness.skills.catalog import SkillCatalog, discover, skill_roots, tokens_of
 from harness.skills.plugin import SKILL_BODY_TOKENS, SKILL_TOOLS, SkillsPlugin, invocation_turn
 from harness.skills.scripts import SCRIPT_TOOL, build_run_skill_script
-from harness.tools.ask import AskLimits, build_ask_tool
+from harness.tools.ask import TOOL_NAME as ASK_TOOL, AskLimits, AskTool, build_ask_tool
 from harness.tools.builtin import build_shell, build_tools, build_write_file
 from harness.guard.ollama_client import OllamaClient
 from harness.guard.preflight import Candidate, PreflightError, PreflightResult, run_preflight, system_gpu_limit
@@ -174,6 +175,9 @@ class HarnessApp(App[None]):
         self.choices = ChoiceLog(config.paths.choices_file if replier is None else ":memory:")
         self.store = store or SessionStore(config.paths.sessions_file if replier is None else ":memory:")
         self._startup_notes: list[str] = []
+        self._offline_demo = False  # --demo: a scripted model, so nothing leaves the machine and nothing is billed
+        self._app_loop: asyncio.AbstractEventLoop | None = None  # MCP elicitations arrive on another thread and hop onto this
+        self._ask_tool: AskTool | None = None
         self.skills: SkillCatalog | None = self._discover_skills() if config.skills.enabled else None
         self._skills_plugin: SkillsPlugin | None = None
         self.mcp: McpHub | None = self._make_mcp() if config.mcp.enabled and config.mcp.servers else None
@@ -359,7 +363,10 @@ class HarnessApp(App[None]):
         model = self.meter.state.model
         self._agent = self._make_agent(model)
         self._model = model
-        await self._note(f"chat: {model} on the Anthropic API (data leaves this machine; every call costs money)")
+        if self._offline_demo:
+            await self._note(f"chat: {model}, a scripted model (demo, offline: no network, nothing is billed)")
+        else:
+            await self._note(f"chat: {model} on the Anthropic API (data leaves this machine; every call costs money)")
         if not os.environ.get("ANTHROPIC_API_KEY") and not os.environ.get("ANTHROPIC_AUTH_TOKEN"):
             await self._note("no ANTHROPIC_API_KEY set: the SDK will try an `ant auth login` profile "
                              "(the harness does not read .env; `uv run --env-file .env harness` does)")
@@ -448,7 +455,28 @@ class HarnessApp(App[None]):
             )
         # Every added message is saved at once, so a kill mid-turn keeps what the turn had so far.
         agent.hooks.add_callback(MessageAddedEvent, lambda e: self.store.save_messages(self.session_id, e.agent.messages))
+        agent.hooks.add_callback(BeforeModelCallEvent, self._sync_ask_tool)
         return agent
+
+    def _ask_source(self) -> str:
+        """Who asks: the active skill if there is one (ADR 0010), else the chat."""
+        name = self._skills_plugin.active(self._agent) if self._skills_plugin is not None and self._agent is not None else None
+        return f"skill:{name}" if name else "chat"
+
+    def _sync_ask_tool(self, event: BeforeModelCallEvent) -> None:
+        """A skill whose ``allowed-tools`` leaves out ``ask_user_question`` does not get it: the tool is off the list the
+        model sees while that skill is the active one, and back when another is."""
+        if self._ask_tool is None or self._skills_plugin is None:
+            return
+        registry = event.agent.tool_registry.registry
+        if self._skills_plugin.allows(event.agent, ASK_TOOL, "AskUserQuestion"):
+            registry.setdefault(ASK_TOOL, self._ask_tool)
+        else:
+            registry.pop(ASK_TOOL, None)
+
+    def _log_refusal(self, raw: Any, source: str, reason: str) -> None:
+        """A call the tool turned away is a row in the Choice log too (status ``refused``)."""
+        self.hooks.publish(ChoiceResolved(ChoiceRecord.refused(raw, source, self._model_name, reason)))
 
     def _tools(self) -> list[Any]:
         cfg = self.config.tools
@@ -463,8 +491,10 @@ class HarnessApp(App[None]):
             tools.append(build_run_skill_script(self.skills, SeatbeltSandbox(), cfg.root, timeout_s=self.config.skills.script_timeout_s))
         if cfg.ask:  # acts on nothing, so it needs no Approval (ADR 0010)
             ask = self.config.ask
-            tools.append(build_ask_tool(
-                self.ask_choice, AskLimits(ask.calls_per_turn, ask.refusals_per_turn), turn=lambda: self._run_id))
+            self._ask_tool = build_ask_tool(
+                self.ask_choice, AskLimits(ask.calls_per_turn, ask.refusals_per_turn), turn=lambda: self._run_id,
+                source=self._ask_source, on_refused=self._log_refusal)
+            tools.append(self._ask_tool)
         return tools
 
     def _annotate_approval(self, tool: str, tool_input: Mapping[str, Any]) -> str:
@@ -514,7 +544,7 @@ class HarnessApp(App[None]):
         A user outcome (declined, cancelled, timed out) is a result, never an exception; the one-line record replaces the
         widget and the Choice log gets a row."""
         from_workflow = source.startswith("workflow:")
-        model = "code" if from_workflow else self._model_name
+        model = "code" if from_workflow else source if source.startswith("mcp:") else self._model_name
         if not from_workflow and not self.generating:  # Ctrl-C raced the end of the stream: nobody is waiting for it
             return ChoiceResult(status="cancelled", reason="the turn was cancelled")
         self._choices_waiting += 1
@@ -788,12 +818,14 @@ class HarnessApp(App[None]):
         return McpHub(
             self.config.mcp, data_dir=self.config.paths.resolved_data_dir, project=self.config.tools.root.resolve(),
             hooks=self.hooks, notify=notify, environ=dict(os.environ),
+            elicitation_callback=Elicitor(self.ask_choice, lambda: self._app_loop, notify),
         )
 
     async def _start_mcp(self) -> None:
         """Connect the configured servers before the first agent is built. A server that fails is a note, not a crash."""
         if self.mcp is None:
             return
+        self._app_loop = asyncio.get_running_loop()
         names = [n for n, c in self.config.mcp.servers.items() if c.enabled]
         if names:
             await self._note(f"mcp: starting {', '.join(names)}…")

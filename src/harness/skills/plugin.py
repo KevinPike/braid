@@ -81,9 +81,21 @@ class SkillsPlugin(Plugin):
 
     def activate(self, agent: Agent, name: str) -> None:
         state = self._state(agent)
-        if name not in state["active"]:
-            state["active"] = [*state["active"], name]
+        state["active"] = [*(n for n in state["active"] if n != name), name]  # the latest one last: it is the active skill
         agent.state.set(STATE_KEY, state)
+
+    def active(self, agent: Agent | None) -> str | None:
+        """The skill most recently loaded in this session, or None."""
+        names = [n for n in self._state(agent)["active"] if self.catalog.has(n)] if agent is not None else []
+        return names[-1] if names else None
+
+    def allows(self, agent: Agent, *tool_names: str) -> bool:
+        """Whether the active skill's ``allowed-tools`` lets it have a tool. It does when the skill declares none, and
+        otherwise only if one of ``tool_names`` is listed (an entry's ``(args)`` suffix is ignored). This governs only
+        which tools a skill is offered; it never skips an Approval."""
+        name = self.active(agent)
+        declared = {t.partition("(")[0].strip() for t in self.catalog.entry(name).allowed_tools} if name else set()
+        return not declared or bool(declared & set(tool_names))
 
     # --- tools -------------------------------------------------------------------------------------------------------
 
