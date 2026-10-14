@@ -179,6 +179,12 @@ class Driver:
     async def _save(self, run_id: str, **changes: Any) -> None:
         await self._retry(lambda: self.store.update(run_id, **changes))
 
+    async def _final(self, live: Live, **changes: Any) -> None:
+        """The run's last write: its state and its final cost in one update, after the progress saves have landed, so a reader
+        who sees the state also sees the cost (a locked index retries this write, never a separate cost write after it)."""
+        await asyncio.gather(*live.saving, return_exceptions=True)
+        await self._save(live.info.run_id, cost_usd=self._cost(live), **changes)
+
     def _save_soon(self, live: Live, **changes: Any) -> None:
         """A progress update from a synchronous listener: sent when the index is free, and always before the run's last write."""
         async def go() -> None:
@@ -229,7 +235,7 @@ class Driver:
 
     # --- the run -------------------------------------------------------------------------------------------
     async def _run(self, live: Live) -> None:
-        info, rq = live.info, live.request
+        rq = live.request
         started = self.clock()
         try:
             if rq.kind == "bench":
@@ -238,26 +244,24 @@ class Driver:
                 async with open_checkpointer(rq.config.workflow.checkpoints_db.expanduser()) as saver:
                     final = await (self._plan if rq.kind == "plan" else self._build)(live, saver)
                 if final.get("status") == "api_error":  # F8: resumable from the Checkpoint before the failed node
-                    await self._save(info.run_id, state="failed", outcome=redact(f"api_error: {final['api_error']['error']}")[:200])
+                    await self._final(live, state="failed", outcome=redact(f"api_error: {final['api_error']['error']}")[:200])
                     live.report = redact(api_error_note(final["api_error"]))
                     live.say(live.report)
                     return
                 outcome, live.report = self._finish(live, final, self.clock() - started)
-            await self._save(info.run_id, state="finished", outcome=outcome)
+            await self._final(live, state="finished", outcome=outcome)
             live.say(f"finished: {outcome}")
         except Parked as parked:
-            await self._save(info.run_id, state="waiting", outcome=f"waiting: {parked.kind}")
+            await self._final(live, state="waiting", outcome=f"waiting: {parked.kind}")
             live.say(f"stopped for a human at {parked.kind}; resume it in the TUI")
         except asyncio.CancelledError:
-            await self._save(info.run_id, state="paused", outcome="cancelled")
+            await self._final(live, state="paused", outcome="cancelled")
             live.waiting = None
             live.say("cancelled; resumable from its last Checkpoint in the TUI")
         except Exception as exc:  # a failed run is a state, never a crashed server
-            await self._save(info.run_id, state="failed", outcome=redact(f"{type(exc).__name__}: {exc}")[:200])
+            await self._final(live, state="failed", outcome=redact(f"{type(exc).__name__}: {exc}")[:200])
             live.say(f"failed: {type(exc).__name__}: {exc}")
         finally:
-            await asyncio.gather(*live.saving, return_exceptions=True)  # so no older figure lands after the last write
-            await self._save(info.run_id, cost_usd=self._cost(live))
             live.poke()
 
     def _cost(self, live: Live) -> float:

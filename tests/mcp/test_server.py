@@ -528,3 +528,27 @@ def test_harness_mcp_as_a_subprocess_writes_only_json_rpc_to_stdout(tmp_path: Pa
     assert {t["name"] for t in listed["result"]["tools"]} == TOOLS
     seen = json.dumps(parsed) + rest + stderr
     assert KEY_ANTHROPIC not in seen and KEY_OPENROUTER not in seen
+
+
+async def test_the_terminal_state_and_the_final_cost_are_one_write_even_when_progress_writes_are_locked(
+    fixture_repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reader who sees 'finished' sees the run's cost: the closing write carries both, so a locked index cannot leave a stale
+    figure behind a finished state (cost-only writes are made to fail here, as they would under contention)."""
+    import sqlite3
+
+    model = CostlySchemas(scripted().replies, price=0.03)
+    deps = deps_for(config(tmp_path, fixture_repo, max_cost_usd=0.10), tmp_path, models=scripted_models(lambda: model))
+    real_update = deps.store.update
+
+    def update(run_id: str, **changes: Any) -> Any:
+        if "state" not in changes and "cost_usd" in changes:
+            raise sqlite3.OperationalError("database is locked")
+        return real_update(run_id, **changes)
+
+    monkeypatch.setattr(deps.store, "update", update)
+    async with connected(deps) as client:
+        started = await call_json(client, "braid_plan_start", goal="add a mul helper", max_cost_usd=5.0)
+        await settle(client, started["run_id"], {"finished", "failed"})
+    row = deps.store.get(started["run_id"])
+    assert row is not None and row.state == "finished" and row.cost_usd > 0.10

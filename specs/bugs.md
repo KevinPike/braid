@@ -50,3 +50,12 @@ Tabled issues that are not on a milestone's critical path. Newest first. Close a
 - **Risk:** low. The notes folder comes from `harness.toml`, not the model, and the tools only read. It is still a gap in the "bound to one project folder" promise.
 - **Possible fix:** resolve the notes folder once, then skip any file whose resolved path falls outside it (`resolve_inside(folder, ...)`); add a test with a symlink pointing out of the folder, alongside the existing traversal tests in `tests/test_tools.py`.
 - **Fixed in:** (uncommitted, M8). `search_notes` resolves the notes folder (a relative one must stay inside the project folder) and skips any file whose resolved path leaves it. Tests: `tests/test_tools.py`.
+
+### `tests/test_app_workflows.py` fails intermittently with a timeout
+
+- **Seen:** 2026-10-14, while merging `openrouter` to `main`.
+- **Symptom:** `AssertionError: timed out waiting for the condition` from the `until` helper. Different tests in the file fail on different runs; the file usually passes alone.
+- **Rate:** 1 of 8 runs at `31782c7` (before the merge), 2 of 8 on the merged tree. So it predates the OpenRouter work.
+- **Likely cause (not confirmed):** a timing race between the Textual pilot and the run's background worker.
+- **Triage:** rerun the file before suspecting a regression.
+- **Fixed in:** not fixed.
