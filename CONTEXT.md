@@ -70,6 +70,10 @@ _Avoid_: Backlog, pending messages
 The user's y/n before a gated action runs: a gated tool call (`shell`, `write_file`), applying a **Workspace** diff, or a **Sandbox escape**. The only thing that lets one run. Held open, it holds the **Prompt queue**.
 _Avoid_: Confirmation, permission
 
+**Choice**:
+A set of one to four questions that a model or a **Workflow** node puts to the human, each with two to four options, one or several to pick, and a free-text Other; the answers go back to the asker. For decisions that belong to the user. It gates nothing: never an **Approval** and never a **Sign-off** (ADR 0010). While it is open it holds the **Prompt queue**.
+_Avoid_: Question (taken by the Plan's open questions and tev1's), confirmation, prompt
+
 **Policy check**:
 The tev1 question "is this action safe to run in the project folder?", shown on the **Approval** prompt as advice and logged in the Decision log. Never skips the **Approval**.
 _Avoid_: Safety check, guardrail
