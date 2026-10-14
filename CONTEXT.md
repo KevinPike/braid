@@ -208,6 +208,10 @@ _Avoid_: Main model, default model
 The cached list of OpenRouter models (`~/.braid/openrouter-models.json`, 24 h) with their prices and supported parameters; a model without structured output is refused against it before any call (ADR 0009).
 _Avoid_: Model list, registry
 
+**Tape**:
+A recorded set of API exchanges (a request fingerprint, the response, its status, its wall time) that replay serves instead of the network, with no credential in it (`src/harness/replay.py`).
+_Avoid_: Cassette, fixture, recording
+
 **Thinking sample**:
 The share of Workflow calls that keep thinking on (`[anthropic] thinking_sample`); the others send thinking disabled. Each call's draw is logged as `thinking_on`.
 _Avoid_: Thinking rate, debug mode
