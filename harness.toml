@@ -111,3 +111,13 @@ critique_angles = ["feasibility", "scope", "testability", "risk", "spacing"]
 # model = "claude-haiku-5-5"  # view is always "full": it edits the implementation
 # [workflow.roles.arbiter]
 # model = "claude-sonnet-5-5" # takes no view: the Arbiter never sees the implementation (F10)
+
+# F14, F15: Skills. Agent Skills directories (a folder with SKILL.md). Only each skill's name and description go in the
+# system prompt; the body loads when the model calls `skill`, or you type /skill-name. Skill text is untrusted (ADR 0011):
+# `run_skill_script` runs in the Sandbox and asks for an Approval every time, whatever the skill's allowed-tools says.
+[skills]
+enabled = true
+roots = [".braid/skills", "~/.braid/skills"]   # first match wins; "~" is yours, the rest are under the project
+claude_roots = false          # true adds .claude/skills and ~/.claude/skills, read-only
+max_index_tokens = 2000       # the system-prompt index; over it, skills are left out with a note
+script_timeout_s = 60
