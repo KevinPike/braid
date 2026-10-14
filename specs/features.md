@@ -231,19 +231,19 @@ LangGraph keeps every checkpoint (M15), so a stuck run can be replayed from just
 
 ---
 
-## F6 — Graphs defined in YAML, as skills
+## F6 — Graphs defined in YAML, as graph files
 
 Small Workflows written as YAML files and run with `/run <name> [args]`. This revives M6 (Skills) as small checked graphs, not prompt files.
 
 - **Registry:** `workflow/registry.py` maps a name to a builder, an argument parser and a description. `/plan` and `/build` register there, and `/run` lists the entries.
-- **YAML:** files in `skills/` (in the project, then `~/.braid/skills/`). There are three node kinds:
+- **YAML:** graph files in `.braid/graphs/` (in the project, then `~/.braid/graphs/`). Renamed from `skills/` on 2026-10-13: "skills" now means SKILL.md files (specs/skills-and-mcp.md). There are three node kinds:
   - `run`: a Sandbox command; its result is the exit code and output.
   - `model`: a system prompt, a prompt template, a schema from a registry, and an optional `writes` list of allowed paths.
   - `ask`: an interrupt.
 
   An optional `python:` escape hatch names a registered function. Edges carry conditions only on a `run` exit code, an `ask` answer or attempt counters, so a route cannot depend on what a model claims (ADR 0004).
 - **The loader validates at load time:** unknown node kinds, unreachable nodes, routes without a fallback, `{node.field}` references to fields no earlier node produces, and `writes` outside the project. It compiles into the same `StateGraph`, so checkpoints, the run log, progress and resume all apply unchanged.
-- **First skills:** `changelog` (git log → draft entry → review → write `CHANGELOG.md`) and `regex` (examples → model regex → run against examples → retry).
+- **First graph files:** `changelog` (git log → draft entry → review → write `CHANGELOG.md`) and `regex` (examples → model regex → run against examples → retry).
 - **Prototype first** in `examples/graphs/yaml_graph.py` with a scripted model, to check that the format reads well, before it goes into `workflow/`.
 
 **Gates:** each load-time check rejects a bad file with a message naming the node; a valid file compiles and runs to its first interrupt with a scripted model; a condition on a model field is rejected at load time unless the edge declares `basis: model` and a bound (ADR 0008).
